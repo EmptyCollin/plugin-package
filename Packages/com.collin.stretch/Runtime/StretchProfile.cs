@@ -164,6 +164,61 @@ namespace Collin.Stretch
             return true;
         }
 
+        /// <summary>
+        /// 把中间边界夹回 (min,max) 内并升序重排（segmentTypes 跟随移动）。
+        /// 返回 旧段索引→新段索引 映射（调用方用它重排实例 repeats）；已有序返回 null。
+        /// 首尾边界锁定不动。
+        /// </summary>
+        public int[] NormalizeOrder()
+        {
+            int n = segmentTypes.Count;
+            if (n < 2 || sliceBounds.Count != n + 1) return null;
+            float min = sliceBounds[0], max = sliceBounds[n];
+            const float Eps = 1e-5f;
+
+            var keys = new List<(float key, int oldIdx)>(n - 1);
+            for (int i = 1; i < n; i++)
+            {
+                keys.Add((Mathf.Clamp(sliceBounds[i], min + Eps, max - Eps), i));
+            }
+            keys.Sort((a, b) => a.key.CompareTo(b.key));
+
+            bool changed = false;
+            for (int i = 0; i < keys.Count; i++)
+            {
+                if (keys[i].oldIdx != i + 1 || !Mathf.Approximately(keys[i].key, sliceBounds[i + 1]))
+                { changed = true; break; }
+            }
+            if (!changed) return null;
+
+            var map = new int[n];
+            map[0] = 0;
+            var newTypes = new List<SegmentType>(n) { segmentTypes[0] };
+            var newBounds = new List<float>(n + 1) { min };
+            for (int i = 0; i < keys.Count; i++)
+            {
+                newTypes.Add(segmentTypes[keys[i].oldIdx]);
+                newBounds.Add(keys[i].key);
+                map[keys[i].oldIdx] = i + 1;
+            }
+            newBounds.Add(max);
+            segmentTypes = newTypes;
+            sliceBounds = newBounds;
+            return map;
+        }
+
+        /// <summary>按 NormalizeOrder 的映射重排一个逐段数组（如实例 repeats）。</summary>
+        public static int[] RemapByOrder(int[] values, int[] map)
+        {
+            if (values == null || map == null) return values;
+            var next = new int[values.Length];
+            for (int i = 0; i < values.Length && i < map.Length; i++)
+            {
+                if (map[i] >= 0 && map[i] < next.Length) next[map[i]] = values[i];
+            }
+            return next;
+        }
+
         /// <summary>实例组件用：按当前段数生成默认倍数数组（全 1）。</summary>
         public int[] DefaultRepeats()
         {

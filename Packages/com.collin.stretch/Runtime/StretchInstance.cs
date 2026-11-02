@@ -64,6 +64,16 @@ namespace Collin.Stretch
             repeats = next;
         }
 
+        /// <summary>边界越界/乱序时归一（Profile 重排 + repeats 同步映射）。返回是否发生改动。</summary>
+        public bool NormalizeBounds()
+        {
+            if (profile == null) return false;
+            var map = profile.NormalizeOrder();
+            if (map == null) return false;
+            repeats = StretchProfile.RemapByOrder(EffectiveRepeats(), map);
+            return true;
+        }
+
         /// <summary>装配入口：赋 profile 并同步倍数后重建（规避 OnEnable 早于外部赋值的时序陷阱）。</summary>
         public void SetProfile(StretchProfile value)
         {

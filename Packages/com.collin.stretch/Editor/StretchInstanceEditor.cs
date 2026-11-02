@@ -7,14 +7,15 @@ namespace Collin.Stretch.EditorTooling
     /// <summary>
     /// 实例主面板（AGENTS.md §0.1 原则1）：结构（共享 Profile：轴/边界/段类型）+
     /// 实例状态（每段倍数）在同一 Inspector 内编辑，改动即时重建预览。
+    /// 边界可在面板直接输入（越界自动重排，段类型/倍数跟随），也可在 Scene 视图拖拽菱形把手。
     /// 结构写入 Profile 资产、倍数写入组件序列化字段（原则2 的 Model/实例分离）。
     /// </summary>
     [CustomEditor(typeof(StretchInstance))]
     public class StretchInstanceEditor : Editor
     {
         private StretchInstance Inst => (StretchInstance)target;
-        private int _newBoundPct = 50;
-        private bool _showStruct = true;
+        private Vector2 _scroll;
+        private int _insertPct = 50;
 
         public override void OnInspectorGUI()
         {
@@ -29,6 +30,8 @@ namespace Collin.Stretch.EditorTooling
                 return;
             }
 
+            _scroll = EditorGUILayout.BeginScrollView(_scroll, GUILayout.MaxHeight(400));
+
             // ── 轴 ──
             EditorGUI.BeginChangeCheck();
             var axis = (StretchAxis)EditorGUILayout.EnumPopup("拉伸轴（局部）", profile.axis);
@@ -40,66 +43,123 @@ namespace Collin.Stretch.EditorTooling
                 Rebuild();
             }
 
-            // ── 实例状态：倍数（组件序列化，原则2） ──
-            EditorGUILayout.Space(4);
-            EditorGUILayout.LabelField("实例状态 · 复制倍数", EditorStyles.boldLabel);
+            // ── 边界（中间可改，越界自动重排；首尾用端点对齐） ──
+            var src = Inst.OriginalMesh != null ? Inst.OriginalMesh
+                : (Inst.Filter != null ? Inst.Filter.sharedMesh : null);
+            if (profile.sliceBounds.Count >= 2)
+            {
+                EditorGUILayout.BeginHorizontal();
+                EditorGUILayout.LabelField("边界", GUILayout.Width(38));
+                bool dirtyBound = false;
+                for (int i = 0; i < profile.sliceBounds.Count; i++)
+                {
+                    var prev = GUI.enabled;
+                    GUI.enabled = i > 0 && i < profile.sliceBounds.Count - 1;
+                    float cur = profile.sliceBounds[i];
+                    float nv = EditorGUILayout.FloatField(cur, GUILayout.Width(64));
+                    if (!Mathf.Approximately(nv, cur) && !float.IsNaN(nv) && !float.IsInfinity(nv))
+                    {
+                        profile.sliceBounds[i] = nv;   // 不夹相邻——交给归一重排
+                        dirtyBound = true;
+                    }
+                    GUI.enabled = prev;
+                }
+                EditorGUILayout.EndHorizontal();
+                if (dirtyBound)
+                {
+                    Undo.RecordObjects(new Object[] { profile, Inst }, "Stretch Edit Bounds");
+                    Inst.NormalizeBounds();
+                    EditorUtility.SetDirty(profile);
+                    EditorUtility.SetDirty(Inst);
+                    Rebuild();
+                }
+            }
+
+            // ── 段行：范围 + 类型 + 倍数 + 删边界（一行一段） ──
             var repeats = Inst.EffectiveRepeats();
-            bool dirtyRepeats = false;
             for (int i = 0; i < profile.segmentTypes.Count; i++)
             {
-                bool repeatable = profile.TypeAt(i) == SegmentType.Repeatable;
                 float lo = profile.sliceBounds[i], hi = profile.sliceBounds[i + 1];
+                bool repeatable = profile.TypeAt(i) == SegmentType.Repeatable;
                 EditorGUILayout.BeginHorizontal();
-                var prev = GUI.enabled;
+                EditorGUILayout.LabelField($"段{i} [{lo:F2}→{hi:F2}]", GUILayout.Width(128));
+                EditorGUI.BeginChangeCheck();
+                var nt = (SegmentType)EditorGUILayout.EnumPopup(profile.TypeAt(i), GUILayout.Width(84));
+                if (EditorGUI.EndChangeCheck())
+                {
+                    Undo.RecordObject(profile, "Stretch Segment Type");
+                    profile.segmentTypes[i] = nt;
+                    EditorUtility.SetDirty(profile);
+                    Inst.SyncRepeats();
+                    EditorUtility.SetDirty(Inst);
+                    Rebuild();
+                    break; // 本帧数据已变，下帧再画
+                }
+                var prevG = GUI.enabled;
                 GUI.enabled = repeatable;
                 EditorGUI.BeginChangeCheck();
-                int r = Mathf.Max(1, EditorGUILayout.IntField(
-                    $"段{i} [{lo:F2}→{hi:F2}] {(repeatable ? "×复制" : "固定")}", repeats[i]));
+                int r = Mathf.Max(1, EditorGUILayout.IntField(repeats[i], GUILayout.Width(34)));
                 if (EditorGUI.EndChangeCheck() && repeatable && r != repeats[i])
                 {
                     Undo.RecordObject(Inst, "Stretch Repeat");
                     repeats[i] = r;
-                    dirtyRepeats = true;
+                    Inst.repeats = repeats;
+                    EditorUtility.SetDirty(Inst);
+                    Rebuild();
                 }
-                GUI.enabled = prev;
-                EditorGUILayout.EndHorizontal();
-            }
-            if (dirtyRepeats)
-            {
-                EditorUtility.SetDirty(Inst);
-                Rebuild();
-            }
-
-            // ── 结构（共享 Profile，折叠区） ──
-            EditorGUILayout.Space(4);
-            _showStruct = EditorGUILayout.Foldout(_showStruct, "共享结构（本 Profile 的所有实例受影响）", true);
-            if (_showStruct)
-            {
-                using (new EditorGUILayout.VerticalScope(GUI.skin.box))
+                GUI.enabled = prevG;
+                if (i > 0 && GUILayout.Button("删", GUILayout.Width(30)))
                 {
-                    StretchStructUI.DrawStructure(profile, () =>
+                    Undo.RecordObjects(new Object[] { profile, Inst }, "Stretch Remove Bound");
+                    if (profile.RemoveBound(i + 1))
                     {
                         Inst.SyncRepeats();
+                        EditorUtility.SetDirty(profile);
                         EditorUtility.SetDirty(Inst);
                         Rebuild();
-                    }, Inst.OriginalMesh, out _);
-
-                    EditorGUILayout.LabelField("资产：" + AssetDatabase.GetAssetPath(profile),
-                        EditorStyles.miniLabel);
+                    }
+                    EditorGUILayout.EndHorizontal();
+                    break;
                 }
+                EditorGUILayout.EndHorizontal();
             }
 
+            // ── 插入边界 ──
+            EditorGUILayout.BeginHorizontal();
+            _insertPct = EditorGUILayout.IntSlider("插入 %", _insertPct, 5, 95, GUILayout.Width(180));
+            if (GUILayout.Button("插入", GUILayout.Width(50)))
+            {
+                float baseMin = profile.sliceBounds[0];
+                float baseMax = profile.sliceBounds[profile.sliceBounds.Count - 1];
+                float coord = Mathf.Lerp(baseMin, baseMax, _insertPct / 100f);
+                Undo.RecordObjects(new Object[] { profile, Inst }, "Stretch Insert Bound");
+                if (profile.InsertBound(coord) >= 0)
+                {
+                    Inst.SyncRepeats();
+                    EditorUtility.SetDirty(profile);
+                    EditorUtility.SetDirty(Inst);
+                    Rebuild();
+                }
+            }
+            if (src != null && GUILayout.Button("端点对齐", GUILayout.Width(70)))
+            {
+                Undo.RecordObject(profile, "Stretch Realign Ends");
+                profile.sliceBounds[0] = StretchMeshBuilder.BoundsMin(src, profile.axis);
+                profile.sliceBounds[profile.sliceBounds.Count - 1] = StretchMeshBuilder.BoundsMax(src, profile.axis);
+                EditorUtility.SetDirty(profile);
+                Rebuild();
+            }
+            EditorGUILayout.EndHorizontal();
+
             // ── 状态反馈 ──
-            EditorGUILayout.Space(4);
-            var src = Inst.OriginalMesh != null ? Inst.OriginalMesh
-                : (Inst.Filter != null ? Inst.Filter.sharedMesh : null);
             if (src != null)
             {
                 float factor = profile.TotalFactor(
                     StretchMeshBuilder.BoundsMin(src, profile.axis),
-                    StretchMeshBuilder.BoundsMax(src, profile.axis), repeats);
+                    StretchMeshBuilder.BoundsMax(src, profile.axis), Inst.EffectiveRepeats());
                 var shown = Inst.Filter != null ? Inst.Filter.sharedMesh : null;
-                EditorGUILayout.LabelField($"总长因子 {factor:F2} · 结果 {(shown != null ? shown.vertexCount : 0)} 顶点");
+                EditorGUILayout.LabelField($"总长因子 {factor:F2} · 结果 {(shown != null ? shown.vertexCount : 0)} 顶点",
+                    EditorStyles.miniLabel);
             }
             string reason = Inst.FailReason();
             if (reason != null)
@@ -107,7 +167,8 @@ namespace Collin.Stretch.EditorTooling
                 EditorGUILayout.HelpBox(reason + "（修复前保持原网格）", MessageType.Warning);
             }
 
-            EditorGUILayout.Space(2);
+            EditorGUILayout.EndScrollView();
+
             using (new EditorGUILayout.HorizontalScope())
             {
                 if (GUILayout.Button("还原原网格"))
@@ -116,15 +177,10 @@ namespace Collin.Stretch.EditorTooling
                     Inst.Restore();
                     SceneView.RepaintAll();
                 }
-                if (GUILayout.Button("重建预览"))
-                {
-                    Rebuild();
-                }
+                if (GUILayout.Button("重建预览")) Rebuild();
             }
-
-            EditorGUILayout.Space(2);
-            EditorGUILayout.LabelField("提示：边界应落在楼层/桥面之间的空白带；贴边几何请内缩 ε（见 DESIGN R-1）。",
-                EditorStyles.wordWrappedMiniLabel);
+            EditorGUILayout.LabelField("提示：Scene 视图可拖青色菱形把手调边界；越界自动重排。",
+                EditorStyles.miniLabel);
 
             serializedObject.ApplyModifiedProperties();
         }
@@ -142,138 +198,64 @@ namespace Collin.Stretch.EditorTooling
         {
             var profile = Inst.profile;
             if (profile == null) return;
-            var filter = Inst.Filter;
-            var shown = filter != null ? filter.sharedMesh : null;
-            // 辅助线画在"结果网格"上：源网格用于取原始几何，结果用于对齐显示位置
-            StretchSceneHandles.Draw(Inst, profile, Inst.OriginalMesh, shown);
+            var src = Inst.OriginalMesh;
+            var shown = Inst.Filter != null ? Inst.Filter.sharedMesh : null;
+            StretchSceneHandles.Draw(Inst, profile, src, shown);
+            if (src != null) DrawBoundaryHandles(profile, src);
         }
-    }
 
-    /// <summary>结构编辑 UI（实例面板与 Profile 资产面板共用，避免两套真源）。</summary>
-    public static class StretchStructUI
-    {
-        /// <summary>绘制边界/段类型编辑。sourceMesh 必须是**源网格**（非预览结果），端点对齐才正确。</summary>
-        public static bool DrawStructure(StretchProfile profile, System.Action onChanged,
-            Mesh sourceMesh, out bool structureChanged)
+        /// <summary>
+        /// 中间边界的拖拽把手。结果坐标 R(b)=b+ExtensionBelow(b) 对源坐标斜率恒为该边界下方段倍数
+        /// （R'(b_i)=rep_{i-1}，逐段线性），故 dSource = dWorld / rep 精确。越界由 NormalizeBounds 重排。
+        /// </summary>
+        private void DrawBoundaryHandles(StretchProfile profile, Mesh src)
         {
-            structureChanged = false;
-            // src 必须是**源网格**（实例缓存），否则端点对齐会把拉伸结果尺寸误写回边界（历史缺陷）
-            var src = sourceMesh;
+            var tr = Inst.transform;
+            int ax = (int)profile.axis;
+            Vector3 axisLocal = ax == 0 ? Vector3.right : (ax == 1 ? Vector3.up : Vector3.forward);
+            var axisWorld = tr.TransformDirection(axisLocal).normalized;
+            // 把手位移是世界距离，边界是局部坐标：除以该轴损失缩放（如栈桥 scale=100）
+            float axisScale = Mathf.Max(1e-6f, tr.lossyScale[ax]);
+            var repeats = Inst.EffectiveRepeats();
+            var center = src.bounds.center;
+            bool changed = false;
 
-            if (profile.sliceBounds.Count < 2)
+            for (int i = 1; i < profile.sliceBounds.Count - 1; i++)
             {
-                if (GUILayout.Button("按当前选中模型初始化边界"))
-                {
-                    var initSrc = src;
-                    if (initSrc == null)
-                    {
-                        var go = Selection.activeGameObject;
-                        initSrc = go != null ? go.GetComponent<MeshFilter>().sharedMesh : null;
-                    }
-                    if (initSrc != null)
-                    {
-                        Undo.RecordObject(profile, "Stretch Init");
-                        profile.InitFromBounds(
-                            StretchMeshBuilder.BoundsMin(initSrc, profile.axis),
-                            StretchMeshBuilder.BoundsMax(initSrc, profile.axis));
-                        EditorUtility.SetDirty(profile);
-                        onChanged?.Invoke();
-                        structureChanged = true;
-                    }
-                }
-                return structureChanged;
-            }
+                float b = profile.sliceBounds[i];
+                float r = b + profile.ExtensionBelow(b, repeats);
+                var p = center;
+                p[ax] = r;
+                var world = tr.TransformPoint(p);
+                float size = HandleUtility.GetHandleSize(world) * 0.055f;
 
-            // 段类型
-            for (int i = 0; i < profile.segmentTypes.Count; i++)
-            {
-                var t = profile.segmentTypes[i];
-                EditorGUILayout.BeginHorizontal();
+                Handles.color = new Color(0.2f, 0.9f, 1f, 0.95f);
                 EditorGUI.BeginChangeCheck();
-                var nt = (SegmentType)EditorGUILayout.EnumPopup($"段{i} 类型", t);
+                var fmh_232_60_639292468737010591 = Quaternion.identity; var newPos = Handles.FreeMoveHandle(world, size,
+                    Vector3.zero, Handles.DotHandleCap);
                 if (EditorGUI.EndChangeCheck())
                 {
-                    Undo.RecordObject(profile, "Stretch Segment Type");
-                    profile.segmentTypes[i] = nt;
-                    EditorUtility.SetDirty(profile);
-                    onChanged?.Invoke();
-                    structureChanged = true;
-                }
-                if (i > 0 && GUILayout.Button("删尾边界", GUILayout.Width(78)))
-                {
-                    Undo.RecordObject(profile, "Stretch Remove Bound");
-                    if (profile.RemoveBound(i + 1))
+                    float dWorld = Vector3.Dot(newPos - world, axisWorld);
+                    if (Mathf.Abs(dWorld) > 1e-6f)
                     {
-                        EditorUtility.SetDirty(profile);
-                        onChanged?.Invoke();
-                        structureChanged = true;
+                        if (!changed)
+                        {
+                            Undo.RecordObjects(new Object[] { profile, Inst }, "Stretch Drag Bound");
+                            changed = true;
+                        }
+                        int repBelow = Mathf.Max(1, repeats[Mathf.Min(i - 1, repeats.Length - 1)]);
+                        profile.sliceBounds[i] = b + dWorld / (axisScale * repBelow);
                     }
                 }
-                EditorGUILayout.EndHorizontal();
             }
 
-            // 边界数值精调：中间边界可直接输入（夹在相邻之间）；首尾由"端点对齐"管
-            EditorGUILayout.LabelField("边界精调（局部坐标，中间边界可改）", EditorStyles.miniLabel);
-            bool dirtyBound = false;
-            EditorGUILayout.BeginHorizontal();
-            for (int i = 0; i < profile.sliceBounds.Count; i++)
+            if (changed)
             {
-                var prev = GUI.enabled;
-                GUI.enabled = i > 0 && i < profile.sliceBounds.Count - 1;
-                float cur = profile.sliceBounds[i];
-                float lo = i > 0 ? profile.sliceBounds[i - 1] + 1e-4f : cur;
-                float hi = i < profile.sliceBounds.Count - 1 ? profile.sliceBounds[i + 1] - 1e-4f : cur;
-                float nv = EditorGUILayout.FloatField(cur, GUILayout.Width(56));
-                if (!Mathf.Approximately(nv, cur))
-                {
-                    profile.sliceBounds[i] = Mathf.Clamp(nv, lo, hi);
-                    dirtyBound = true;
-                }
-                GUI.enabled = prev;
-            }
-            EditorGUILayout.EndHorizontal();
-            if (dirtyBound)
-            {
-                Undo.RecordObject(profile, "Stretch Edit Bounds");
+                Inst.NormalizeBounds();
                 EditorUtility.SetDirty(profile);
-                onChanged?.Invoke();
-                structureChanged = true;
+                EditorUtility.SetDirty(Inst);
+                Inst.Rebuild();
             }
-
-            // 插入边界（按源包围盒归一化百分比）
-            EditorGUILayout.BeginHorizontal();
-            int pct = EditorGUILayout.IntSlider("插入边界 %", 50, 5, 95);
-            if (GUILayout.Button("插入", GUILayout.Width(56)))
-            {
-                float baseMin = profile.sliceBounds[0];
-                float baseMax = profile.sliceBounds[profile.sliceBounds.Count - 1];
-                float coord = Mathf.Lerp(baseMin, baseMax, pct / 100f);
-                Undo.RecordObject(profile, "Stretch Insert Bound");
-                int idx = profile.InsertBound(coord);
-                if (idx < 0)
-                {
-                    coord = Mathf.Clamp(coord, baseMin + 1e-3f, baseMax - 1e-3f);
-                    idx = profile.InsertBound(coord);
-                }
-                if (idx >= 0)
-                {
-                    EditorUtility.SetDirty(profile);
-                    onChanged?.Invoke();
-                    structureChanged = true;
-                }
-            }
-            EditorGUILayout.EndHorizontal();
-
-            if (src != null && GUILayout.Button("端点对齐选中模型包围盒"))
-            {
-                Undo.RecordObject(profile, "Stretch Realign Ends");
-                profile.sliceBounds[0] = StretchMeshBuilder.BoundsMin(src, profile.axis);
-                profile.sliceBounds[profile.sliceBounds.Count - 1] = StretchMeshBuilder.BoundsMax(src, profile.axis);
-                EditorUtility.SetDirty(profile);
-                onChanged?.Invoke();
-                structureChanged = true;
-            }
-            return structureChanged;
         }
     }
 }

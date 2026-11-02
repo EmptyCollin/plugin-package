@@ -85,3 +85,18 @@
 ## 本轮真实抓出的缺陷（现成模型独有，程序化网格永远测不出）
 - **Builder 只读子网格 0**：`source.triangles` 仅含第一个材质槽——FBX 多材质模型直接丢半（栈桥会丢全部桩柱或全部木板）。修复：逐子网格处理，结果保持 `subMeshCount` 与槽位对应（K37 实证）。
 - 示例资产二次污染（楼B 边界 2→1 被现场操作改歪致 300≠264）：从 HEAD 复原并回归 264/7.0 通过。教训已写入 HANDOFF 勿碰项。
+
+# v0.3.2 增量（边界重置修复 + 面板重构 + 拖拽把手，2026-11-02，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 42 | **越界输入自动重排**（用户复现路径：改一个边界越过另一个，旧版被夹回=看似重置） | `eval_file VerifyUiFix.cs` N1 | `map=[0,2,1] bounds=[0.00,0.50,1.00,3.00] types=[F,F,R]`——Repeatable 段跟随移动 |
+| 43 | 重排后 repeats 按映射同步、几何正确 | N2 | `repeats=[1,1,5] maxY=11.0(期望1+2*5)` |
+| 44 | 实例端到端 NormalizeBounds+Rebuild | N3 | `norm=True ok=True repeats=[1,1,4] maxY=9.0(期望9)` |
+| 45 | 已有序时归一为无操作（不误伤） | N4 | `noop=True` |
+| 46 | 旧回归不退化（K1/K2/K3） | `eval_file Regress.cs`（归零后重跑） | `K1 verts=72 maxY=12`；`K2 切穿窗户 uvOk=True`；`K3 楼A492/10.0 楼B264/7.0 桥sub=2 v=147600 noComp=True` |
+| 47 | §1.6b 门禁终态 | clear→重跑 N1-N4+K1-K3→console status | `errors=0 warnings=0 compilationFailed=False` |
+
+## 根因记录（用户截图反馈）
+- "边界精调改不了/被重置"：旧 `DrawStructure` 对输入做 `Clamp(相邻边界)`——栈桥两边界相距仅 0.002 时任何输入都被夹回，且两次编辑互相抵消。修复=允许越界 + `NormalizeOrder()` 升序重排（segmentTypes 与 repeats 跟随映射）。
+- 面板"内容超长不可滚动"：主面板改为限高滚动区、段合并单行；新增 Scene 视图边界拖拽把手（位移按 lossyScale×下方段倍数换算回局部源坐标，数学在 N2/N3 同源验证）。
