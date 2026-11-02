@@ -1,0 +1,9 @@
+{
+  "error_substrings": [
+    "The given key 'services-gateway' was not present in the dictionary",
+    "UnavailableForLegalReasons",
+    "generators.ai.unity.com"
+  ],
+  "approved_by": "用户 EmptyCollin，2026-11-02，千问工作助理会话",
+  "note": "AGENTS.md §1.8 环境噪声豁免。① 云连接 ServicesConfiguration 键缺失（堆栈 UnityEditor.Connect，不含项目程序集）；② com.unity.ai.assistant 轮询 generators.ai.unity.com 被区域策略拒绝 HTTP 451（堆栈在包内，不含项目程序集）。取证见 Packages/com.collin.core/Docs/ACCEPTANCE.md。新条目须逐条经用户批准后追加。"
+}
