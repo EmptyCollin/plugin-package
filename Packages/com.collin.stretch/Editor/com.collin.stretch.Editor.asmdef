@@ -1,0 +1,18 @@
+{
+  "name": "com.collin.stretch.Editor",
+  "rootNamespace": "Collin.Stretch.EditorTooling",
+  "references": [
+    "com.collin.core",
+    "com.collin.stretch"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "validateReferences": true
+}
