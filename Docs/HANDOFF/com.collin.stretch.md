@@ -2,7 +2,7 @@
 
 > 覆写式交接单（AGENTS.md §4）。只写可观测事实。
 
-最后交接：qianwen-work-assistant（千问工作助理）/ 2026-11-02 / v0.4.0（提交见 git log）
+最后交接：qianwen-work-assistant（千问工作助理）/ 2026-11-02 / v0.4.1（提交见 git log）
 
 ## 1. 已完成
 - 0.3.0/0.3.1/0.3.2 全部内容（边界裁剪通用化、碰撞/刚体同步、多材质子网格保持、CC0 真实栈桥、越界自动重排）；
@@ -16,6 +16,8 @@
 - **0.4.0 性能路线 P1–P4 全落地**：`StretchMeshCache`(源,profile,repeats 键共享+LRU)/面板一键烘焙/
   `renderMode=Chunked`+`StretchChunkManager`(DrawMeshInstanced，50 实例×10 份=3 组)/`StretchScheduler`
   预算队列+双泵；`syncMeshCollider` 默认 false。实测证据见 ACCEPTANCE 63-68；限制见 DESIGN §8.4。
+- **0.4.1 真实演示视频**：396 帧程序化渲染（楼生长/桥延长五段）合成 16.5s mp4 替换占位；
+  展板链路验证到 URL 注入（ACCEPTANCE 69-72），最终解码起播待用户前台目视。
 - **0.3.4 共享顶点去重 + 滑条**（用户质疑 14 万顶点）：Builder (源顶点,段,份) 缓存去重（楼A 492→328）；
   pier_long 重做=顶点表拼接+索引重映射（147600→32326=源三 section 之和，场景已重接保存）；
   边界行=滑条(源包围盒范围)+数值框、每条独立成行；倍数 1..32 滑条；
