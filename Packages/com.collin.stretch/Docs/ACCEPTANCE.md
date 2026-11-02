@@ -100,3 +100,13 @@
 ## 根因记录（用户截图反馈）
 - "边界精调改不了/被重置"：旧 `DrawStructure` 对输入做 `Clamp(相邻边界)`——栈桥两边界相距仅 0.002 时任何输入都被夹回，且两次编辑互相抵消。修复=允许越界 + `NormalizeOrder()` 升序重排（segmentTypes 与 repeats 跟随映射）。
 - 面板"内容超长不可滚动"：主面板改为限高滚动区、段合并单行；新增 Scene 视图边界拖拽把手（位移按 lossyScale×下方段倍数换算回局部源坐标，数学在 N2/N3 同源验证）。
+
+# v0.3.3 增量（面板布局泄漏修复：插入无响应/挤一行，2026-11-02，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 48 | 插入数据路径可用（用户报"点插入没反应"） | 反射 `Editor.ApplyEdits(doInsert=true)` 于楼A 实例 | `TEST2 doInsert bounds 4->5 reps.len=4 segMatch=True ok=True`；测试后快照还原，`git diff buildingA profile=空`（零污染） |
+| 49 | 布局组不再泄漏（挤一行的根因） | 静态配平 grep | `BeginHorizontal=0 / HorizontalScope=5(using) / ScrollView 1:1 / break=0`；`recompile_status failed=false` |
+| 50 | 边界每条独立一行 | 代码结构（每条边界一个 `using HorizontalScope`） | 起点/终点灰显锁定、中间行内联删除；用户目视复验 |
+
+注：eval 环境反射调用 `OnInspectorGUI` 必然抛 "You can only call GUI functions from inside OnGUI"（引擎限制，非缺陷），渲染冒烟在该环境不可行，故以静态配平+数据路径断言代证。
