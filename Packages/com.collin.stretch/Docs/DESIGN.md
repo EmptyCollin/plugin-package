@@ -56,3 +56,42 @@
 - R-3：超大网格 × 高倍数内存膨胀 → 结果顶点数超 65535 需 uint32 索引（Mesh.indexFormat），Builder 自动切换。
 - R-4：裁剪分片使跨界三角形顶点数增加（每片独立顶点）→ 仅在边界切中几何时发生，规模可控（G1: 24→96 顶点级）。
 - R-5：真实 DCC 模型（多材质子网格、非单位缩放、pivot 居中、readable=false）会放大实现盲区 → 缓解：示例已改用 CC0 真实资产（见 §7 资产来源），Builder 逐子网格处理，创建命令自动开 Read/Write，面板端点对齐只读源网格。
+
+## 7. 资产来源
+示例模型的第三方资产登记于 `Sample/Models/CREDITS.md`（Poly Haven modular_wooden_pier，CC0）。
+体验场景保持至少一个真实 DCC 资产（多材质子网格/非单位缩放/pivot 居中），作为通用性的回归标本。
+
+## 8. 性能与规模路线（计划，未实施）
+
+### 8.1 压力账（10⁴ 实例、份数外部驱动）
+当前实现=每实例独占一份重建网格，实测参数（桥 32k 源顶点）下三个瓶颈：
+- **内存**：每 unique 参数组合一份网格（顶点 ~50B/个 + CPU/GPU 双侧）；一万实例若参数不重复即万份网格，GB 级；
+- **批处理**：per-object unique mesh 杀死 GPU Instancing 与 static batching；draw/剔除开销 = 实例数 × subMeshCount；
+- **CPU**：`Build()` O(V) 主线程，高频外部改份数 = 每实例每次全量重建；编辑期 [ExecuteAlways] 全场重建直接失能。
+另记：MeshCollider 同规模下与网格同数量级开销；影子/材质实例是次级放大器。
+
+### 8.2 路线（按杠杆排序；P3 为目标形态，P1/P2 先行兑现）
+- **P1 MeshCache（近期）**：`StretchMeshBuilder` 输出经静态缓存 `(源网格, profile, repeats)` 键共享
+  （引用计数 + LRU 逐出；域重载清空重建）。参数组合远少于实例数时内存骤降，且同键对象自动恢复
+  GPU Instancing。语义不变，`StretchInstance.Rebuild()` 内部改造，外部 API 不动。
+- **P2 Bake & Static（文档化既有能力）**：份数不变的展示/城市场景 → 烘焙子资产 + 普通 MeshRenderer
+  （可吃 static batching / 光照贴图），不挂组件。`StretchBakeCommand` 已支撑，写入 README 级流程。
+- **P3 分块实例化（中期目标）**：利用 `R(x)` 段内刚体平移的性质——复制份不需要复制顶点：
+  Builder 新增"只切不合"输出（每段块 × 材质槽一个 mesh）；运行时每实例把块摆成
+  `segOffset + k×段长` 的变换阵列，经 `Graphics.DrawMeshInstanced(Indirect)`/BRG（Unity 6 BatchRendererGroup，
+  或 URP DOTS Instancing）成组提交。份数即每实例矩阵，天然承接"外部驱动"。
+  draw ≈ 块数×材质组数，显存与实例数无关。已知坑：Indirect/BRG 路径的阴影与深度需自行提交、
+  视锥剔除自建（BRG 可托管）；接缝归属与现裁剪一致，无新正确性问题。
+- **P4 调度与降级（随 P3 配套）**：
+  - 中央 `StretchManager` 脏队列 + 每帧重建预算（P1 期即可先做缓存命中率统计）；
+    份数数组生成逻辑可 Job 化（纯数组写）；
+  - LOD：远距用低份数/删面代理——`repeats` 距离衰减是预算策略，API 已支持（外部传值即可），语义归游戏层；
+  - 物理：大规模推荐 Box/简单碰撞（`syncMeshCollider` 默认关的文档指导）；
+  - 编辑态：仅选中实例保持 ExecuteAlways 重建，未选显示源网格（所见即所得对"正在编辑的对象"兑现）；
+  - 纪律：禁止 per-object Material 实例（会炸掉刚救回的合批）；逐实例差异走 transform/BRG 属性，
+    MaterialPropertyBlock 慎用（破坏 SRP Batcher）。
+
+### 8.3 与数据架构的关系
+Profile（共享结构）/ Instance（份数）契约在 P1–P4 全程不变：P1 缓存其产物、P3 换其渲染器。
+§0.1 原则2 的分离是本路线不需破契约的前提。规模假设变更（如实例数上限、份数变化频率）须更新 8.1 的账并重排优先级。
+
