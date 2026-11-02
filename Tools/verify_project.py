@@ -242,6 +242,70 @@ def check_hygiene():
         add("PASS", "hygiene", "忽略目录未被跟踪")
 
 
+def check_console():
+    """AGENTS.md §1.6b 交锁门禁：控制台 error/warning 归零（豁免见 §1.8）。"""
+    allowlist_path = os.path.join(ROOT, "Tools", "console_allowlist.json")
+    patterns = []
+    if os.path.isfile(allowlist_path):
+        cfg = load_json(allowlist_path) or {}
+        patterns = [p for p in cfg.get("error_substrings", []) if isinstance(p, str)]
+
+    try:
+        proc = subprocess.run(
+            ["unity", "--json", "command", "console status", "--non-interactive"],
+            cwd=ROOT, capture_output=True, timeout=45)
+        payload = json.loads(proc.stdout.decode("utf-8", "ignore"))
+        gt = payload.get("data", {}).get("result", {}).get("groundTruth", {})
+    except FileNotFoundError:
+        add("WARN", "console", "找不到 unity CLI，无法验证控制台归零——交锁前须手动跑 §1.6b")
+        return
+    except Exception as exc:
+        add("WARN", "console", "无法读取控制台状态（%s）——交锁前须手动跑 §1.6b" % exc)
+        return
+
+    if not gt.get("seeded"):
+        add("WARN", "console", "控制台计数尚未就绪（seeded=false），稍后复跑确认")
+        return
+
+    errors = int(gt.get("consoleErrors", 0))
+    warns = int(gt.get("consoleWarnings", 0))
+    if gt.get("compilationFailed"):
+        add("FAIL", "console", "控制台报告编译失败（compilationFailed=true），§1.6a 未过")
+
+    if errors == 0 and warns == 0:
+        add("PASS", "console", "控制台 error=0 warning=0")
+        return
+
+    # 有红黄条目：拉原文做归因，未命中豁免清单的一律 FAIL
+    offenders = []
+    try:
+        proc = subprocess.run(
+            ["unity", "--json", "command", "console get", "--tail", "200",
+             "--non-interactive"],
+            cwd=ROOT, capture_output=True, timeout=45)
+        entries = json.loads(proc.stdout.decode("utf-8", "ignore")) \
+            .get("data", {}).get("result", {}).get("entries", [])
+        for e in entries:
+            if e.get("level") not in ("error", "warning"):
+                continue
+            msg = (e.get("message") or "").replace("\r", " ").strip()
+            if any(p in msg for p in patterns):
+                continue
+            offenders.append((e.get("level"), msg[:120]))
+    except Exception as exc:
+        add("WARN", "console", "error=%d warning=%d，但无法取条目做归因（%s）"
+            % (errors, warns, exc))
+        return
+
+    if offenders:
+        add("FAIL", "console",
+            "控制台未归零：error=%d warning=%d，未豁免 %d 条（§1.6b 红灯，禁止交锁）。样例: %s"
+            % (errors, warns, len(offenders), offenders[0][1]))
+    else:
+        add("WARN", "console",
+            "error=%d warning=%d 全部命中豁免清单（§1.8 已批准的环境噪声）" % (errors, warns))
+
+
 def main():
     as_json = "--json" in sys.argv[1:]
     check_unity_version()
@@ -251,6 +315,7 @@ def main():
     check_assets_no_package()
     check_locks()
     check_hygiene()
+    check_console()
 
     fails = [c for c in CHECKS if c[0] == "FAIL"]
     warns = [c for c in CHECKS if c[0] == "WARN"]

@@ -13,8 +13,20 @@
 2. 跑校验：`python Tools/verify_project.py`，红灯先处理或如实上报，禁止带红交付；
 3. `unity status` 确认编辑器 ready（本项目端口 7800）；
 4. 声明目标插件包，按 §3 取包写锁；
-5. 开工；交付前按 §3 交锁，且**交锁前工程必须编译干净**。
-编译错误会让编辑器进入 Safe Mode，切断**所有** AI 的实时通道——爆炸半径是全项目，不只你自己的包。
+5. 开工；
+6. **交锁门禁（三项全绿才许交锁提交）**：
+   a. 编译干净：`unity command recompile_status` → `failed=false`；
+   b. 控制台归零：`unity command "console clear"` → 重跑本会话全部验证动作 →
+      `unity command "console status"` 的 `groundTruth` 必须 `consoleErrors == 0` 且 `consoleWarnings == 0`
+      （两段式命令名须整体加引号，实测不加入报 Command Not Found）；
+   c. 校验器绿灯：`python Tools/verify_project.py`。
+   编译错误会让编辑器进入 Safe Mode，切断**所有** AI 的实时通道——爆炸半径是全项目，不只你自己的包。
+7. 门禁语义：**以归零后新产生的 error/warning 为准**，禁止用交锁前 `console clear` 抹掉历史错误来绕门禁；
+   归零前已存在的错误若与本会话改动无关，记入 ACCEPTANCE 后如实上报用户。
+8. 归因例外：error/warning 的堆栈**不含任何项目程序集**（`Packages/com.collin.*`、`Assets/`）时，
+   可申报为环境噪声，但须同时满足：①在静默窗口（clear 后 60s 不执行任何操作）内自行复现；
+   ②连堆栈记入该包 ACCEPTANCE；③经用户批准写入 `Tools/console_allowlist.json` 后方可豁免。
+   未获批准的噪声同样是红灯。
 
 ## 2. 并行与互斥
 - 同一时间一个包只允许一个 AI 迭代。
