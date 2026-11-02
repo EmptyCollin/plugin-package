@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-02
+### Added（DESIGN §8.2 P1–P4 全量落地）
+- **P1 `StretchMeshCache`**：结果网格按 (源网格, Profile, repeats) 共享（引用计数+LRU64，
+  源/profile 销毁即作废）；实测 5 个同参实例命中同一 Mesh（hits=58/misses=3），不同 repeats 自动分键；
+- **P2 一键烘焙**：面板"烘焙为静态网格"按钮（`BakeOneAndReport`），份数固定场景走普通渲染器吃 static batching；
+- **P3 分块实例化**：`renderMode=Chunked` → 块几何（段×材质槽，缓存共享）+ 份数退化为矩阵，
+  `StretchChunkManager` 以 `Graphics.DrawMeshInstanced` 提交；实测 50 实例×10 份=500 矩阵仅 **3 个 Draw 组**
+  （=块数，与实例/份数解耦）；MeshRenderer 自动关闭防重影，材质自动开 GPU Instancing（退出 Play 还原）；
+- **P4 `StretchScheduler`**：重建入队+每帧预算（默认16），运行期泵（RuntimeInitializeOnLoad）+编辑期泵
+  （EditorApplication.update）；面板交互保持 RebuildNow 即时（原则1）；外部热改份数用 `RequestRebuild` 防抖；
+  `syncMeshCollider` 默认改 **false**（万级规模 MeshCollider 是隐形放大器，DESIGN §8.2-P4 物理建议）。
+### Verified
+- 场景重开→泵数帧内恢复拉伸态（104→328，pending 0）；缓存路径下核心回归全绿（3→12 层 tris=24 maxY=12；恒等=源12）；
+- 归零门禁 errors=0 warnings=0；runtime-purity 绿灯。限制如实记录于 DESIGN §8.4。
+
 ## [0.3.5] - 2026-11-02
 ### Fixed（用户反馈：桥切轴后再无法拉伸）
 - **切轴边界脱节**：边界值是轴坐标，切换拉伸轴后首尾边界仍停在旧轴包围盒端点

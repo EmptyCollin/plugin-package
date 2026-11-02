@@ -71,18 +71,18 @@
 另记：MeshCollider 同规模下与网格同数量级开销；影子/材质实例是次级放大器。
 
 ### 8.2 路线（按杠杆排序；P3 为目标形态，P1/P2 先行兑现）
-- **P1 MeshCache（近期）**：`StretchMeshBuilder` 输出经静态缓存 `(源网格, profile, repeats)` 键共享
+- **P1 MeshCache（0.4.0 已实施）**：`StretchMeshBuilder` 输出经静态缓存 `(源网格, profile, repeats)` 键共享
   （引用计数 + LRU 逐出；域重载清空重建）。参数组合远少于实例数时内存骤降，且同键对象自动恢复
   GPU Instancing。语义不变，`StretchInstance.Rebuild()` 内部改造，外部 API 不动。
-- **P2 Bake & Static（文档化既有能力）**：份数不变的展示/城市场景 → 烘焙子资产 + 普通 MeshRenderer
+- **P2 Bake & Static（0.4.0 已实施，面板一键烘焙）**：份数不变的展示/城市场景 → 烘焙子资产 + 普通 MeshRenderer
   （可吃 static batching / 光照贴图），不挂组件。`StretchBakeCommand` 已支撑，写入 README 级流程。
-- **P3 分块实例化（中期目标）**：利用 `R(x)` 段内刚体平移的性质——复制份不需要复制顶点：
+- **P3 分块实例化（0.4.0 已实施基础版，见 8.4 限制）**：利用 `R(x)` 段内刚体平移的性质——复制份不需要复制顶点：
   Builder 新增"只切不合"输出（每段块 × 材质槽一个 mesh）；运行时每实例把块摆成
   `segOffset + k×段长` 的变换阵列，经 `Graphics.DrawMeshInstanced(Indirect)`/BRG（Unity 6 BatchRendererGroup，
   或 URP DOTS Instancing）成组提交。份数即每实例矩阵，天然承接"外部驱动"。
   draw ≈ 块数×材质组数，显存与实例数无关。已知坑：Indirect/BRG 路径的阴影与深度需自行提交、
   视锥剔除自建（BRG 可托管）；接缝归属与现裁剪一致，无新正确性问题。
-- **P4 调度与降级（随 P3 配套）**：
+- **P4 调度与降级（0.4.0 已实施）**：
   - 中央 `StretchManager` 脏队列 + 每帧重建预算（P1 期即可先做缓存命中率统计）；
     份数数组生成逻辑可 Job 化（纯数组写）；
   - LOD：远距用低份数/删面代理——`repeats` 距离衰减是预算策略，API 已支持（外部传值即可），语义归游戏层；
@@ -90,6 +90,13 @@
   - 编辑态：仅选中实例保持 ExecuteAlways 重建，未选显示源网格（所见即所得对"正在编辑的对象"兑现）；
   - 纪律：禁止 per-object Material 实例（会炸掉刚救回的合批）；逐实例差异走 transform/BRG 属性，
     MaterialPropertyBlock 慎用（破坏 SRP Batcher）。
+
+### 8.4 0.4.0 已知限制（如实记录）
+- `Graphics.DrawMeshInstanced` 基础提交：不投影/不接收阴影、不进深度法线预通道（依赖它的效果如 SSDecal/部分雾会缺这些物体）、无 LODGroup/反射探针联动；
+  升级为 BRG（BatchRendererGroup）可全部补齐——列为 P3.1，待实测规模需求再做；
+- Chunked 模式下绑定材质会被自动开启 GPU Instancing（对普通渲染无副作用；退出 Play 还原运行期开关）；
+- 同一 `StretchChunkManager` 绑定的实例必须共享同一 Profile 与材质数组（材质不一致者被跳过提交）；份数不同的实例可共提交器（矩阵各自算）；
+- 编辑期 Chunked 预览每帧提交（Update, ExecuteAlways），万级规模的编辑期开销本身建议仅在预览选中对象上使用。
 
 ### 8.3 与数据架构的关系
 Profile（共享结构）/ Instance（份数）契约在 P1–P4 全程不变：P1 缓存其产物、P3 换其渲染器。

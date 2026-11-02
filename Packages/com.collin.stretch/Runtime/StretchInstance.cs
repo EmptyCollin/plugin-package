@@ -8,7 +8,10 @@ namespace Collin.Stretch
     /// Model 的实例半边——引用共享 <see cref="StretchProfile"/>（轴/边界/段类型），
     /// 并**序列化每段倍数**（实例状态：同一 Profile 的不同楼可以各自不同倍数）。
     /// [ExecuteAlways]：编辑期参数改动即时重建预览并即时同步碰撞体；Play 态同一条构建路径（原则3）。
-    /// 预览网格为 DontSave 内存态，落盘由 Editor 侧 StretchSaveHook 守卫——场景只存源网格+Profile+倍数+碰撞体源引用。
+    /// 结果网格经 <see cref="StretchMeshCache"/> 按 (源,profile,repeats) 共享（DESIGN §8.2 P1）；
+    /// 启用 syncMeshCollider 或 <see cref="uniqueMesh"/> 时退回独占网格（MeshCollider 不宜与渲染共享/
+    /// 分块渲染的实例不应持有全网格）。
+    /// 预览网格 DontSave，落盘由 Editor 侧 StretchSaveHook 守卫——场景只存源网格+Profile+倍数。
     /// </summary>
     [ExecuteAlways]
     [DisallowMultipleComponent]
@@ -24,12 +27,25 @@ namespace Collin.Stretch
         [Tooltip("拉伸后是否同步 BoxCollider 尺寸（与视觉同等大小）。")]
         public bool syncBoxCollider = true;
 
-        [Tooltip("拉伸后是否同步 MeshCollider 为结果网格（需可读且三角形拓扑）。")]
-        public bool syncMeshCollider = true;
+        [Tooltip("拉伸后是否同步 MeshCollider 为结果网格。大规模实例请关闭（用 Box/程序化碰撞，DESIGN §8.2 P4）。")]
+        public bool syncMeshCollider = false;
+
+        [Tooltip("强制独占网格（禁用缓存共享）。分块渲染组件接管显示时勾选，避免本实例持有整份大网格。")]
+        public bool uniqueMesh = false;
+
+        /// <summary>渲染路径（DESIGN §8.2）：MeshFilter=单网格兼容；Chunked=分块实例化（万级规模）。</summary>
+        public enum RenderModeKind { MeshFilter = 0, Chunked = 1 }
+
+        [Tooltip("渲染路径：MeshFilter=单网格（兼容/小规模）；Chunked=分块实例化（Draw 数与实例数解耦）。")]
+        public RenderModeKind renderMode = RenderModeKind.MeshFilter;
+
+        [Tooltip("Chunked 模式的提交器；null 时自动挂到自身。")]
+        public StretchChunkManager chunkHost;
 
         [SerializeField, HideInInspector] private Mesh _originalMesh;
         [SerializeField, HideInInspector] private List<MeshColliderBackup> _meshColliders = new List<MeshColliderBackup>();
         private Mesh _previewMesh;
+        private bool _previewShared; // 当前预览是否来自缓存（Release 用）
 
         /// <summary>MeshCollider 的源网格备份（Restore 时还原；序列化以便跨保存/重开保持）。</summary>
         [System.Serializable]
@@ -88,11 +104,20 @@ namespace Collin.Stretch
             {
                 _originalMesh = Filter.sharedMesh;
             }
-            Rebuild();
+            // 首帧走队列错峰；面板交互用 RebuildNow 保即时（§8.2 P4）
+            StretchScheduler.Enqueue(this);
         }
 
-        /// <summary>依据 Profile + 实例倍数重建预览网格并同步碰撞体。失败静默返回 false。</summary>
+        private void OnDisable() => StretchScheduler.Dequeue(this);
+
+        /// <summary>重建预览（内部决策共享/独占）。保留原签名兼容面板与既有调用。</summary>
         public bool Rebuild()
+        {
+            return RebuildNow();
+        }
+
+        /// <summary>同步重建（编辑态面板即时预览用；调度泵亦调用）。失败静默返回 false。</summary>
+        public bool RebuildNow()
         {
             var filter = Filter;
             if (filter == null || profile == null) return false;
@@ -101,19 +126,58 @@ namespace Collin.Stretch
             if (src == null) return false;
             if (_originalMesh == null) _originalMesh = src;
 
-            var built = StretchMeshBuilder.Build(src, profile, EffectiveRepeats());
+            if (renderMode == RenderModeKind.Chunked)
+            {
+                ReleasePreview(); // 交还全网格引用，MeshFilter 归位源网格
+                if (chunkHost == null)
+                {
+                    chunkHost = GetComponent<StretchChunkManager>();
+                    if (chunkHost == null) chunkHost = gameObject.AddComponent<StretchChunkManager>();
+                }
+                chunkHost.Bind(this);
+                return true;
+            }
+            if (chunkHost != null) chunkHost.Unbind();
+
+            var reps = EffectiveRepeats();
+            bool wantShared = !uniqueMesh && !syncMeshCollider;
+
+            Mesh built;
+            bool shared;
+            if (wantShared)
+            {
+                built = StretchMeshCache.AcquireFull(src, profile, reps);
+                shared = built != null;
+            }
+            else
+            {
+                built = StretchMeshBuilder.Build(src, profile, reps);
+                shared = false;
+            }
             if (built == null) return false;
 
-            built.hideFlags = HideFlags.DontSave;
-            if (_previewMesh != null && _previewMesh != built) DestroyImmediate(_previewMesh);
+            ReleasePreview(); // 旧预览：共享则 Release，独占则销毁
+
+            if (!shared) built.hideFlags = HideFlags.DontSave;
             _previewMesh = built;
+            _previewShared = shared;
             filter.sharedMesh = _previewMesh;
 
-            // 每次重建都从源网格重新采集 MeshCollider 备份（重开/域重载后不丢跟踪）
             CaptureMeshColliders(src);
             SyncColliders(built.bounds);
             SyncMeshColliderAfterRebuild();
             return true;
+        }
+
+        private void ReleasePreview()
+        {
+            if (_previewMesh == null) return;
+            if (_previewShared) StretchMeshCache.ReleaseFull(_previewMesh);
+            else if (_previewMesh != null) DestroyImmediate(_previewMesh);
+            _previewMesh = null;
+            _previewShared = false;
+            var filter = Filter;
+            if (filter != null && _originalMesh != null) filter.sharedMesh = _originalMesh;
         }
 
         // ── 碰撞体同步（视觉与碰撞同尺寸） ──────────────────
@@ -130,7 +194,6 @@ namespace Collin.Stretch
                 {
                     if (_meshColliders[i].collider == mc)
                     {
-                        // 当前网格若不是源/备份，说明是预览残影 → 还原到源
                         if (_meshColliders[i].originalMesh != null
                             && mc.sharedMesh != _meshColliders[i].originalMesh
                             && mc.sharedMesh != _previewMesh)
@@ -194,9 +257,10 @@ namespace Collin.Stretch
             }
         }
 
-        /// <summary>还原源网格与碰撞体引用，释放预览内存。</summary>
+        /// <summary>还原源网格与碰撞体引用，释放预览。</summary>
         public void Restore()
         {
+            StretchScheduler.Dequeue(this);
             var filter = Filter;
             if (filter != null && _originalMesh != null)
             {
@@ -220,11 +284,8 @@ namespace Collin.Stretch
                     }
                 }
             }
-            if (_previewMesh != null)
-            {
-                DestroyImmediate(_previewMesh);
-                _previewMesh = null;
-            }
+            ReleasePreview();
+            if (chunkHost != null && chunkHost.attachedInstance == this) chunkHost.Unbind();
         }
 
         private void OnDestroy() => Restore();

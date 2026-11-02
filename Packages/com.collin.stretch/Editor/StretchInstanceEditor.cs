@@ -46,12 +46,32 @@ namespace Collin.Stretch.EditorTooling
             var typeEdits = new List<(int idx, SegmentType t)>();
             var repeatEdits = new List<(int idx, int v)>();
 
-            // ── 轴 ──
+            // ── 轴 + 渲染路径 ──
             using (new EditorGUILayout.HorizontalScope())
             {
                 EditorGUI.BeginChangeCheck();
                 newAxis = (StretchAxis)EditorGUILayout.EnumPopup("拉伸轴（局部）", profile.axis);
                 doAxis = EditorGUI.EndChangeCheck();
+            }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                var oldMode = Inst.renderMode;
+                var nm = (StretchInstance.RenderModeKind)EditorGUILayout.EnumPopup("渲染路径", oldMode);
+                if (nm != oldMode)
+                {
+                    Undo.RecordObject(Inst, "Stretch Render Mode");
+                    Inst.renderMode = nm;
+                    EditorUtility.SetDirty(Inst);
+                    if (Inst.GetComponent<MeshRenderer>() == null && nm == StretchInstance.RenderModeKind.Chunked)
+                        Debug.LogWarning("[Stretch] Chunked 需要本物体有 MeshRenderer+材质；已自动添加");
+                    Inst.RebuildNow();
+                    SceneView.RepaintAll();
+                }
+            }
+            if (Inst.renderMode == StretchInstance.RenderModeKind.Chunked)
+            {
+                EditorGUILayout.LabelField("分块实例化：复制份=矩阵，Draw 组数≈块×材质（与实例/份数解耦）。"
+                    + "同提交器实例须同材质数组；暂不投影（§8.2 P3）。", EditorStyles.wordWrappedMiniLabel);
             }
 
             // ── 边界：每条独立一行（滑条+数值） ──
@@ -152,6 +172,10 @@ namespace Collin.Stretch.EditorTooling
             if (reason != null)
             {
                 EditorGUILayout.HelpBox(reason + "（保持原网格；点「端点对齐」或重选拉伸轴可自动修复边界）", MessageType.Warning);
+            }
+            if (GUILayout.Button("烘焙为静态网格（大规模/份数固定推荐）", GUILayout.Width(240)))
+            {
+                StretchBakeCommand.BakeOneAndReport(Inst.gameObject);
             }
 
             EditorGUILayout.EndScrollView();

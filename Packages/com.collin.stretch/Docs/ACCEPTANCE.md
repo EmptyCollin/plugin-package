@@ -140,3 +140,16 @@
 - 边界数值是**轴坐标**，切轴后旧轴的端点/边界对新轴无意义（桥 y=[-0.94,3.70] vs z=[-8.93,0.43]，
   段0"长-6.03"负数即症状）。楼正常是因为其边界与轴恰好一致未触发。修复=切轴即重设端点+clamp+重排，
   失败提示同时给出"端点对齐/重选轴"出口。
+
+# v0.4.0 增量（P1–P4 性能路线落地，2026-11-02，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 63 | P1 缓存共享：5 同参实例同一 Mesh、异参分键 | `eval_file VerifyPerf.cs` | `P1 shared5=True cacheCount=3 hits=58 misses=3`；`diffRepeats diffMesh=True` |
+| 64 | P3 Draw 解耦：50 实例×10 份 → 组数=块数 | 同上（反射 Submit） | `drawGroups=3 drawMatrices=500 expectMatrices=500 groupsLEblocks=True` |
+| 65 | P3 防重影：Chunked 绑定实例 renderer 关闭 | 同上 | `renderersDisabled=True` |
+| 66 | P3 位移同源：ChunkOffset(k=3)=3.00 与全网格语义一致 | 同上 | `chunkBlocks=3 midSegOffsetK3=(0,3,0)` |
+| 67 | P4 泵一致性：重开场景 104(源) → 泵 ≤5 帧 328(maxY10) | `eval_file VerifyFinal4.cs` | `after pump verts=328 pending=0 processed=62` |
+| 68 | 缓存路径回归 + 归零 | 同上 + console status | `R-B1 tris=24 maxY=12 HIT`；`R-B2 恒等=源12`；`GATE errors=0 warnings=0` |
+
+已知限制见 DESIGN §8.4（无阴影/无深度预通道等，BRG 为 P3.1 升级位）。

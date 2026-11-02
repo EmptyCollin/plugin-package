@@ -2,7 +2,7 @@
 
 > 覆写式交接单（AGENTS.md §4）。只写可观测事实。
 
-最后交接：qianwen-work-assistant（千问工作助理）/ 2026-11-02 / v0.3.5（提交见 git log）
+最后交接：qianwen-work-assistant（千问工作助理）/ 2026-11-02 / v0.4.0（提交见 git log）
 
 ## 1. 已完成
 - 0.3.0/0.3.1/0.3.2 全部内容（边界裁剪通用化、碰撞/刚体同步、多材质子网格保持、CC0 真实栈桥、越界自动重排）；
@@ -13,6 +13,9 @@
 - 验证：反射 `ApplyEdits(doInsert)` 楼A 实例 `bounds 4→5、repeats 同步补齐、段数匹配`，
   快照还原零污染（git diff 空）；静态配平 `BeginHorizontal=0/using×5/ScrollView 1:1/break=0`；
   归零门禁 errors=0 warnings=0；校验器绿灯。
+- **0.4.0 性能路线 P1–P4 全落地**：`StretchMeshCache`(源,profile,repeats 键共享+LRU)/面板一键烘焙/
+  `renderMode=Chunked`+`StretchChunkManager`(DrawMeshInstanced，50 实例×10 份=3 组)/`StretchScheduler`
+  预算队列+双泵；`syncMeshCollider` 默认 false。实测证据见 ACCEPTANCE 63-68；限制见 DESIGN §8.4。
 - **0.3.4 共享顶点去重 + 滑条**（用户质疑 14 万顶点）：Builder (源顶点,段,份) 缓存去重（楼A 492→328）；
   pier_long 重做=顶点表拼接+索引重映射（147600→32326=源三 section 之和，场景已重接保存）；
   边界行=滑条(源包围盒范围)+数值框、每条独立成行；倍数 1..32 滑条；
@@ -25,6 +28,7 @@
   未跟踪残留，去留由用户定）——应改为询问存放位置或默认包内，待用户拍板。
 
 ## 3. 已知坏
+- Chunked 无阴影/不接收阴影、不进深度预通道（§8.4，BRG 为后续升级位）；同提交器材质数组须一致。
 - 无运行缺陷已知。0.3.5 修：切轴边界脱节（端点重设新轴+clamp+重排）、0.3.3 丢失的 ApplyEdits→NormalizeBounds。
   约束记录：重排后段索引会变（外部缓存旧索引须经 map 转换）；把手只画中间边界；
   `game_view --save_path` 路径重定位 Assets/.locks（用后清）；**eval 环境不能反射调 OnInspectorGUI**
