@@ -6,12 +6,16 @@ using UnityEngine.Rendering;
 namespace Collin.Stretch
 {
     /// <summary>
-    /// 结果网格生成器（DESIGN D-3）：逐三角形按重心归段，整三角形刚性放置，
-    /// UV/法线/切线/顶点色逐字拷贝——复制单元与原件像素级一致，杜绝巨型窗户。
-    /// 结构来自 <see cref="StretchProfile"/>（共享 Model），倍数来自实例数组（§0.1 原则2）。
+    /// 结果网格生成器：对**任意**源网格、边界切在**任意**位置均成立（AGENTS.md §0.1 通用性）。
+    /// 三角形按其轴向坐标范围用边界线裁剪分片（Sutherland–Hodgman），
+    /// 每片刚性归入所在段：fixed 段整体平移，repeatable 段复制 repeat 份；
+    /// 位置/UV/法线/切线/色在切口线性插值——每片是原几何的精确子集，
+    /// 窗户被横切时两半各自随段移动、复制体中拼回原样，杜绝巨型窗户与栅栏。
     /// </summary>
     public static class StretchMeshBuilder
     {
+        private const float Eps = 1e-5f;
+
         /// <summary>源网格必须可读且含 UV0。失败原因经 error 返回。</summary>
         public static bool CanProcess(Mesh source, out string error)
         {
@@ -29,14 +33,24 @@ namespace Collin.Stretch
             return true;
         }
 
+        /// <summary>单个带属性的顶点（沿轴坐标由 pos 分量派生）。</summary>
+        private struct V
+        {
+            public Vector3 p;
+            public Vector2 uv;
+            public Vector3 n;
+            public Vector4 t;
+            public Color32 c;
+        }
+
         /// <summary>构建结果网格。失败静默返回 null——日志归调用方（§1.6b 门禁友好）。</summary>
         public static Mesh Build(Mesh source, StretchProfile profile, IList<int> repeats)
         {
             if (source == null || profile == null) return null;
             if (!CanProcess(source, out _)) return null;
-            float min = BoundsMin(source, profile.axis);
-            float max = BoundsMax(source, profile.axis);
-            if (profile.Validate(min, max) != null) return null;
+            float bmin = BoundsMin(source, profile.axis);
+            float bmax = BoundsMax(source, profile.axis);
+            if (profile.Validate(bmin, bmax) != null) return null;
             if (profile.ValidateRepeats(repeats) != null) return null;
 
             var verts = source.vertices;
@@ -44,44 +58,163 @@ namespace Collin.Stretch
             var normals = source.normals;
             var tangents = source.tangents;
             var colors = source.colors32;
-            bool hasNormals = normals != null && normals.Length == verts.Length;
-            bool hasTangents = tangents != null && tangents.Length == verts.Length;
-            bool hasColors = colors != null && colors.Length == verts.Length && colors.Length > 0;
-
+            bool hasN = normals != null && normals.Length == verts.Length;
+            bool hasT = tangents != null && tangents.Length == verts.Length;
+            bool hasC = colors != null && colors.Length == verts.Length && colors.Length > 0;
             var tris = source.triangles;
-            int triCount = tris.Length / 3;
-            var ax = (int)profile.axis;
+            int ax = (int)profile.axis;
+            int segCount = profile.segmentTypes.Count;
 
             var vertPool = new List<Vector3>(verts.Length * 2);
             var uvPool = new List<Vector2>(verts.Length * 2);
-            var normalPool = new List<Vector3>(verts.Length * 2);
-            var tangentPool = new List<Vector4>(verts.Length * 2);
-            var colorPool = new List<Color32>(verts.Length * 2);
-            var indexOut = new List<int>(tris.Length * 2);
+            var nPool = new List<Vector3>(verts.Length * 2);
+            var tPool = new List<Vector4>(verts.Length * 2);
+            var cPool = new List<Color32>(verts.Length * 2);
+            var idxPool = new List<int>(tris.Length * 2);
 
-            for (int t = 0; t < triCount; t++)
+            // 段基准位移（k=0）预计算
+            var segOffset = new float[segCount];
+            var segCopies = new int[segCount];
+            for (int i = 0; i < segCount; i++)
             {
-                int i0 = tris[t * 3], i1 = tris[t * 3 + 1], i2 = tris[t * 3 + 2];
-                float cx = (verts[i0][ax] + verts[i1][ax] + verts[i2][ax]) / 3f;
-                int seg = profile.SegmentIndexAt(cx);
-                if (seg < 0) seg = 0;
+                segOffset[i] = profile.ExtensionBelow(profile.sliceBounds[i], repeats);
+                segCopies[i] = profile.TypeAt(i) == SegmentType.Repeatable
+                    ? StretchProfile.RepeatAt(repeats, i) : 1;
+            }
 
-                int repeats_ = profile.TypeAt(seg) == SegmentType.Repeatable
-                    ? StretchProfile.RepeatAt(repeats, seg) : 1;
+            V MakeV(int srcIndex)
+            {
+                var v = new V();
+                v.p = verts[srcIndex];
+                v.uv = uvs[srcIndex];
+                v.n = hasN ? normals[srcIndex] : Vector3.up;
+                v.t = hasT ? tangents[srcIndex] : Vector4.zero;
+                v.c = hasC ? colors[srcIndex] : new Color32(255, 255, 255, 255);
+                return v;
+            }
+            static float Coord(V v, int ax) => v.p[ax];
+            V Lerp(V a, V b, float s)
+            {
+                var r = new V();
+                r.p = Vector3.Lerp(a.p, b.p, s);
+                r.uv = Vector2.Lerp(a.uv, b.uv, s);
+                r.n = Vector3.Lerp(a.n, b.n, s).normalized;
+                r.t = Vector4.Lerp(a.t, b.t, s);
+                r.c = Color.Lerp(a.c, b.c, s);
+                return r;
+            }
 
-                for (int k = 0; k < repeats_; k++)
+            // Sutherland–Hodgman 半空间裁剪：keepBelow=true 保留 coord<=cut
+            List<V> Clip(List<V> poly, float cut, bool keepBelow)
+            {
+                var outp = new List<V>(poly.Count + 1);
+                int n0 = poly.Count;
+                if (n0 < 3) return outp;
+                for (int i = 0; i < n0; i++)
                 {
-                    float offset = profile.OffsetFor(seg, k, repeats);
-                    int localBase = vertPool.Count;
-                    AppendVert(vertPool, uvPool, normalPool, tangentPool, colorPool,
-                        verts, uvs, normals, tangents, colors, hasNormals, hasTangents, hasColors, i0, ax, offset);
-                    AppendVert(vertPool, uvPool, normalPool, tangentPool, colorPool,
-                        verts, uvs, normals, tangents, colors, hasNormals, hasTangents, hasColors, i1, ax, offset);
-                    AppendVert(vertPool, uvPool, normalPool, tangentPool, colorPool,
-                        verts, uvs, normals, tangents, colors, hasNormals, hasTangents, hasColors, i2, ax, offset);
-                    indexOut.Add(localBase);
-                    indexOut.Add(localBase + 1);
-                    indexOut.Add(localBase + 2);
+                    var cur = poly[i];
+                    var prev = poly[(i + n0 - 1) % n0];
+                    float cc = Coord(cur, ax), pc = Coord(prev, ax);
+                    bool curIn = keepBelow ? cc <= cut + Eps : cc >= cut - Eps;
+                    bool prevIn = keepBelow ? pc <= cut + Eps : pc >= cut - Eps;
+                    if (curIn)
+                    {
+                        if (!prevIn)
+                        {
+                            float span = cc - pc;
+                            float s = Mathf.Abs(span) < 1e-9f ? 0f : (cut - pc) / span;
+                            outp.Add(Lerp(prev, cur, s));
+                        }
+                        outp.Add(cur);
+                    }
+                    else if (prevIn)
+                    {
+                        float span = cc - pc;
+                        float s = Mathf.Abs(span) < 1e-9f ? 0f : (cut - pc) / span;
+                        outp.Add(Lerp(prev, cur, s));
+                    }
+                }
+                return outp;
+            }
+
+            void Emit(V v, float offset)
+            {
+                var p = v.p;
+                p[ax] += offset;
+                vertPool.Add(p);
+                uvPool.Add(v.uv);
+                if (hasN) nPool.Add(v.n);
+                if (hasT) tPool.Add(v.t);
+                if (hasC) cPool.Add(v.c);
+            }
+
+            for (int tri = 0; tri + 2 < tris.Length; tri += 3)
+            {
+                var v0 = MakeV(tris[tri]);
+                var v1 = MakeV(tris[tri + 1]);
+                var v2 = MakeV(tris[tri + 2]);
+                float c0 = Coord(v0, ax), c1 = Coord(v1, ax), c2 = Coord(v2, ax);
+                float tmin = Mathf.Min(c0, Mathf.Min(c1, c2));
+                float tmax = Mathf.Max(c0, Mathf.Max(c1, c2));
+                tmin = Mathf.Clamp(tmin, bmin, bmax);
+                tmax = Mathf.Clamp(tmax, bmin, bmax);
+
+                // 所在段范围（贴边界归该边界以下段）
+                int sFirst = profile.SegmentIndexAt(Mathf.Clamp(tmin + Eps, bmin, bmax - Eps * 2));
+                int sLast = profile.SegmentIndexAt(Mathf.Clamp(tmax - Eps, bmin, bmax - Eps * 2));
+                if (sFirst < 0) sFirst = 0;
+                if (sLast < 0) sLast = segCount - 1;
+
+                if (sFirst == sLast)
+                {
+                    // 快速路径：整三角形在一段闭区间内 → 原样输出（与 0.1.x 行为、顶点数一致）
+                    for (int k = 0; k < segCopies[sFirst]; k++)
+                    {
+                        float off = segOffset[sFirst] + k * profile.SegmentLength(sFirst);
+                        Emit(v0, off); Emit(v1, off); Emit(v2, off);
+                        int b = vertPool.Count - 3;
+                        idxPool.Add(b); idxPool.Add(b + 1); idxPool.Add(b + 2);
+                    }
+                    continue;
+                }
+
+                // 通用路径：用 (tmin, tmax) 之间的内部边界裁剪成逐段分片
+                var boundaries = new List<float>();
+                foreach (var b in profile.sliceBounds)
+                {
+                    if (b > tmin + Eps && b < tmax - Eps) boundaries.Add(b);
+                }
+
+                var remain = new List<V> { v0, v1, v2 };
+                var pieces = new List<List<V>>(boundaries.Count + 1);
+                foreach (var b in boundaries)
+                {
+                    var below = Clip(remain, b, true);
+                    var above = Clip(remain, b, false);
+                    if (below.Count >= 3) pieces.Add(below);
+                    remain = above;
+                }
+                if (remain.Count >= 3) pieces.Add(remain);
+
+                foreach (var piece in pieces)
+                {
+                    float avg = 0f;
+                    foreach (var v in piece) avg += Coord(v, ax);
+                    avg /= piece.Count;
+                    int seg = profile.SegmentIndexAt(Mathf.Clamp(avg, bmin, bmax - Eps * 2));
+                    if (seg < 0) seg = segCount - 1;
+
+                    for (int k = 0; k < segCopies[seg]; k++)
+                    {
+                        float off = segOffset[seg] + k * profile.SegmentLength(seg);
+                        // 扇形三角化凸分片
+                        for (int i = 1; i + 1 < piece.Count; i++)
+                        {
+                            Emit(piece[0], off); Emit(piece[i], off); Emit(piece[i + 1], off);
+                            int b0 = vertPool.Count - 3;
+                            idxPool.Add(b0); idxPool.Add(b0 + 1); idxPool.Add(b0 + 2);
+                        }
+                    }
                 }
             }
 
@@ -93,10 +226,10 @@ namespace Collin.Stretch
             };
             mesh.SetVertices(vertPool);
             mesh.SetUVs(0, uvPool);
-            if (hasNormals) mesh.SetNormals(normalPool);
-            if (hasTangents) mesh.SetTangents(tangentPool);
-            if (hasColors) mesh.SetColors(colorPool);
-            mesh.SetTriangles(indexOut, 0);
+            if (hasN) mesh.SetNormals(nPool);
+            if (hasT) mesh.SetTangents(tPool);
+            if (hasC) mesh.SetColors(cPool);
+            mesh.SetTriangles(idxPool, 0);
             mesh.RecalculateBounds();
             return mesh;
         }
@@ -113,20 +246,6 @@ namespace Collin.Stretch
             var rerr = profile.ValidateRepeats(repeats);
             if (rerr != null) return "倍数数据异常: " + rerr;
             return null;
-        }
-
-        private static void AppendVert(List<Vector3> vPool, List<Vector2> uvPool,
-            List<Vector3> nPool, List<Vector4> tPool, List<Color32> cPool,
-            Vector3[] verts, Vector2[] uvs, Vector3[] normals, Vector4[] tangents, Color32[] colors,
-            bool hasN, bool hasT, bool hasC, int srcIndex, int ax, float offset)
-        {
-            var v = verts[srcIndex];
-            v[ax] += offset;
-            vPool.Add(v);
-            uvPool.Add(uvs[srcIndex]);
-            if (hasN) nPool.Add(normals[srcIndex]);
-            if (hasT) tPool.Add(tangents[srcIndex]);
-            if (hasC) cPool.Add(colors[srcIndex]);
         }
 
         public static float BoundsMin(Mesh m, StretchAxis axis) => m.bounds.min[(int)axis];

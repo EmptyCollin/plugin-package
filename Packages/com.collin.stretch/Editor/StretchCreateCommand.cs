@@ -68,10 +68,7 @@ namespace Collin.Stretch.EditorTooling
             }
 
             var profile = ScriptableObject.CreateInstance<StretchProfile>();
-            profile.InitFromBounds(
-                StretchMeshBuilder.BoundsMin(mesh, StretchAxis.Y),
-                StretchMeshBuilder.BoundsMax(mesh, StretchAxis.Y));
-            profile.axis = StretchAxis.Y;
+            profile.InitFromMesh(mesh, StretchAxis.Y);
 
             string dir = "Assets";
             string prefabPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);

@@ -50,3 +50,24 @@
 - **数据归属错误（用户指出）**：v0.1 把倍数存进共享 Profile，违反 §0.1 原则2——同一 Profile 复用多楼时无法各自不同倍数。0.2.0 迁到实例组件，V1 证明 ×3/×20 独立生效。
 - **辅助线双绘**：`StretchProfileEditor` 静态 `duringSceneGui` 与 `StretchInstanceEditor.OnSceneGUI` 对同一选中实例各画一遍。移除前者，辅助线唯一入口收敛到实例编辑器（原则1）。
 - **历史 NRE（seq227，09:21:30）**：来自重构前旧 `CreateProfile`（`preview.SetProfile` 未判空）。新代码已空守卫+异常捕获，归零复跑未复现，非存活缺陷。
+
+# v0.3.0 增量（算法通用化 + 碰撞同步 + 桥重做，2026-11-02，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 26 | **任意边界切穿窗户不拉伸**：窗户 quad 跨 y=0.5，边界恰切窗户正中，段 ×3 复制 | `eval_file VerifyGeneral.cs` G1 | `verts=96 boundsY=[0.00,2.00](期望[0,2]) uvKept=True`——切口插值，UV 全在 [0,1] |
+| 27 | 整段复制（无切割）窗户仍标准 | G2 | `boundsY=[0,5] verts=120` |
+| 28 | **BoxCollider 同步**：拉伸 ×4 后碰撞盒与视觉同尺寸 | G3 | `box.size=(3.00,4.00,0.10) syncedY=4.00(期望4) center=(1.5,2,0.05)` |
+| 29 | 桥原型任意边界（切穿桥墩中部）确定性分片 | G4 | `boundsX=[-18.6,2.2] verts=2340`，无异常 |
+| 30 | **MeshCollider 同步+还原**：重建后 mc.sharedMesh=预览网格；Restore 回源 | `eval_file VerifyCollider.cs` G5 | `ok=True lenX=28.16(28.16) mcSynced=True mcRestored=True` |
+| 31 | 教学链路端到端（用户同款步骤：InitFromMesh→插缝→标 Repeatable→×4） | G6 + BridgeShots 现场实测 | `ok=True reason=[(none)] lenX=28.16 verts=3096`；现场截图 `lenX=25.16 box.size.x=25.16`，还原后 `lenBack=18.56 boxBack=18.56 instNow=True(组件已删)` |
+| 32 | 旧用例回归不退化（快速路径逐顶点数与 0.1.x 一致）+ 体验场景三物体 | Recheck R1/R2/R3 | `R1 verts=72 maxY=12`；`R2 verts=18 恒等`；`楼A 492/10.0 楼B 264/7.0 桥裸模型1900 noComp=True` |
+| 33 | 桥重做外观：引桥节段（箱梁+柱墩+盖梁+护栏）+主跨拱肋+桥台，跨间纯空气缝 | 相机截图目视 | 截图确认结构成立；生成器绕序断言 0 异常（`windingBad=0`，1900 顶点/636 三角形） |
+| 34 | 桥在场景为裸原型，**无组件、无 Profile 资产** | 场景层级 + AssetDatabase 枚举 | `桥_原型 StretchInstance==null`；`bridge profiles remaining=0` |
+| 35 | 面板端点对齐缺陷修复（不再从结果网格取包围盒） | 代码路径审阅 + 楼A 资产复原回归 | 楼A profile 与 HEAD 零 diff；DrawStructure 入参改为源网格 |
+| 36 | §1.6b 门禁终态 | `console clear` → 重跑 G1-G7/R1-R3 → `console status` | `errors=0 warnings=0 compilationFailed=False`；runtime-purity/assets-layout 绿灯 |
+
+## 本轮验收中真实抓出/修复的缺陷
+- **端点对齐读结果网格**（用户现场资产曾被写歪：楼A 末边界 3→8）：面板 `DrawStructure` 原从 `MeshFilter.sharedMesh` 取包围盒，编辑态即拉伸结果，点一次"端点对齐"就把结果尺寸写回边界。锁死为实例缓存源网格（`Inst.OriginalMesh`），楼A 资产已复原并回归验证。
+- **轴/包围盒不同源静默失败**：`InitFromBounds` 不设轴，误配轴时 Validate 正确拦停但用户难自查——新增 `InitFromMesh(mesh, axis)` 一体初始化，菜单与教学路径同走。
+- **MeshCollider 采集时序**：原只在 SetProfile 采集一次，重开场景后 OnEnable 直接 Rebuild 会漏同步——改为每次 Rebuild 前以源网格为锚点重采集。

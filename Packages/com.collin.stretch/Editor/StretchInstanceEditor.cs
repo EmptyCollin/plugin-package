@@ -82,7 +82,7 @@ namespace Collin.Stretch.EditorTooling
                         Inst.SyncRepeats();
                         EditorUtility.SetDirty(Inst);
                         Rebuild();
-                    }, Inst.Filter, out _);
+                    }, Inst.OriginalMesh, out _);
 
                     EditorGUILayout.LabelField("资产：" + AssetDatabase.GetAssetPath(profile),
                         EditorStyles.miniLabel);
@@ -152,27 +152,30 @@ namespace Collin.Stretch.EditorTooling
     /// <summary>结构编辑 UI（实例面板与 Profile 资产面板共用，避免两套真源）。</summary>
     public static class StretchStructUI
     {
-        /// <summary>绘制边界/段类型编辑。返回是否改动过结构。</summary>
+        /// <summary>绘制边界/段类型编辑。sourceMesh 必须是**源网格**（非预览结果），端点对齐才正确。</summary>
         public static bool DrawStructure(StretchProfile profile, System.Action onChanged,
-            MeshFilter refFilter, out bool structureChanged)
+            Mesh sourceMesh, out bool structureChanged)
         {
             structureChanged = false;
-            float min = profile.sliceBounds.Count > 0 ? profile.sliceBounds[0] : 0f;
-            float max = profile.sliceBounds.Count > 0 ? profile.sliceBounds[profile.sliceBounds.Count - 1] : 1f;
-            var src = refFilter != null ? refFilter.sharedMesh : null;
+            // src 必须是**源网格**（实例缓存），否则端点对齐会把拉伸结果尺寸误写回边界（历史缺陷）
+            var src = sourceMesh;
 
             if (profile.sliceBounds.Count < 2)
             {
                 if (GUILayout.Button("按当前选中模型初始化边界"))
                 {
-                    var go = Selection.activeGameObject;
-                    var f = go != null ? go.GetComponent<MeshFilter>() : null;
-                    if (f != null && f.sharedMesh != null)
+                    var initSrc = src;
+                    if (initSrc == null)
+                    {
+                        var go = Selection.activeGameObject;
+                        initSrc = go != null ? go.GetComponent<MeshFilter>().sharedMesh : null;
+                    }
+                    if (initSrc != null)
                     {
                         Undo.RecordObject(profile, "Stretch Init");
                         profile.InitFromBounds(
-                            StretchMeshBuilder.BoundsMin(f.sharedMesh, profile.axis),
-                            StretchMeshBuilder.BoundsMax(f.sharedMesh, profile.axis));
+                            StretchMeshBuilder.BoundsMin(initSrc, profile.axis),
+                            StretchMeshBuilder.BoundsMax(initSrc, profile.axis));
                         EditorUtility.SetDirty(profile);
                         onChanged?.Invoke();
                         structureChanged = true;
@@ -209,6 +212,34 @@ namespace Collin.Stretch.EditorTooling
                 EditorGUILayout.EndHorizontal();
             }
 
+            // 边界数值精调：中间边界可直接输入（夹在相邻之间）；首尾由"端点对齐"管
+            EditorGUILayout.LabelField("边界精调（局部坐标，中间边界可改）", EditorStyles.miniLabel);
+            bool dirtyBound = false;
+            EditorGUILayout.BeginHorizontal();
+            for (int i = 0; i < profile.sliceBounds.Count; i++)
+            {
+                var prev = GUI.enabled;
+                GUI.enabled = i > 0 && i < profile.sliceBounds.Count - 1;
+                float cur = profile.sliceBounds[i];
+                float lo = i > 0 ? profile.sliceBounds[i - 1] + 1e-4f : cur;
+                float hi = i < profile.sliceBounds.Count - 1 ? profile.sliceBounds[i + 1] - 1e-4f : cur;
+                float nv = EditorGUILayout.FloatField(cur, GUILayout.Width(56));
+                if (!Mathf.Approximately(nv, cur))
+                {
+                    profile.sliceBounds[i] = Mathf.Clamp(nv, lo, hi);
+                    dirtyBound = true;
+                }
+                GUI.enabled = prev;
+            }
+            EditorGUILayout.EndHorizontal();
+            if (dirtyBound)
+            {
+                Undo.RecordObject(profile, "Stretch Edit Bounds");
+                EditorUtility.SetDirty(profile);
+                onChanged?.Invoke();
+                structureChanged = true;
+            }
+
             // 插入边界（按源包围盒归一化百分比）
             EditorGUILayout.BeginHorizontal();
             int pct = EditorGUILayout.IntSlider("插入边界 %", 50, 5, 95);
@@ -242,7 +273,6 @@ namespace Collin.Stretch.EditorTooling
                 onChanged?.Invoke();
                 structureChanged = true;
             }
-            _ = min; _ = max;
             return structureChanged;
         }
     }

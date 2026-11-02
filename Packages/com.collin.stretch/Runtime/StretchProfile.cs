@@ -131,6 +131,14 @@ namespace Collin.Stretch
             segmentTypes.Add(SegmentType.Fixed);
         }
 
+        /// <summary>轴+边界一体初始化（防"轴与包围盒不同源"脚坑：Validate 会用同一轴复查）。</summary>
+        public void InitFromMesh(UnityEngine.Mesh mesh, StretchAxis axis0)
+        {
+            axis = axis0;
+            int i = (int)axis0;
+            InitFromBounds(mesh.bounds.min[i], mesh.bounds.max[i]);
+        }
+
         /// <summary>在 coord 处插入边界（若合法），返回段索引或 -1。</summary>
         public int InsertBound(float coord)
         {
