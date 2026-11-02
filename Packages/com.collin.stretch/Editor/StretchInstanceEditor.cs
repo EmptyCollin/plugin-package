@@ -54,8 +54,11 @@ namespace Collin.Stretch.EditorTooling
                 doAxis = EditorGUI.EndChangeCheck();
             }
 
-            // ── 边界：每条独立一行 ──
-            EditorGUILayout.LabelField("边界（局部坐标）", EditorStyles.boldLabel);
+            // ── 边界：每条独立一行（滑条+数值） ──
+            EditorGUILayout.LabelField("边界（局部坐标，拖动滑条或输入数值）", EditorStyles.boldLabel);
+            float bMin = src != null ? StretchMeshBuilder.BoundsMin(src, profile.axis) : 0f;
+            float bMax = src != null ? StretchMeshBuilder.BoundsMax(src, profile.axis) : 1f;
+            float bSpan = bMax - bMin;
             int n = profile.sliceBounds.Count;
             for (int i = 0; i < n; i++)
             {
@@ -68,7 +71,24 @@ namespace Collin.Stretch.EditorTooling
                     var prev = GUI.enabled;
                     GUI.enabled = middle;   // 首尾锁定，改动用"端点对齐"
                     EditorGUI.BeginChangeCheck();
-                    float nv = EditorGUILayout.FloatField(newBounds[i]);
+                    float sv = newBounds[i];
+                    if (src != null && bSpan > 1e-6f)
+                    {
+                        // 滑条按源包围盒范围拖动（局部坐标）
+                        sv = EditorGUILayout.Slider(sv, bMin, bMax, GUILayout.MinWidth(80));
+                    }
+                    else
+                    {
+                        sv = EditorGUILayout.FloatField(sv);
+                    }
+                    bool sEdited = EditorGUI.EndChangeCheck();
+                    if (sEdited && !float.IsNaN(sv) && !float.IsInfinity(sv)
+                        && !Mathf.Approximately(sv, newBounds[i]))
+                    {
+                        newBounds[i] = sv; doBounds = true;
+                    }
+                    EditorGUI.BeginChangeCheck();
+                    float nv = EditorGUILayout.FloatField(newBounds[i], GUILayout.Width(70));
                     bool edited = EditorGUI.EndChangeCheck()
                         && !float.IsNaN(nv) && !float.IsInfinity(nv);
                     GUI.enabled = prev;
@@ -109,7 +129,8 @@ namespace Collin.Stretch.EditorTooling
                     var prevG = GUI.enabled;
                     GUI.enabled = repeatable;
                     EditorGUI.BeginChangeCheck();
-                    int rv = Mathf.Max(1, EditorGUILayout.IntField(repeats[i], GUILayout.Width(36)));
+                    int rv = Mathf.Max(1, EditorGUILayout.IntField(repeats[i], GUILayout.Width(34)));
+                    rv = Mathf.Max(1, EditorGUILayout.IntSlider(rv, 1, 32, GUILayout.MinWidth(80)));
                     if (EditorGUI.EndChangeCheck() && rv != repeats[i]) repeatEdits.Add((i, rv));
                     GUI.enabled = prevG;
                     GUILayout.Label(repeatable ? "×复制" : "固定", EditorStyles.miniLabel, GUILayout.Width(38));

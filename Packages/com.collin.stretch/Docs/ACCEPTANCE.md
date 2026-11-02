@@ -110,3 +110,18 @@
 | 50 | 边界每条独立一行 | 代码结构（每条边界一个 `using HorizontalScope`） | 起点/终点灰显锁定、中间行内联删除；用户目视复验 |
 
 注：eval 环境反射调用 `OnInspectorGUI` 必然抛 "You can only call GUI functions from inside OnGUI"（引擎限制，非缺陷），渲染冒烟在该环境不可行，故以静态配平+数据路径断言代证。
+
+# v0.3.4 增量（共享顶点去重 + 滑条，2026-11-02，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 51 | 恒等：全 fixed ×1 输出顶点=源（12，旧版摊平=18） | RegressWeld W2 | `verts=12(源12)` |
+| 52 | 楼 3→12(×10) 共享后 tris/maxY/UV 不变 | W1 | `tris=24 maxY=12.0 uvOk=True verts=48` |
+| 53 | 切穿窗户 UV 仍全 [0,1] | W3 | `verts=36 tris=12 uvOk=True` |
+| 54 | 场景四物体：楼A 328/164tri、楼B 176/88tri、桥源 32326、无组件 | W4 | 全匹配，`noComp=True` |
+| 55 | 桥 ×3 端到端：膨胀率 2.04（旧 3.0+摊平=44万级）、双槽 both>0、Box 14.97=结果长、还原 32326 | W5 | `ok=True src=32326 stretched=65975 ratio=2.04 t0=50880 t1=26280 restored=32326` |
+| 56 | 滑条（边界=源范围 Slider+数值框；倍数 1..32 Slider）；每边界独立成行 | 源码 + editorType 加载 + 编译 | `W6 editorType=OK`；recompile failed=false |
+| 57 | §1.6b 归零 | clear→重跑 W1-W6→console status | `errors=0 warnings=0`；6 OK/0 EX |
+
+## 根因记录（用户质疑 14 万顶点）
+两处叠加：① `pier_long` 合并按三角形摊平（源共享 32326→147600，×4.5）；② Builder 快速路径逐三角形×逐份独立拷贝（再 ×3）。修复=合并保留顶点表+索引重映射；Builder (v,段,份) 共享缓存。三角形数量与几何完全不变，仅去重。

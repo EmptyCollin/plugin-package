@@ -151,6 +151,31 @@ namespace Collin.Stretch
                 idx.Add(vertPool.Count - 1);
             }
 
+            // 共享顶点缓存：未切割三角形的源顶点按 (源索引,段,份) 只写一次，
+            // 消除逐三角形摊平（×3）与复制份重复拷贝（×copy）导致的顶点暴涨。
+            var shared = new Dictionary<long, int>(verts.Length * 2);
+            int EmitShared(int si, int seg, int k, List<int> idx)
+            {
+                long key = ((long)si << 32) | ((long)seg << 16) | (uint)k;
+                if (shared.TryGetValue(key, out int cached))
+                {
+                    idx.Add(cached);
+                    return cached;
+                }
+                var v = MakeV(si);
+                var p = v.p;
+                p[ax] += segOffset[seg] + k * profile.SegmentLength(seg);
+                vertPool.Add(p);
+                uvPool.Add(v.uv);
+                if (hasN) nPool.Add(v.n);
+                if (hasT) tPool.Add(v.t);
+                if (hasC) cPool.Add(v.c);
+                int ni = vertPool.Count - 1;
+                shared[key] = ni;
+                idx.Add(ni);
+                return ni;
+            }
+
             // 逐子网格：材质槽结构原样保留（sub s 的三角形写入结果 sub s）
             for (int sm = 0; sm < subCount; sm++)
             {
@@ -174,11 +199,13 @@ namespace Collin.Stretch
 
                     if (sFirst == sLast)
                     {
-                        // 快速路径：整三角形在一段闭区间内 → 原样输出
+                        // 快速路径：整三角形在一段闭区间内 → 源顶点共享（(v,段,份) 去重，
+                        // 不再逐三角形摊平、不再逐份重复拷贝）
                         for (int k = 0; k < segCopies[sFirst]; k++)
                         {
-                            float off = segOffset[sFirst] + k * profile.SegmentLength(sFirst);
-                            Emit(v0, off, idx, sm); Emit(v1, off, idx, sm); Emit(v2, off, idx, sm);
+                            EmitShared(tris[tri], sFirst, k, idx);
+                            EmitShared(tris[tri + 1], sFirst, k, idx);
+                            EmitShared(tris[tri + 2], sFirst, k, idx);
                         }
                         continue;
                     }
