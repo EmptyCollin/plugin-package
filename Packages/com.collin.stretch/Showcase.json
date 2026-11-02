@@ -2,6 +2,6 @@
   "name": "Collin Stretch 模型拉伸",
   "category": "建模工具",
   "summary": "沿单轴对模型做分段复制式拉伸：固定段刚性平移、可重复段按整数倍复制，UV 按段长取模保证每层窗户标准尺寸。编辑器面板选轴划段 + Scene 辅助线 + 拖拽定倍数。",
-  "video": "",
+  "video": "ShowcaseMedia/stretch_demo.mp4",
   "order": 10
 }

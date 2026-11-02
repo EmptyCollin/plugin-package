@@ -21,3 +21,14 @@
 - **预览时序缺陷**：`AddComponent<StretchPreview>()` 的 OnEnable 早于外部赋 profile，预览静默空跑（S1 首轮 `maxY=3` 暴露）。修复：新增 `SetProfile()` 显式装配入口，CreateCommand 与 S1 均改走它；复跑 `maxY=12 pass=True`。
 - **MeshFilter.mesh 编辑期泄漏**：S1 读 `filter.mesh` 触发 Unity 泄漏告警 error（门禁抓到）。修复：Preview/Repeater 统一 `sharedMesh` 读写；S1 同步修正。
 - **Builder 日志级别**：参数中间态原用 LogError 会污染门禁。修复：Build 静默返回 null，日志归调用方（Preview 警告/Bake 返回原因/面板显示）。
+
+# v0.1.x 增量（体验场景 + 用户反馈修复，2026-11-02，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 12 | 包内 Sample 体验场景：3 楼 1 桥（楼A 3层→10层、楼B 5层→7层复合单元、楼C 原样对照、桥桥面×5） | `eval_file` 建场景 → `SaveScene` → 重开读几何 | 重开后 `楼A maxY=10.0 v=492`、`楼B maxY=7.0 v=264`、`桥 maxX=3.98 v=234`，与手算一致 |
+| 13 | 用户反馈"外围看有部分面片缺失，从内侧看里面是有的"——定位为**示例 OBJ 生成器的面绕序与声明法线不自洽**（非插件缺陷：Builder 原样保留三角形绕序） | 离线右手定则 assert + Unity 侧 `Dot(法线, 面心-体心)` 朝外断言 | 修复后 `楼A 52/52 朝外`、`楼B 64/64`、`楼C 52/52`；桥 42 朝外 + 12 为塔-桥面贴合内侧面（判据对多箱组合体误伤，目视无缺面） |
+| 14 | 预览网格不再污染场景文件：保存时还原、保存后重建，重开由 `[ExecuteAlways]` 自动重建 | `MarkSceneDirty`→`SaveScene`（触发 StretchSaveHook）→`OpenScene` 读几何 + 场景文本扫描 | 重开几何与保存前一致；`sceneFileMissingCheck=True`（无 missing/instanceID:0 网格引用），场景文件 23KB |
+| 15 | 桥贴边面误复制（用户截图"栅栏"现象）：塔壁三角形重心恰落段边界 → 被 repeatable 段复制 | 逐段三角形计数诊断 `trisPerSeg=[18\|24\|18]`（塔应 12）→ 边界内缩 0.002 | 修复后 `verts=234`（78 三角形 = 24+30+24），目视截图桥面连续、塔壁不再成栅栏 |
+| 16 | 展板消费包内演示视频（§0 纠正语义：展板只引用视频，不引用插件场景/代码） | `ShowcaseRuntime.Load()` + `ResolveVideoPath()` | `entries=2 hasStretch=True video=[ShowcaseMedia/stretch_demo.mp4] resolved=EXISTS` |
+| 17 | §1.6b 门禁终态 | `console clear` → 重跑 T1-T3 → `console status` | `errors=0 warnings=0 compilationFailed=False`；校验器 assets-layout 绿灯 |

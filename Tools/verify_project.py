@@ -200,6 +200,36 @@ def check_assets_no_package():
                 "%s 出现在 Assets/ 下，插件包必须放 Packages/（§0）" % rel(full))
 
 
+def check_assets_layout():
+    """AGENTS.md §0：展板=Assets/Showcase 公共接入口；插件代码与演示场景归包。"""
+    assets = os.path.join(ROOT, "Assets")
+    if not os.path.isdir(assets):
+        return
+    allowed_dirs = {"Showcase", "Scenes", "Settings", "Editor", "TutorialInfo", "Resources"}
+    for name in os.listdir(assets):
+        full = os.path.join(assets, name)
+        if os.path.isdir(full) and name not in allowed_dirs:
+            add("FAIL", "assets-layout",
+                "Assets/%s 不属于允许清单——插件内容须进包（§0）" % name)
+    # Assets/ 内场景仅允许展板与模板默认
+    for dirpath, _dirnames, filenames in os.walk(assets):
+        for fn in filenames:
+            if fn.endswith(".unity"):
+                rp = os.path.relpath(os.path.join(dirpath, fn), ROOT).replace("\\", "/")
+                if rp not in ("Assets/Scenes/SampleScene.unity",
+                              "Assets/Showcase/Showcase.unity"):
+                    add("FAIL", "assets-layout",
+                        "%s 应放展板入口或模板默认位置（§0）" % rp)
+    # 展板只消费包内 Showcase.json 的元数据与演示视频；feature 包应有包内 Sample/
+    for name, path in unity_packages():
+        if name.endswith(".core"):
+            continue
+        if not os.path.isdir(os.path.join(path, "Sample")):
+            add("WARN", "pkg-sample",
+                "%s 无 Sample/ 试用演示目录——showcase 本质是给用户试用（§0）" % name)
+    add("PASS", "assets-layout", "Assets/ 布局合规（展板公共入口，插件演示归包）")
+
+
 def check_locks():
     if not os.path.isdir(LOCK_DIR):
         add("PASS", "locks", "无活动锁")
@@ -313,6 +343,7 @@ def main():
     check_manifest(packages)
     check_package_layout(packages)
     check_assets_no_package()
+    check_assets_layout()
     check_locks()
     check_hygiene()
     check_console()

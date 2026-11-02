@@ -5,8 +5,11 @@ namespace Collin.Stretch
     /// <summary>
     /// 编辑期预览开关（DESIGN D-2）：把 Profile 的结果应用到自身 MeshFilter，
     /// 但**只写内存网格**（HideFlags.DontSave），不生成磁盘资产；关闭时还原原始网格。
-    /// 由 Editor 面板开关与刷新，也可被其他工具调用。域重载后 OnEnable 自动重建，幂等。
+    /// [ExecuteAlways]：场景加载/域重载时 OnEnable 自动重建——磁盘上的场景始终只存源网格
+    /// （落盘由 Editor 侧 StretchSaveHook 守卫），打开即见拉伸结果。
+    /// 由 Editor 面板开关与刷新，也可被其他工具调用。幂等。
     /// </summary>
+    [ExecuteAlways]
     [DisallowMultipleComponent]
     public class StretchPreview : MonoBehaviour
     {
