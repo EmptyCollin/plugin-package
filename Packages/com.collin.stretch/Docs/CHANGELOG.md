@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-02
+### Changed
+- 演示视频换为**真实功能录屏**（程序化逐帧渲染，非人工操作）：396 帧@24fps/16.5s，
+  五段=楼群广角→楼A 1→10 层生长→摇镜→栈桥 1→5 跨延长→拉远收尾；h264+aac 960×540，
+  替换 0.3.x 的文字占位视频（`ShowcaseMedia/stretch_demo.mp4`，LFS）。
+
 ## [0.4.0] - 2026-11-02
 ### Added（DESIGN §8.2 P1–P4 全量落地）
 - **P1 `StretchMeshCache`**：结果网格按 (源网格, Profile, repeats) 共享（引用计数+LRU64，

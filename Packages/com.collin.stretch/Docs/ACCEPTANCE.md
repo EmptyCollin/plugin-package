@@ -153,3 +153,14 @@
 | 68 | 缓存路径回归 + 归零 | 同上 + console status | `R-B1 tris=24 maxY=12 HIT`；`R-B2 恒等=源12`；`GATE errors=0 warnings=0` |
 
 已知限制见 DESIGN §8.4（无阴影/无深度预通道等，BRG 为 P3.1 升级位）。
+
+# v0.4.1 增量（真实演示视频接入展板，2026-11-02，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 69 | 视频产物有效 | ffprobe | h264+aac、16.5s、2.1MB、960×540；396 帧全部渲染成功（进度标记 A-E 齐） |
+| 70 | 展板条目解析新视频 | `ShowcaseRuntime.ResolveVideoPath` | `video=[ShowcaseMedia/stretch_demo.mp4] resolved=EXISTS fileSize=2118484`（重灌后 2131282） |
+| 71 | 展板交互链到播放器 | Play 模式反射点击 | `clickedStretch=1`、`title=[Collin Stretch 模型拉伸]`、`VideoPlayer.url=SET` |
+| 72 | 最终解码起播 | —— | **未在本环境验证**：编辑器后台播放循环不推进帧（FrameCount 恒 2，pause 唤醒无效），异步 prepare 无法完成（无 error 回调）。需用户前台编辑器点「播放演示」目视确认 |
+
+渲染方式：`Camera.Render`+`ReadPixels` 离屏抓帧（冒烟先行验证管线），楼A 生长/桥延长由临时 `StretchInstance` 逐帧驱动（桥实例为内存态，未建资产、场景未保存），ffmpeg 合成。
