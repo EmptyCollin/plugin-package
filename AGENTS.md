@@ -5,7 +5,7 @@
 
 ## 0. 项目定位
 - Unity 6（6000.6.7f1）工程，产品形态：**一个纯 UI 展示场景（展板）+ 若干相互独立的插件包**。
-- 插件包 = 最小开发 / 文档 / 交付 / 加锁单元，一律为内嵌包：`Packages/com.<作者>.<插件短名>/`。
+- 插件包 = 最小开发 / 文档 / 交付 / 加锁单元，一律为内嵌包：`Packages/com.collin.<插件短名>/`。
 - 禁止把插件代码放 `Assets/`（`Assets/` 只留展板场景与全局设置）。
 
 ## 1. 会话进入协议（必须按序，不得跳过）
@@ -37,8 +37,8 @@
 
 ## 5. 依赖规则
 - 依赖方向**严格单向：feature → core**。feature 包之间禁止引用（asmdef 层面切断，`validateReferences: true` 不得关）。
-- 跨包通信只走 `com.<作者>.core` 的接口 / 事件通道 / ScriptableObject 信号。
-- `com.<作者>.core` 建立后，任何新 feature 包必须声明依赖它。
+- 跨包通信只走 `com.collin.core` 的接口 / 事件通道 / ScriptableObject 信号。
+- `com.collin.core` 建立后，任何新 feature 包必须声明依赖它。
 - 编辑器指令集不做静态假设：先 `unity list` 运行时发现。
 
 ## 6. 展板（纯 UI，与代码解耦）

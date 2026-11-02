@@ -1,0 +1,17 @@
+{
+  "name": "com.collin.core.Editor",
+  "rootNamespace": "Collin.Core.EditorTooling",
+  "references": [
+    "com.collin.core"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "validateReferences": true
+}

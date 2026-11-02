@@ -1,0 +1,7 @@
+{
+  "name": "Collin Core",
+  "category": "core",
+  "summary": "跨包基础设施：事件通道、服务注册表、ScriptableObject 信号；展板条目发现与依赖拓扑排序。所有插件包的公共依赖。",
+  "video": "",
+  "order": 0
+}

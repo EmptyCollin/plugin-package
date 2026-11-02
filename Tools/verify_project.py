@@ -98,14 +98,14 @@ def check_manifest(packages):
         else:
             add("PASS", "dep-pin", "%s@%s" % (name, got))
 
-    declared = {name for name, _ in packages}
-    for name in deps:
-        if name.startswith("file:") or name in declared:
-            continue
-        local = os.path.join(PKG_DIR, name)
-        if os.path.isdir(local):
-            add("FAIL", "manifest-sync",
-                "%s 目录存在但未在 manifest 声明（两份真源漂移）" % name)
+    for name, src in deps.items():
+        if isinstance(src, str) and src.startswith("file:"):
+            target = os.path.normpath(os.path.join(PKG_DIR, src[5:]))
+            if not os.path.isdir(target):
+                add("FAIL", "manifest-sync",
+                    "manifest 声明 %s -> %s，但目录不存在（悬空引用）" % (name, src))
+    add("PASS", "manifest-sync",
+        "manifest 的 file: 引用均有效（内嵌包由 Unity 自动发现，无需在 manifest 声明）")
     return deps
 
 

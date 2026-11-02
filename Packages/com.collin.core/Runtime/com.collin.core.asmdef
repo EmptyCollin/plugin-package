@@ -1,0 +1,15 @@
+{
+  "name": "com.collin.core",
+  "rootNamespace": "Collin.Core",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "validateReferences": true
+}
