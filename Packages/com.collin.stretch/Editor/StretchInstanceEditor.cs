@@ -151,7 +151,7 @@ namespace Collin.Stretch.EditorTooling
             string reason = Inst.FailReason();
             if (reason != null)
             {
-                EditorGUILayout.HelpBox(reason + "（修复前保持原网格）", MessageType.Warning);
+                EditorGUILayout.HelpBox(reason + "（保持原网格；点「端点对齐」或重选拉伸轴可自动修复边界）", MessageType.Warning);
             }
 
             EditorGUILayout.EndScrollView();
@@ -189,7 +189,23 @@ namespace Collin.Stretch.EditorTooling
 
             Undo.RecordObjects(new Object[] { profile, Inst }, "Stretch Edit");
 
-            if (doAxis) profile.axis = newAxis;
+            if (doAxis)
+            {
+                var oldAxis = profile.axis;
+                profile.axis = newAxis;
+                // 边界是轴坐标：切轴后首尾重设新轴包围盒端点，中间 clamp 进新范围（下方 NormalizeBounds 统一重排）
+                if (src != null && oldAxis != newAxis && profile.sliceBounds.Count >= 2)
+                {
+                    float nMin = StretchMeshBuilder.BoundsMin(src, newAxis);
+                    float nMax = StretchMeshBuilder.BoundsMax(src, newAxis);
+                    profile.sliceBounds[0] = nMin;
+                    profile.sliceBounds[profile.sliceBounds.Count - 1] = nMax;
+                    for (int i = 1; i < profile.sliceBounds.Count - 1; i++)
+                    {
+                        profile.sliceBounds[i] = Mathf.Clamp(profile.sliceBounds[i], nMin + 1e-4f, nMax - 1e-4f);
+                    }
+                }
+            }
 
             if (doBounds)
             {
@@ -223,6 +239,7 @@ namespace Collin.Stretch.EditorTooling
                 profile.sliceBounds[profile.sliceBounds.Count - 1] = StretchMeshBuilder.BoundsMax(src, profile.axis);
             }
 
+            Inst.NormalizeBounds();   // 越界/乱序统一重排（0.3.2 语义，0.3.3 重写时丢失，现补回）
             Inst.SyncRepeats();
             var reps = Inst.repeats;
             foreach (var e in repeatEdits)
