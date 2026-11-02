@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-02
+### Changed（破坏性：数据归属重构，落实 AGENTS.md §0.1 三原则）
+- **倍数从 Profile 迁到实例**：`StretchProfile` 只存共享结构（轴/边界/段类型 `segmentTypes`），
+  每段倍数 `repeats[]` 改由场景实例 `StretchInstance` 序列化——同一 Profile 现可被多实例以不同倍数复用（原则2 MVC 解耦）；
+- 主面板改建在**场景实例 Inspector**（`StretchInstanceEditor`，即时预览+辅助线唯一入口），
+  Profile 资产面板降为只读摘要+实例定位（原则1 所见即所得，消除两套编辑真源与辅助线双绘）；
+- `Build`/烘焙签名改为 `(source, profile, repeats)`，新增倍数数组长度校验。
+### Removed
+- 旧 `StretchPreview` / `StretchRepeater` 组件合并为单一 `StretchInstance`（编辑/运行同一条构建路径，原则3）。
+### Fixed
+- `Tools/Collin/Stretch 新建拉伸参数` 在无 Mesh/空对象触发裸 NullReferenceException——改为空守卫+异常捕获弹窗（§1.6b 门禁友好）；
+- 校验器新增 `runtime-purity`（Runtime 禁引用 UnityEditor，强制原则3）。
+
 ## [0.1.1] - 2026-11-02
 ### Added
 - 包内 `Sample/TestPlayground.unity` 体验场景：3 楼 1 桥（3层→10层 / 5层→7层复合单元 / 原样对照 / 桥面×5），

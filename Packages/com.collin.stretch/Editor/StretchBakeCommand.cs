@@ -4,8 +4,8 @@ using UnityEngine;
 namespace Collin.Stretch.EditorTooling
 {
     /// <summary>
-    /// 烘焙定稿：把当前预览的拉伸结果写成磁盘网格子资产（挂在 Profile 资产下），
-    /// 供不挂组件的普通流程使用（导出/静态场景/其他工具消费）。
+    /// 烘焙定稿：把"源结构 + 实例倍数"的结果持久化为 Profile 子资产（§0.1 原则2：
+    /// 烘焙时把当前实例的倍数固化进网格，故导出物无需依赖场景组件）。
     /// 菜单：Tools/Collin/Stretch 拉伸/烘焙选中物体的结果。
     /// </summary>
     public static class StretchBakeCommand
@@ -16,7 +16,7 @@ namespace Collin.Stretch.EditorTooling
             var go = Selection.activeGameObject;
             if (go == null)
             {
-                EditorUtility.DisplayDialog("Collin Stretch", "请先选中含 StretchPreview 或 StretchRepeater 的物体。", "好");
+                EditorUtility.DisplayDialog("Collin Stretch", "请先选中含 StretchInstance 的物体。", "好");
                 return;
             }
             var mesh = BakeOne(go, out var err);
@@ -39,36 +39,29 @@ namespace Collin.Stretch.EditorTooling
                 error = "选中物体没有源网格";
                 return null;
             }
-            var preview = go.GetComponent<StretchPreview>();
-            var repeater = go.GetComponent<StretchRepeater>();
-            var profile = preview != null && preview.profile != null
-                ? preview.profile
-                : (repeater != null ? repeater.profile : null);
-            if (profile == null)
+            var inst = go.GetComponent<StretchInstance>();
+            if (inst == null || inst.profile == null)
             {
-                error = "物体上没有 StretchPreview/StretchRepeater，或其 profile 为空";
+                error = "物体上没有 StretchInstance，或其 profile 为空";
                 return null;
             }
 
-            // 源网格必须是未经拉伸的原始网格
-            var src = preview != null && preview.OriginalMesh != null ? preview.OriginalMesh : filter.sharedMesh;
-
-            string err2 = profile.Validate(
-                StretchMeshBuilder.BoundsMin(src, profile.axis),
-                StretchMeshBuilder.BoundsMax(src, profile.axis));
-            if (err2 != null)
+            var src = inst.OriginalMesh != null ? inst.OriginalMesh : filter.sharedMesh;
+            var repeats = inst.EffectiveRepeats();
+            string reason = StretchMeshBuilder.FailReason(src, inst.profile, repeats);
+            if (reason != null)
             {
-                error = "参数校验未通过: " + err2;
+                error = reason;
                 return null;
             }
-            var built = StretchMeshBuilder.Build(src, profile);
+            var built = StretchMeshBuilder.Build(src, inst.profile, repeats);
             if (built == null)
             {
                 error = "网格构建失败（源不可读/缺 UV0）";
                 return null;
             }
 
-            string path = AssetDatabase.GetAssetPath(profile);
+            string path = AssetDatabase.GetAssetPath(inst.profile);
             if (string.IsNullOrEmpty(path))
             {
                 Object.DestroyImmediate(built);
@@ -76,7 +69,6 @@ namespace Collin.Stretch.EditorTooling
                 return null;
             }
 
-            // 重复烘焙：先清掉旧同名子资产
             string assetName = go.name + "_baked";
             foreach (var sub in AssetDatabase.LoadAllAssetsAtPath(path))
             {
@@ -86,9 +78,8 @@ namespace Collin.Stretch.EditorTooling
                 }
             }
 
-            // built 是场景外临时对象，直接 AddObjectToAsset 持久化
             built.name = assetName;
-            AssetDatabase.AddObjectToAsset(built, profile);
+            AssetDatabase.AddObjectToAsset(built, inst.profile);
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
 
@@ -101,7 +92,6 @@ namespace Collin.Stretch.EditorTooling
             return persisted;
         }
 
-        /// <summary>在 Profile 资产文件里找同名烘焙网格。</summary>
         public static Mesh FindBakedInAsset(string profilePath, string assetName)
         {
             foreach (var sub in AssetDatabase.LoadAllAssetsAtPath(profilePath))

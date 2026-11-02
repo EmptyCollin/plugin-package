@@ -1,6 +1,6 @@
 {
   "name": "com.collin.stretch",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "displayName": "Collin Stretch 模型拉伸",
   "description": "轻量分段复制式 3D 拉伸：选单轴、划固定段与可重复段、按整数倍复制可变区域。UV 按段长取模，复制单元贴图与原件一致（无巨型窗户）。适合楼层、桥面、栏杆等模块化延展。",
   "unity": "6000.6",

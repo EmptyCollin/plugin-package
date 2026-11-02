@@ -4,13 +4,10 @@ using UnityEngine;
 namespace Collin.Stretch.EditorTooling
 {
     /// <summary>
-    /// Scene 视图辅助线（DESIGN §2，v0.1 范围）：
-    /// - slice 分界框线（青色）：垂直于拉伸轴，落在**拉伸后**的实际位置；
-    /// - 固定段框线（灰）/ 可重复段框线（绿）：段起止各一条，绿段标注 xN；
-    /// - 周期等分线（黄色）：repeatable 段复制体的内部边界在每个副本重复出现，
-    ///   "3 层楼的段里能数清 3 层"。
-    /// 位置计算与 StretchMeshBuilder 完全同源（OffsetFor），保证线与几何严丝合缝。
-    /// 拖拽把手推迟到 v0.2（D-4 修订），v0.1 倍数走面板整数输入。
+    /// Scene 视图辅助线（DESIGN §2）：
+    /// - 段框线（绿=repeatable 结果尾端 / 灰=fixed）：落在拉伸后实际位置；
+    /// - slice 边界框线（青）+ 周期等分线（黄）：复制体内每层可数；
+    /// - 每个复制体中心标注 xN。位置计算与 StretchMeshBuilder 同源（OffsetFor）。
     /// </summary>
     public static class StretchSceneHandles
     {
@@ -21,18 +18,18 @@ namespace Collin.Stretch.EditorTooling
 
         public static bool showGuides = true;
 
-        public static void Draw(StretchPreview preview, StretchProfile profile, Mesh source)
+        public static void Draw(StretchInstance inst, StretchProfile profile, Mesh source, Mesh result)
         {
-            if (!showGuides || preview == null || profile == null || source == null) return;
-
-            var tr = preview.transform;
+            if (!showGuides || inst == null || profile == null || source == null) return;
+            var repeats = inst.EffectiveRepeats();
+            var tr = inst.transform;
             var b = source.bounds;
             int ax = (int)profile.axis;
+
             Vector3 perpA, perpB;
             if (ax == 0) { perpA = Vector3.up; perpB = Vector3.forward; }
             else if (ax == 1) { perpA = Vector3.right; perpB = Vector3.forward; }
             else { perpA = Vector3.right; perpB = Vector3.up; }
-            // perpA 对应轴 = (ax+1)%3 分量，perpB 对应 (ax+2)%3 分量
             float halfA = b.size[(ax + 1) % 3] * 0.5f + 0.05f;
             float halfB = b.size[(ax + 2) % 3] * 0.5f + 0.05f;
 
@@ -43,55 +40,50 @@ namespace Collin.Stretch.EditorTooling
                 return tr.TransformPoint(c);
             }
 
-            // 段框线与标签
-            for (int i = 0; i < profile.segments.Count; i++)
+            for (int i = 0; i < profile.segmentTypes.Count; i++)
             {
                 float lo = profile.sliceBounds[i];
                 float hi = profile.sliceBounds[i + 1];
-                var seg = profile.segments[i];
-                bool repeatable = seg.type == SegmentType.Repeatable;
-                float offset = profile.OffsetFor(i, 0);
+                bool repeatable = profile.TypeAt(i) == SegmentType.Repeatable;
+                int rep = repeatable ? StretchProfile.RepeatAt(repeats, i) : 1;
+                float offset = profile.OffsetFor(i, 0, repeats);
 
                 Handles.color = repeatable ? RepeatColor : FixedColor;
                 DrawRect(PlaneCenter(lo, offset), perpA * halfA, perpB * halfB);
-                float tail = hi + (repeatable ? (Mathf.Max(1, seg.repeat) - 1) * (hi - lo) : 0f);
+                float tail = hi + (rep - 1) * (hi - lo);
                 DrawRect(PlaneCenter(tail, offset), perpA * halfA, perpB * halfB);
 
-                if (repeatable)
+                if (repeatable && rep > 1)
                 {
-                    var midPos = PlaneCenter((lo + tail) * 0.5f, offset);
-                    Handles.Label(midPos + perpA * halfA,
-                        $"repeatable x{Mathf.Max(1, seg.repeat)}",
-                        new GUIStyle(GUI.skin.label)
-                        {
-                            normal = { textColor = RepeatColor },
-                            fontSize = 12,
-                            fontStyle = FontStyle.Bold,
-                        });
+                    var midPos = PlaneCenter((lo + tail) * 0.5f, offset) + perpA * halfA;
+                    Handles.Label(midPos, $"x{rep}", new GUIStyle(GUI.skin.label)
+                    {
+                        normal = { textColor = RepeatColor },
+                        fontSize = 12,
+                        fontStyle = FontStyle.Bold,
+                    });
                 }
             }
 
-            // slice 边界（中间边界）在结果空间逐副本重复绘制 → 周期感可视化
+            // 边界与周期线：段内细分在每个复制体重复
             for (int j = 1; j < profile.sliceBounds.Count - 1; j++)
             {
                 float c = profile.sliceBounds[j];
                 int segIdx = profile.SegmentIndexAt(c);
                 if (segIdx < 0) continue;
-                float offset = profile.OffsetFor(segIdx, 0);
-                var seg = profile.segments[segIdx];
-                bool repeatable = seg.type == SegmentType.Repeatable;
+                var segType = profile.TypeAt(segIdx);
+                float offset = profile.OffsetFor(segIdx, 0, repeats);
+                float lo = profile.sliceBounds[segIdx];
+                float hi = profile.sliceBounds[segIdx + 1];
 
                 Handles.color = BoundColor;
                 DrawRect(PlaneCenter(c, offset), perpA * halfA, perpB * halfB);
 
-                if (repeatable)
+                if (segType == SegmentType.Repeatable)
                 {
-                    int repeats = Mathf.Max(1, seg.repeat);
-                    float lo = profile.sliceBounds[segIdx];
-                    float hi = profile.sliceBounds[segIdx + 1];
-                    // 该边界在复制体 1..repeats-1 中的位置
+                    int rep = StretchProfile.RepeatAt(repeats, segIdx);
                     Handles.color = PeriodColor;
-                    for (int k = 1; k < repeats; k++)
+                    for (int k = 1; k < rep; k++)
                     {
                         DrawRect(PlaneCenter(c, offset + k * (hi - lo)),
                             perpA * halfA * 0.85f, perpB * halfB * 0.85f);

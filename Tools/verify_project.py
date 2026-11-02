@@ -272,6 +272,31 @@ def check_hygiene():
         add("PASS", "hygiene", "忽略目录未被跟踪")
 
 
+def check_runtime_purity():
+    """AGENTS.md §0.1 原则3：Runtime 程序集禁止引用 UnityEditor。"""
+    offenders = []
+    for name, path in unity_packages():
+        rt = os.path.join(path, "Runtime")
+        if not os.path.isdir(rt):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(rt):
+            for fn in filenames:
+                if not fn.endswith(".cs"):
+                    continue
+                fp = os.path.join(dirpath, fn)
+                try:
+                    text = open(fp, encoding="utf-8-sig", errors="ignore").read()
+                except Exception:
+                    continue
+                if re.search(r"^\s*using\s+UnityEditor\b", text, re.M):
+                    offenders.append(rel(fp))
+    if offenders:
+        add("FAIL", "runtime-purity",
+            "Runtime 源码引用 UnityEditor（§0.1 原则3）: " + ", ".join(offenders[:4]))
+    else:
+        add("PASS", "runtime-purity", "Runtime 程序集无 UnityEditor 依赖")
+
+
 def check_console():
     """AGENTS.md §1.6b 交锁门禁：控制台 error/warning 归零（豁免见 §1.8）。"""
     allowlist_path = os.path.join(ROOT, "Tools", "console_allowlist.json")
@@ -344,6 +369,7 @@ def main():
     check_package_layout(packages)
     check_assets_no_package()
     check_assets_layout()
+    check_runtime_purity()
     check_locks()
     check_hygiene()
     check_console()

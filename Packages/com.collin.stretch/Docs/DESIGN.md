@@ -20,7 +20,7 @@
 - **辅助线**：Scene 视图按 slice 画分界线；repeatable 段画**周期等分虚线**（3 层楼的段里 3 条线区分 3 层），按段跨度自适应密度；可开关。
 
 ## 3. 约束
-- Unity 6000.6.7f1；asmdef 引用 com.collin.core + UnityEngine.UIElements（Editor）；validateReferences=true（§5）；
+- Unity 6000.6.7f1；Runtime asmdef 引用 com.collin.core，Editor asmdef 再加 com.collin.stretch；面板用 IMGUI（CustomEditor）；validateReferences=true（§5）；
 - 输入网格：Readable 且含 UV0；FBX 需先开 Read/Write（README 级说明，工具检测并给修复按钮）；
 - 拉伸轴语义 = 网格对象**本地空间**单轴（物体旋转不影响分段计算）；
 - 不新增外部包依赖。
@@ -28,21 +28,22 @@
 ## 4. 方案概述（程序集 / 数据流）
 | 组件 | 程序集 | 职责 |
 |---|---|---|
-| `StretchProfile` | Runtime | 参数资产（ScriptableObject）：轴、局部边界、每段类型/倍数；纯计算 API（位移/总长因子/校验） |
-| `StretchMeshBuilder` | Runtime | 消费 Profile + 源 Mesh → 生成结果 Mesh：**逐三角形按所属段刚性复制**，UV 逐字保留；>65535 顶点自动切 uint32 索引 |
-| `StretchRepeater` | Runtime | 挂模型上的场景组件：Start 时构建结果网格换给 MeshFilter（运行时无编辑开销） |
-| `StretchPreview` | Runtime | 预览开关（编辑期生效）：构建→写预览 MeshFilter→OnDisable 还原；纯内存，不写磁盘资产 |
-| `StretchProfileEditor` | Editor | 参数面板（归一化边界插入/段编辑/端点对齐/预览刷新）+ Scene 辅助线挂点；`StretchBakeCommand` 烘焙结果为 Profile 子资产 |
+| `StretchProfile` | Runtime | **共享结构 Model**（ScriptableObject）：轴、局部边界、每段类型；纯计算 API（位移/总长因子/结构校验）——不含倍数（实例状态，§0.1 原则2） |
+| `StretchInstance` | Runtime | **实例半边**（场景组件，序列化）：引用 Profile + 每段倍数 `repeats[]`；[ExecuteAlways] 编辑期即时重建预览，Play 态同一条构建路径（原则1/3） |
+| `StretchMeshBuilder` | Runtime | 消费 Profile + 源 Mesh + 实例倍数 → 结果 Mesh：**逐三角形按所属段刚性复制**，UV 逐字保留；>65535 自动 uint32；倍数数组长度校验 |
+| `StretchInstanceEditor` | Editor | **主面板**（建在场景实例 Inspector）：轴、段类型/边界（折叠复用 StretchStructUI）、每段倍数即时预览；OnSceneGUI 画辅助线（唯一入口） |
+| `StretchProfileEditor` | Editor | 资产面板：只读结构摘要 + 定位引用实例（不设第二套编辑 UI，§0.1 原则1）；`StretchBakeCommand` 按实例倍数烘焙为 Profile 子资产 |
 
-数据流：美术选中模型 → `Tools/Collin/Stretch 拉伸` 创建 Profile → 面板设边界/段类型/倍数 → 预览实时看 → 挂 `StretchRepeater` 定稿。
+数据流：选中模型 → 菜单"新建拉伸参数"生成共享 Profile 并挂 StretchInstance → 该实例 Inspector 直接编辑轴/边界/段类型（写 Profile）与倍数（写实例）→ 改动即时重建预览 → 需交付静态网格时"烘焙"把当前实例倍数固化为 Profile 子资产。
 
 ## 5. 决策记录
 | 编号 | 决策 | 备选 | 理由 |
 |---|---|---|---|
-| D-1 | 参数存 ScriptableObject 资产（模型旁），场景组件只引用 | 组件序列化字段 | 一模型多实例复用；展板视频演示直观 |
+| D-1 | 结构（轴/边界/段类型）存 Profile 共享；**倍数存实例组件序列化字段** | 全部塞进 Profile（v0.1 旧法） | v0.1 把倍数放 Profile 违反 §0.1 原则2——同一 Profile 复用于多楼时无法各自不同倍数。0.2.0 修正，验收 V1 证明同一资产 ×3/×20 独立生效 |
 | D-2 | 编辑器面板即时编辑 + **内存预览网格**，定稿才落盘 | 按钮生成资产 | 迭代快；磁盘资产不脏 |
 | D-3 | **逐三角形整体复制**：三角形按其重心所在段归类，整三角形刚性平移，UV/法线逐字拷贝 | 逐顶点位移 + UV 取模 | 三角形不跨段即不可能被"拉长"，从根上杜绝巨型窗户；逐顶点方案会让跨界三角形变形。前提：边界须落在几何空白带（R-1 文档要求） |
-| D-4 | 倍数走面板整数输入；**拖拽把手推迟 v0.2**（v0.1 辅助线仅可视化） | 把手直接拖边界 | 用户语义"复制 N 次"整数化是核心；把手涉及 HandleUtility 兼容与撤销联动，v0.1 先闭环算法与可视化 |
+| D-4 | 倍数走面板整数输入；**拖拽把手推迟后续**（当前辅助线仅可视化） | 把手直接拖边界 | 用户语义"复制 N 次"整数化是核心；把手涉及 HandleUtility 兼容与撤销联动，先闭环算法与可视化 |
+| D-5 | 主面板建在场景实例 Inspector（`StretchInstanceEditor`），资产面板降为只读+定位 | 用户在资产文件里编辑 | §0.1 原则1 所见即所得；避免两套编辑真源与辅助线重复绘制 |
 
 ## 6. 风险
 - R-1：非 UV 接缝跨段（一个窗户三角形被 slice 切开）→ 该三角形按顶点各自位移（会拉伸变形）。缓解：文档告知 + 建议边界落在段与段之间的"空白带"；验收用楼模型演示边界选取。

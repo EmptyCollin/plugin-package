@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -7,8 +8,7 @@ namespace Collin.Stretch
     /// <summary>
     /// 结果网格生成器（DESIGN D-3）：逐三角形按重心归段，整三角形刚性放置，
     /// UV/法线/切线/顶点色逐字拷贝——复制单元与原件像素级一致，杜绝巨型窗户。
-    /// fixed 段：位移 = 其下方 repeatable 段累计延长（下方拉伸把整段顶起）。
-    /// repeatable 段：复制 repeat 份，份间偏移 = 段长 × k。
+    /// 结构来自 <see cref="StretchProfile"/>（共享 Model），倍数来自实例数组（§0.1 原则2）。
     /// </summary>
     public static class StretchMeshBuilder
     {
@@ -29,15 +29,15 @@ namespace Collin.Stretch
             return true;
         }
 
-        /// <summary>构建结果网格。调用方持有生命周期（预览为内存态，定稿走 AssetDatabase）。
-        /// 失败（源不可读/缺 UV/参数非法）静默返回 null——日志归调用方（Preview/Repeater/Bake），
-        /// 避免编辑期中间态污染 error/warning 门禁（§1.6b）。</summary>
-        public static Mesh Build(Mesh source, StretchProfile profile)
+        /// <summary>构建结果网格。失败静默返回 null——日志归调用方（§1.6b 门禁友好）。</summary>
+        public static Mesh Build(Mesh source, StretchProfile profile, IList<int> repeats)
         {
+            if (source == null || profile == null) return null;
             if (!CanProcess(source, out _)) return null;
             float min = BoundsMin(source, profile.axis);
             float max = BoundsMax(source, profile.axis);
             if (profile.Validate(min, max) != null) return null;
+            if (profile.ValidateRepeats(repeats) != null) return null;
 
             var verts = source.vertices;
             var uvs = source.uv;
@@ -52,8 +52,6 @@ namespace Collin.Stretch
             int triCount = tris.Length / 3;
             var ax = (int)profile.axis;
 
-            // 预计算：每三角形归段 + 该段各复制份的位移
-            var segOfTri = new int[triCount];
             var vertPool = new List<Vector3>(verts.Length * 2);
             var uvPool = new List<Vector2>(verts.Length * 2);
             var normalPool = new List<Vector3>(verts.Length * 2);
@@ -66,17 +64,15 @@ namespace Collin.Stretch
                 int i0 = tris[t * 3], i1 = tris[t * 3 + 1], i2 = tris[t * 3 + 2];
                 float cx = (verts[i0][ax] + verts[i1][ax] + verts[i2][ax]) / 3f;
                 int seg = profile.SegmentIndexAt(cx);
-                if (seg < 0) seg = 0; // 数值边界兜底
-                segOfTri[t] = seg;
+                if (seg < 0) seg = 0;
 
-                int repeats = profile.segments[seg].type == SegmentType.Repeatable
-                    ? Mathf.Max(1, profile.segments[seg].repeat) : 1;
+                int repeats_ = profile.TypeAt(seg) == SegmentType.Repeatable
+                    ? StretchProfile.RepeatAt(repeats, seg) : 1;
 
-                for (int k = 0; k < repeats; k++)
+                for (int k = 0; k < repeats_; k++)
                 {
-                    float offset = profile.OffsetFor(seg, k);
+                    float offset = profile.OffsetFor(seg, k, repeats);
                     int localBase = vertPool.Count;
-                    // 每份都拷整三角形顶点：简单可靠，属性零错位（内存换正确性，轻量定位）
                     AppendVert(vertPool, uvPool, normalPool, tangentPool, colorPool,
                         verts, uvs, normals, tangents, colors, hasNormals, hasTangents, hasColors, i0, ax, offset);
                     AppendVert(vertPool, uvPool, normalPool, tangentPool, colorPool,
@@ -105,6 +101,20 @@ namespace Collin.Stretch
             return mesh;
         }
 
+        /// <summary>失败原因版本（供 UI/命令弹窗展示）。</summary>
+        public static string FailReason(Mesh source, StretchProfile profile, IList<int> repeats)
+        {
+            if (source == null || profile == null) return "源网格或 Profile 为空";
+            if (!CanProcess(source, out var err)) return err;
+            float min = BoundsMin(source, profile.axis);
+            float max = BoundsMax(source, profile.axis);
+            var verr = profile.Validate(min, max);
+            if (verr != null) return "结构校验未通过: " + verr;
+            var rerr = profile.ValidateRepeats(repeats);
+            if (rerr != null) return "倍数数据异常: " + rerr;
+            return null;
+        }
+
         private static void AppendVert(List<Vector3> vPool, List<Vector2> uvPool,
             List<Vector3> nPool, List<Vector4> tPool, List<Color32> cPool,
             Vector3[] verts, Vector2[] uvs, Vector3[] normals, Vector4[] tangents, Color32[] colors,
@@ -119,7 +129,6 @@ namespace Collin.Stretch
             if (hasC) cPool.Add(colors[srcIndex]);
         }
 
-        // ── 包围盒轴向端点（Mesh.bounds 局部空间） ─────────────
         public static float BoundsMin(Mesh m, StretchAxis axis) => m.bounds.min[(int)axis];
         public static float BoundsMax(Mesh m, StretchAxis axis) => m.bounds.max[(int)axis];
     }

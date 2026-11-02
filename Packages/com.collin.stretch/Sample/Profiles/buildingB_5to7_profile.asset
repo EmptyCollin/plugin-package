@@ -18,10 +18,4 @@ MonoBehaviour:
   - 2
   - 4
   - 5
-  segments:
-  - type: 0
-    repeat: 1
-  - type: 1
-    repeat: 2
-  - type: 0
-    repeat: 1
+  segmentTypes: 000000000100000000000000i

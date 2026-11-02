@@ -4,18 +4,34 @@ using UnityEngine;
 namespace Collin.Stretch.EditorTooling
 {
     /// <summary>
-    /// 创建入口：选中含 MeshFilter 的对象 → 生成 Profile 资产（同目录）+ 挂 StretchPreview。
-    /// 菜单：Tools/Collin/Stretch 拉伸 — 创建参数资产。
+    /// 创建入口（AGENTS.md §0.1 原则1）：选中模型 → 生成共享结构 Profile + 挂 StretchInstance，
+    /// 面板直接呈现在该实例的 Inspector 上（不必跳去资产文件）。
+    /// 全路径空守卫 + 异常捕获：禁止裸 NRE 污染控制台门禁（§1.6b）。
     /// </summary>
     public static class StretchCreateCommand
     {
         [MenuItem("Tools/Collin/Stretch 拉伸/新建拉伸参数（选中模型）", false, 1)]
         public static void CreateProfile()
         {
+            try
+            {
+                Run();
+            }
+            catch (System.Exception ex)
+            {
+                // 菜单失败必须弹窗+warning，不允许抛裸异常留 error 在控制台
+                EditorUtility.DisplayDialog("Collin Stretch",
+                    "创建失败：" + ex.Message, "好");
+                Debug.LogWarning($"[Stretch] 创建失败: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        private static void Run()
+        {
             var go = Selection.activeGameObject;
             if (go == null)
             {
-                EditorUtility.DisplayDialog("Collin Stretch", "请先在Hierarchy选中一个含 MeshFilter 的模型对象。", "好");
+                EditorUtility.DisplayDialog("Collin Stretch", "请先在 Hierarchy 选中一个含 MeshFilter 的模型对象。", "好");
                 return;
             }
             var filter = go.GetComponent<MeshFilter>();
@@ -25,29 +41,29 @@ namespace Collin.Stretch.EditorTooling
                 return;
             }
             var mesh = filter.sharedMesh;
+
+            // 已装配过：直接选中实例组件（所见即所得：面板就在场景物体上）
+            var existing = go.GetComponent<StretchInstance>();
+            if (existing != null && existing.profile != null)
+            {
+                Selection.activeGameObject = go;
+                EditorGUIUtility.PingObject(go);
+                return;
+            }
+
             if (!StretchMeshBuilder.CanProcess(mesh, out var err))
             {
-                if (err.Contains("不可读"))
+                if (err != null && err.Contains("不可读"))
                 {
                     if (EditorUtility.DisplayDialog("Collin Stretch",
-                            "模型网格不可读（Read/Write 未开启）。可在 Project 中选中模型文件 → Inspector → 勾 Read/Write → Apply。要现在尝试自动开启吗？",
+                            "模型网格不可读（Read/Write 未开启）。要现在尝试自动开启吗？",
                             "尝试开启", "稍后再说"))
                     {
                         TryEnableReadWrite(mesh);
                     }
+                    return;
                 }
-                else
-                {
-                    EditorUtility.DisplayDialog("Collin Stretch", err, "好");
-                }
-                return;
-            }
-
-            var existing = go.GetComponent<StretchPreview>();
-            if (existing != null && existing.profile != null)
-            {
-                Selection.activeObject = existing.profile;
-                EditorGUIUtility.PingObject(existing.profile);
+                EditorUtility.DisplayDialog("Collin Stretch", err, "好");
                 return;
             }
 
@@ -57,29 +73,33 @@ namespace Collin.Stretch.EditorTooling
                 StretchMeshBuilder.BoundsMax(mesh, StretchAxis.Y));
             profile.axis = StretchAxis.Y;
 
-            // 资产落在模型旁：取模型 prefab 路径目录，取不到则 Assets/
             string dir = "Assets";
-            var prefabPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);
+            string prefabPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);
             if (!string.IsNullOrEmpty(prefabPath))
             {
                 dir = System.IO.Path.GetDirectoryName(prefabPath).Replace('\\', '/');
             }
+            if (string.IsNullOrEmpty(dir)) dir = "Assets";
             string assetPath = AssetDatabase.GenerateUniqueAssetPath(
                 $"{dir}/{go.name}_stretchProfile.asset");
             AssetDatabase.CreateAsset(profile, assetPath);
 
-            var preview = go.GetComponent<StretchPreview>() ?? go.AddComponent<StretchPreview>();
-            preview.SetProfile(profile);
+            var instance = go.GetComponent<StretchInstance>() ?? go.AddComponent<StretchInstance>();
+            if (instance == null)
+            {
+                Debug.LogWarning($"[Stretch] 无法为 {go.name} 添加 StretchInstance（可能已有互斥组件）。");
+                return;
+            }
+            instance.SetProfile(profile);
             EditorUtility.SetDirty(go);
             AssetDatabase.SaveAssets();
 
-            Selection.activeObject = profile;
-            EditorGUIUtility.PingObject(profile);
+            Selection.activeGameObject = go;   // 面板即在该物体的 Inspector 上呈现
+            EditorGUIUtility.PingObject(go);
         }
 
         private static void TryEnableReadWrite(Mesh mesh)
         {
-            // fbx/obj 子资产的 GetAssetPath 返回其源模型文件路径
             string path = AssetDatabase.GetAssetPath(mesh);
             bool isModel = path.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase) ||
                            path.EndsWith(".obj", System.StringComparison.OrdinalIgnoreCase);

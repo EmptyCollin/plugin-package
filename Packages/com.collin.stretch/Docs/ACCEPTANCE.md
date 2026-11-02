@@ -32,3 +32,21 @@
 | 15 | 桥贴边面误复制（用户截图"栅栏"现象）：塔壁三角形重心恰落段边界 → 被 repeatable 段复制 | 逐段三角形计数诊断 `trisPerSeg=[18\|24\|18]`（塔应 12）→ 边界内缩 0.002 | 修复后 `verts=234`（78 三角形 = 24+30+24），目视截图桥面连续、塔壁不再成栅栏 |
 | 16 | 展板消费包内演示视频（§0 纠正语义：展板只引用视频，不引用插件场景/代码） | `ShowcaseRuntime.Load()` + `ResolveVideoPath()` | `entries=2 hasStretch=True video=[ShowcaseMedia/stretch_demo.mp4] resolved=EXISTS` |
 | 17 | §1.6b 门禁终态 | `console clear` → 重跑 T1-T3 → `console status` | `errors=0 warnings=0 compilationFailed=False`；校验器 assets-layout 绿灯 |
+
+# v0.2.0 增量（数据归属重构 + AGENTS.md §0.1 三原则落地，2026-11-02，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 18 | 新签名 `Build(source, profile, repeats)` 算法回归：3→12层(×10)、倍数长度不符拒绝、Fixed 段忽略实例倍数、全 1 恒等 | `eval_file UnitV2.cs` | `U1 verts=72 maxY=12`；`U2 rejected reason=[倍数数据异常: 倍数数组与段数不匹配]`；`U3 verts=18 恒等`；`U4 verts=18 maxY=3` |
+| 19 | **实例分离**（原则2）：同一 Profile 资产被两实例以 ×3 / ×20 复用，几何独立互不影响 | `eval_file VerifySep.cs` V1 | `maxY1=5.0(=1+3+1)`、`maxY2=22.0(=1+20+1)`、`v1=252 v2=1068` 各自成立 |
+| 20 | 倍数序列化在实例组件、烘焙固化实例倍数、实例主编辑器就位 | V2/V3/V4 | `repeats arraySize=3`（在组件上）；`baked verts=252`(取实例×3)；`instance editor type=True` |
+| 21 | 辅助线唯一入口（移除资产面板静态 `duringSceneGui`，修双绘） | `eval_file VerifyFinal.cs` 反射 | `duringSceneGui stretchHooks=0`；`instanceEditor OnSceneGUI=True`；`profileEditor HookSceneGuiRemoved=True` |
+| 22 | 体验场景按新结构重开即时重建（[ExecuteAlways]+保存守卫） | `OpenScene` 读几何 | `楼A 492/maxAxis10.0`、`楼B 264/7.0`、`桥 234/3.98`，missing 脚本 0 |
+| 23 | `runtime-purity` 校验（原则3：Runtime 禁引用 UnityEditor） | `python Tools/verify_project.py` | `[ ok ] runtime-purity: Runtime 程序集无 UnityEditor 依赖` |
+| 24 | `CreateProfile` 裸 NRE 修复：空守卫 + try/catch 弹窗 | 代码审阅 + 归零复跑 | 重构后 clear→重跑，09:21:30 那条 `StretchCreateCommand.CreateProfile` NRE 堆栈未复现 |
+| 25 | §1.6b 门禁终态 | `console clear` → 重跑 UnitV2+VerifySep+VerifyFinal → `console status` | `errors=0 warnings=0 compilationFailed=False` |
+
+## 修复记录（本轮真实抓出/清除）
+- **数据归属错误（用户指出）**：v0.1 把倍数存进共享 Profile，违反 §0.1 原则2——同一 Profile 复用多楼时无法各自不同倍数。0.2.0 迁到实例组件，V1 证明 ×3/×20 独立生效。
+- **辅助线双绘**：`StretchProfileEditor` 静态 `duringSceneGui` 与 `StretchInstanceEditor.OnSceneGUI` 对同一选中实例各画一遍。移除前者，辅助线唯一入口收敛到实例编辑器（原则1）。
+- **历史 NRE（seq227，09:21:30）**：来自重构前旧 `CreateProfile`（`preview.SetProfile` 未判空）。新代码已空守卫+异常捕获，归零复跑未复现，非存活缺陷。
