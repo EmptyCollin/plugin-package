@@ -34,7 +34,7 @@
 |---|---|---|
 | `StretchProfile` | Runtime | **共享结构 Model**（ScriptableObject）：轴、局部边界、每段类型；纯计算 API（位移/总长因子/结构校验）——不含倍数（实例状态，§0.1 原则2） |
 | `StretchInstance` | Runtime | **实例半边**（场景组件，序列化）：引用 Profile + 每段倍数 `repeats[]`；[ExecuteAlways] 编辑期即时重建并同步碰撞体（Box/MeshCollider、Rigidbody 运行期重置），Play 态同一条构建路径（原则1/2/3） |
-| `StretchMeshBuilder` | Runtime | 消费 Profile + 源 Mesh + 实例倍数 → 结果 Mesh：跨边界三角形 SH 半空间裁剪分片、逐片刚性归段，UV/法线等切口插值；>65535 自动 uint32；倍数数组长度校验 |
+| `StretchMeshBuilder` | Runtime | 消费 Profile + 源 Mesh + 实例倍数 → 结果 Mesh：跨边界三角形 SH 半空间裁剪分片、逐片刚性归段，UV/法线等切口插值；**逐子网格处理并保持 subMeshCount 与材质槽对应**（FBX 多材质模型必需）；>65535 自动 uint32；倍数数组长度校验 |
 | `StretchInstanceEditor` | Editor | **主面板**（建在场景实例 Inspector）：轴、段类型/边界（折叠复用 StretchStructUI）、每段倍数即时预览；OnSceneGUI 画辅助线（唯一入口） |
 | `StretchProfileEditor` | Editor | 资产面板：只读结构摘要 + 定位引用实例（不设第二套编辑 UI，§0.1 原则1）；`StretchBakeCommand` 按实例倍数烘焙为 Profile 子资产 |
 
@@ -55,3 +55,4 @@
 - R-2：复制接缝处几何/光照不连续（顶点不焊接）→ 视觉可能可见硬边。接受（轻量定位），后续版本再评估焊接。
 - R-3：超大网格 × 高倍数内存膨胀 → 结果顶点数超 65535 需 uint32 索引（Mesh.indexFormat），Builder 自动切换。
 - R-4：裁剪分片使跨界三角形顶点数增加（每片独立顶点）→ 仅在边界切中几何时发生，规模可控（G1: 24→96 顶点级）。
+- R-5：真实 DCC 模型（多材质子网格、非单位缩放、pivot 居中、readable=false）会放大实现盲区 → 缓解：示例已改用 CC0 真实资产（见 §7 资产来源），Builder 逐子网格处理，创建命令自动开 Read/Write，面板端点对齐只读源网格。

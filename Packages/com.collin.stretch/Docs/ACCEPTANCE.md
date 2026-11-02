@@ -71,3 +71,17 @@
 - **端点对齐读结果网格**（用户现场资产曾被写歪：楼A 末边界 3→8）：面板 `DrawStructure` 原从 `MeshFilter.sharedMesh` 取包围盒，编辑态即拉伸结果，点一次"端点对齐"就把结果尺寸写回边界。锁死为实例缓存源网格（`Inst.OriginalMesh`），楼A 资产已复原并回归验证。
 - **轴/包围盒不同源静默失败**：`InitFromBounds` 不设轴，误配轴时 Validate 正确拦停但用户难自查——新增 `InitFromMesh(mesh, axis)` 一体初始化，菜单与教学路径同走。
 - **MeshCollider 采集时序**：原只在 SetProfile 采集一次，重开场景后 OnEnable 直接 Rebuild 会漏同步——改为每次 Rebuild 前以源网格为锚点重采集。
+
+# v0.3.1 增量（真实 CC0 资产落地 + 多子网格修复，2026-11-02，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 37 | **多材质子网格保持**：真实 FBX 栈桥（每 section 2 子网格=木板+桩柱）拉伸后两槽均有内容、材质槽数不变 | `eval_file FinalPier.cs` 实测 | 源 `sub=2 v=147600`；×3 拉伸后 `sub=2 subTris=[43008,16768] both>0=True matSlots=2 uvOk=True`（旧 Builder 只读子网格0会丢一半） |
+| 38 | 真实模型中段 ×3：长度与碰撞盒同步 | 同上 | `lenZ=13.10(src 9.36) boxZ=13.10 match=True` |
+| 39 | 单网格旧用例不退化（K1/K2）+ 场景四物体（K3） | `eval_file Regress.cs`（归零后重跑） | `K1 verts=72 maxY=12 sub=1`；`K2 insert=1 切穿窗户 uvOk=True`；`K3 楼A492/10.0 楼B264/7.0 桥sub=2 v=147600 noComp=True` |
+| 40 | 桥在场景仍为裸模型、零 Profile（用户要求不变） | AssetDatabase 枚举 | `bridgeProfiles=0`；`桥_栈桥 StretchInstance==null` |
+| 41 | §1.6b 门禁终态 | clear→重跑 K1-K3→console status | `errors=0 warnings=0 compilationFailed=False` |
+
+## 本轮真实抓出的缺陷（现成模型独有，程序化网格永远测不出）
+- **Builder 只读子网格 0**：`source.triangles` 仅含第一个材质槽——FBX 多材质模型直接丢半（栈桥会丢全部桩柱或全部木板）。修复：逐子网格处理，结果保持 `subMeshCount` 与槽位对应（K37 实证）。
+- 示例资产二次污染（楼B 边界 2→1 被现场操作改歪致 300≠264）：从 HEAD 复原并回归 264/7.0 通过。教训已写入 HANDOFF 勿碰项。

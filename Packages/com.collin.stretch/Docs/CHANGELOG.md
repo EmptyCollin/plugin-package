@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-02
+### Fixed（真实 CC0 资产暴露的通用性缺陷）
+- **多材质子网格丢失**：Builder 原用 `source.triangles`（仅子网格 0）——FBX 多材质模型（如栈桥的木板+桩柱）
+  会被丢掉一半。改为**逐子网格处理，结果保持 subMeshCount 与材质槽对应**（验收 37：双槽 both>0、matSlots=2）；
+### Added
+- 体验场景的桥替换为真实 CC0 资产：Poly Haven `modular_wooden_pier`（FBX+1K 贴图，CC0 无需署名，
+  来源登记 `Sample/Models/CREDITS.md`）；场景物体 `桥_栈桥` 为三直段按材质合并的连续栈桥裸模型
+  （`Sample/Meshes/pier_long.asset`，双材质 147600 顶点），仍**无组件、无 Profile**（用户要求）；
+### Removed
+- 程序化 `桥_原型.obj`（被真实资产取代）。
+
 ## [0.3.0] - 2026-11-02
 ### Changed（算法通用化：模型不再迁就工具）
 - **跨界三角形改为边界裁剪分片**（Sutherland–Hodgman 半空间裁剪，位置/UV/法线/切线/色切口线性插值，

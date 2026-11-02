@@ -6,11 +6,10 @@ using UnityEngine.Rendering;
 namespace Collin.Stretch
 {
     /// <summary>
-    /// 结果网格生成器：对**任意**源网格、边界切在**任意**位置均成立（AGENTS.md §0.1 通用性）。
-    /// 三角形按其轴向坐标范围用边界线裁剪分片（Sutherland–Hodgman），
-    /// 每片刚性归入所在段：fixed 段整体平移，repeatable 段复制 repeat 份；
-    /// 位置/UV/法线/切线/色在切口线性插值——每片是原几何的精确子集，
-    /// 窗户被横切时两半各自随段移动、复制体中拼回原样，杜绝巨型窗户与栅栏。
+    /// 结果网格生成器：对**任意**源网格（含多材质子网格）、边界切在**任意**位置均成立（AGENTS.md §0.1 通用性）。
+    /// 三角形用边界线半空间裁剪分片（Sutherland–Hodgman），每片刚性归入所在段：
+    /// fixed 段整体平移，repeatable 段复制 repeat 份；位置/UV/法线/切线/色在切口线性插值。
+    /// 逐子网格处理并**保持 subMeshCount 与材质槽对应**（FBX 多材质模型必需）。
     /// </summary>
     public static class StretchMeshBuilder
     {
@@ -25,7 +24,9 @@ namespace Collin.Stretch
             {
                 error = "源网格缺少 UV0"; return false;
             }
-            if (source.triangles == null || source.triangles.Length == 0)
+            int totalTris = 0;
+            for (int s = 0; s < source.subMeshCount; s++) totalTris += source.GetTriangles(s).Length;
+            if (totalTris == 0)
             {
                 error = "源网格没有三角形"; return false;
             }
@@ -61,16 +62,17 @@ namespace Collin.Stretch
             bool hasN = normals != null && normals.Length == verts.Length;
             bool hasT = tangents != null && tangents.Length == verts.Length;
             bool hasC = colors != null && colors.Length == verts.Length && colors.Length > 0;
-            var tris = source.triangles;
             int ax = (int)profile.axis;
             int segCount = profile.segmentTypes.Count;
+            int subCount = Mathf.Max(1, source.subMeshCount);
 
             var vertPool = new List<Vector3>(verts.Length * 2);
             var uvPool = new List<Vector2>(verts.Length * 2);
             var nPool = new List<Vector3>(verts.Length * 2);
             var tPool = new List<Vector4>(verts.Length * 2);
             var cPool = new List<Color32>(verts.Length * 2);
-            var idxPool = new List<int>(tris.Length * 2);
+            var idxPerSub = new List<int>[subCount];
+            for (int s = 0; s < subCount; s++) idxPerSub[s] = new List<int>();
 
             // 段基准位移（k=0）预计算
             var segOffset = new float[segCount];
@@ -137,7 +139,7 @@ namespace Collin.Stretch
                 return outp;
             }
 
-            void Emit(V v, float offset)
+            void Emit(V v, float offset, List<int> idx, int sm)
             {
                 var p = v.p;
                 p[ax] += offset;
@@ -146,73 +148,74 @@ namespace Collin.Stretch
                 if (hasN) nPool.Add(v.n);
                 if (hasT) tPool.Add(v.t);
                 if (hasC) cPool.Add(v.c);
+                idx.Add(vertPool.Count - 1);
             }
 
-            for (int tri = 0; tri + 2 < tris.Length; tri += 3)
+            // 逐子网格：材质槽结构原样保留（sub s 的三角形写入结果 sub s）
+            for (int sm = 0; sm < subCount; sm++)
             {
-                var v0 = MakeV(tris[tri]);
-                var v1 = MakeV(tris[tri + 1]);
-                var v2 = MakeV(tris[tri + 2]);
-                float c0 = Coord(v0, ax), c1 = Coord(v1, ax), c2 = Coord(v2, ax);
-                float tmin = Mathf.Min(c0, Mathf.Min(c1, c2));
-                float tmax = Mathf.Max(c0, Mathf.Max(c1, c2));
-                tmin = Mathf.Clamp(tmin, bmin, bmax);
-                tmax = Mathf.Clamp(tmax, bmin, bmax);
-
-                // 所在段范围（贴边界归该边界以下段）
-                int sFirst = profile.SegmentIndexAt(Mathf.Clamp(tmin + Eps, bmin, bmax - Eps * 2));
-                int sLast = profile.SegmentIndexAt(Mathf.Clamp(tmax - Eps, bmin, bmax - Eps * 2));
-                if (sFirst < 0) sFirst = 0;
-                if (sLast < 0) sLast = segCount - 1;
-
-                if (sFirst == sLast)
+                var tris = source.GetTriangles(sm);
+                var idx = idxPerSub[sm];
+                for (int tri = 0; tri + 2 < tris.Length; tri += 3)
                 {
-                    // 快速路径：整三角形在一段闭区间内 → 原样输出（与 0.1.x 行为、顶点数一致）
-                    for (int k = 0; k < segCopies[sFirst]; k++)
+                    var v0 = MakeV(tris[tri]);
+                    var v1 = MakeV(tris[tri + 1]);
+                    var v2 = MakeV(tris[tri + 2]);
+                    float c0 = Coord(v0, ax), c1 = Coord(v1, ax), c2 = Coord(v2, ax);
+                    float tmin = Mathf.Min(c0, Mathf.Min(c1, c2));
+                    float tmax = Mathf.Max(c0, Mathf.Max(c1, c2));
+                    tmin = Mathf.Clamp(tmin, bmin, bmax);
+                    tmax = Mathf.Clamp(tmax, bmin, bmax);
+
+                    int sFirst = profile.SegmentIndexAt(Mathf.Clamp(tmin + Eps, bmin, bmax - Eps * 2));
+                    int sLast = profile.SegmentIndexAt(Mathf.Clamp(tmax - Eps, bmin, bmax - Eps * 2));
+                    if (sFirst < 0) sFirst = 0;
+                    if (sLast < 0) sLast = segCount - 1;
+
+                    if (sFirst == sLast)
                     {
-                        float off = segOffset[sFirst] + k * profile.SegmentLength(sFirst);
-                        Emit(v0, off); Emit(v1, off); Emit(v2, off);
-                        int b = vertPool.Count - 3;
-                        idxPool.Add(b); idxPool.Add(b + 1); idxPool.Add(b + 2);
-                    }
-                    continue;
-                }
-
-                // 通用路径：用 (tmin, tmax) 之间的内部边界裁剪成逐段分片
-                var boundaries = new List<float>();
-                foreach (var b in profile.sliceBounds)
-                {
-                    if (b > tmin + Eps && b < tmax - Eps) boundaries.Add(b);
-                }
-
-                var remain = new List<V> { v0, v1, v2 };
-                var pieces = new List<List<V>>(boundaries.Count + 1);
-                foreach (var b in boundaries)
-                {
-                    var below = Clip(remain, b, true);
-                    var above = Clip(remain, b, false);
-                    if (below.Count >= 3) pieces.Add(below);
-                    remain = above;
-                }
-                if (remain.Count >= 3) pieces.Add(remain);
-
-                foreach (var piece in pieces)
-                {
-                    float avg = 0f;
-                    foreach (var v in piece) avg += Coord(v, ax);
-                    avg /= piece.Count;
-                    int seg = profile.SegmentIndexAt(Mathf.Clamp(avg, bmin, bmax - Eps * 2));
-                    if (seg < 0) seg = segCount - 1;
-
-                    for (int k = 0; k < segCopies[seg]; k++)
-                    {
-                        float off = segOffset[seg] + k * profile.SegmentLength(seg);
-                        // 扇形三角化凸分片
-                        for (int i = 1; i + 1 < piece.Count; i++)
+                        // 快速路径：整三角形在一段闭区间内 → 原样输出
+                        for (int k = 0; k < segCopies[sFirst]; k++)
                         {
-                            Emit(piece[0], off); Emit(piece[i], off); Emit(piece[i + 1], off);
-                            int b0 = vertPool.Count - 3;
-                            idxPool.Add(b0); idxPool.Add(b0 + 1); idxPool.Add(b0 + 2);
+                            float off = segOffset[sFirst] + k * profile.SegmentLength(sFirst);
+                            Emit(v0, off, idx, sm); Emit(v1, off, idx, sm); Emit(v2, off, idx, sm);
+                        }
+                        continue;
+                    }
+
+                    // 通用路径：用 (tmin, tmax) 之间的内部边界裁剪成逐段分片
+                    var boundaries = new List<float>();
+                    foreach (var b in profile.sliceBounds)
+                    {
+                        if (b > tmin + Eps && b < tmax - Eps) boundaries.Add(b);
+                    }
+
+                    var remain = new List<V> { v0, v1, v2 };
+                    var pieces = new List<List<V>>(boundaries.Count + 1);
+                    foreach (var b in boundaries)
+                    {
+                        var below = Clip(remain, b, true);
+                        var above = Clip(remain, b, false);
+                        if (below.Count >= 3) pieces.Add(below);
+                        remain = above;
+                    }
+                    if (remain.Count >= 3) pieces.Add(remain);
+
+                    foreach (var piece in pieces)
+                    {
+                        float avg = 0f;
+                        foreach (var v in piece) avg += Coord(v, ax);
+                        avg /= piece.Count;
+                        int seg = profile.SegmentIndexAt(Mathf.Clamp(avg, bmin, bmax - Eps * 2));
+                        if (seg < 0) seg = segCount - 1;
+
+                        for (int k = 0; k < segCopies[seg]; k++)
+                        {
+                            float off = segOffset[seg] + k * profile.SegmentLength(seg);
+                            for (int i = 1; i + 1 < piece.Count; i++)
+                            {
+                                Emit(piece[0], off, idx, sm); Emit(piece[i], off, idx, sm); Emit(piece[i + 1], off, idx, sm);
+                            }
                         }
                     }
                 }
@@ -229,7 +232,11 @@ namespace Collin.Stretch
             if (hasN) mesh.SetNormals(nPool);
             if (hasT) mesh.SetTangents(tPool);
             if (hasC) mesh.SetColors(cPool);
-            mesh.SetTriangles(idxPool, 0);
+            mesh.subMeshCount = subCount;
+            for (int sm = 0; sm < subCount; sm++)
+            {
+                mesh.SetTriangles(idxPerSub[sm].Count > 0 ? idxPerSub[sm].ToArray() : new int[0], sm);
+            }
             mesh.RecalculateBounds();
             return mesh;
         }
