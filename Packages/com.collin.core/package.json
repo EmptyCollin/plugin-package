@@ -1,6 +1,6 @@
 {
   "name": "com.collin.core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "Collin Core",
   "description": "插件集合的跨包基础设施：事件通道、ScriptableObject 信号、服务注册表，以及展板 Showcase 条目发现与依赖拓扑排序、部分提取的依赖闭包计算。",
   "unity": "6000.6",

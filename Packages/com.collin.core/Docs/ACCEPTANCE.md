@@ -26,3 +26,16 @@
 
 ## 未通过项
 无。
+
+# v0.2.0 增量（展板上线，2026-11-02，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 11 | 运行时枚举：Play 模式展板读出 Packages/ 下全部 com.collin.* 条目 | `eval 'ShowcaseRuntime.LoadAndSort()'` 打印 entries 计数 | `FINAL entries=1 first=com.collin.core cycle=False`（临时包删除后的终态） |
+| 12 | 拓扑排序：临时包 demotest（依赖 core，order=0）与 core 并列时 core 在前 | 建临时包→进 Play→`game_view` 截图 | 截图左栏顺序 core、test；`scene get_hierarchy` 确认两条目按钮 `Item_com.collin.core`、`Item_com.collin.demotest` |
+| 13 | 依赖闭包显示：选中 demotest 详情行显示其闭包 | `eval` 读 DetailDeps 文本 | `DetailTitle=[Demo Test] DetailDeps=[依赖闭包：com.collin.core]` |
+| 14 | 视频播放：ShowcaseMedia/demo.mp4（ffmpeg 生成 3s testsrc）经「播放演示」渲染到视频区 | 点击 `PlayBtn`→`game_view` 截图 | 截图视频区显示彩条测试帧；`frame=44`（45 帧片播完）；修复过程：初版 targetTexture 未创建致白块，显式创建 RenderTexture 后转绿 |
+| 15 | §1.6b 门禁终态：clear→重跑验证（Play+枚举+截图+stop）→归零 | `console clear` → 验证动作 → `console status` | `GATE errors=0 warnings=0 compilationFailed=False`；校验器绿灯 |
+| 16 | 临时验收包与截图残骸已清理，lock 残留经 Client.Resolve() 清除 | `rm -rf Packages/com.collin.demotest Assets/.locks` → refresh → `grep -c demotest packages-lock.json` | 计数 0；编译 `failed=false` |
+
+注：过程中控制台曾出现 demotest mp4 的色彩原色 warning（WindowsMediaFoundation，堆栈不含项目程序集）——该包已删除，按 §1.6b 归零流程随 clear+重验一并消除，未申请豁免。

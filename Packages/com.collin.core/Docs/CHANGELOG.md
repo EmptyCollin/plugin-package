@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-02
+### Added
+- `ShowcaseRuntime`：运行时从 `Packages/` 磁盘枚举 com.collin.* 的 Showcase.json 并排序
+  （展板 Play 模式数据源，DESIGN D-5）；`ResolveVideoPath` 视频绝对路径解析。
+
 ## [0.1.0] - 2026-11-02
 ### Added
 - 首个版本：`EventChannel`（ScriptableObject 广播信号）、抽象泛型基类 `EventChannel<T>`

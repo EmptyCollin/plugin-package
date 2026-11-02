@@ -24,8 +24,10 @@
 | `Services` | Runtime | 静态接口注册表：feature 包注册实现、他包按接口取用；域重载后需重新注册（见 §6 风险） |
 | `ShowcaseEntry` / `ShowcaseSorter` | Runtime | 条目 DTO 与纯函数排序器（Kahn 拓扑 + order + 名称兜底，可单测） |
 | `ShowcaseScanner` | Editor | 经 `PackageInfo.GetAllRegisteredPackages()` 发现 `Packages/com.collin.*` 内嵌包，解析各自 `Showcase.json`，产出排序结果与依赖闭包 |
+| `ShowcaseRuntime` | Runtime | 从项目根 `Packages/` 磁盘枚举 com.collin.* 的 Showcase.json 并复用 Sorter 排序；展板场景（Play 模式）的数据源；含视频绝对路径解析 |
 
-数据流：展板场景（Assets/，后续任务）→ `ShowcaseScanner.CollectSorted()` → 逐条渲染名称/分类/摘要/视频。
+数据流：展板场景（Assets/，纯代码构建 UI，场景文件仅一个挂脚本的 GameObject）→
+`ShowcaseRuntime.LoadAndSort()` → 左侧条目列表（名称+分类）/ 右侧详情（摘要+视频+依赖闭包）逐条渲染。
 依赖解析真相源 = 各包 `package.json` 的 `dependencies`（经 PackageInfo 读取），不另建平行登记表（§5）。
 
 ## 4. 跨包接口
@@ -40,6 +42,8 @@
 | D-2 | core 与展板分置：逻辑进 core，UI 留 Assets/ | 展板全部代码进一个 showcase 包 | 展板是项目级产物非交付插件；§0 规定 Assets/ 只留展板 |
 | D-3 | 依赖发现走 `PackageInfo`，不手写 package.json 解析 | 正则/自研 JSON 解析 | Unity 官方 API，与包管理器解析行为一致 |
 | D-4 | 排序为纯函数（Sorter）与 IO（Scanner）分离 | 揉在一个类 | 纯函数可被 EditMode 测试直接验证（ACCEPTANCE 用） |
+| D-5 | 展板数据源 = `ShowcaseRuntime` 磁盘枚举（编辑器 Play 模式内读 `Packages/`） | 展板复用 Editor 侧 Scanner | 展板是运行中的纯 UI 场景，不能依赖 Editor-only 程序集；独立构建不含 Packages 目录为已知边界——展板仅项目内运行，非交付功能 |
+| D-6 | 展板场景文件只含一个挂 `ShowcaseUI` 的 GameObject，全部 uGUI 由代码构建 | 场景里手工摆全 UI 层级 | `.unity` 文件保持最小且稳定，插件增减永不触碰场景文件（§6 精神贯彻到文件层，消除合并热点） |
 
 ## 6. 风险
 - 静态 `Services` 注册表在域重载/退出 Play 后清空 → 缓解：约定 feature 包在自身初始化入口重注册；本版本接受该语义并写入 README 级注释；
