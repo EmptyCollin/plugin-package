@@ -1,0 +1,17 @@
+{
+  "name": "com.collin.citymap",
+  "rootNamespace": "Collin.CityMap",
+  "references": [
+    "com.collin.core"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "validateReferences": true
+}

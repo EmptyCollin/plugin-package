@@ -1,5 +1,13 @@
 {
   "dependencies": {
+    "com.collin.citymap": {
+      "version": "file:com.collin.citymap",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.collin.core": "0.2.0"
+      }
+    },
     "com.collin.core": {
       "version": "file:com.collin.core",
       "depth": 0,

@@ -1,0 +1,18 @@
+{
+  "name": "com.collin.citymap.Editor",
+  "rootNamespace": "Collin.CityMap.EditorTooling",
+  "references": [
+    "com.collin.core",
+    "com.collin.citymap"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "validateReferences": true
+}

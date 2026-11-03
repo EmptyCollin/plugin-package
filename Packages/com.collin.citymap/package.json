@@ -1,0 +1,10 @@
+{
+  "name": "com.collin.citymap",
+  "version": "0.0.1",
+  "displayName": "Collin CityMap 城市地图编辑器",
+  "description": "参数驱动、可人工干预的城市地图生产工具：地形（低频噪声 + 平整约束）与河流笔刷、点线路网 + 按道路占比系数程序化补全、场域四维强度场驱动的建筑配置表与程序化建筑落位，支持大尺度流式工作集与多形态导出。",
+  "unity": "6000.6",
+  "dependencies": {
+    "com.collin.core": "0.2.0"
+  }
+}
