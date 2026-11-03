@@ -307,6 +307,7 @@ namespace Collin.Core {
 | **D-27** | **三形态导出（scene 切块 / citydata.json / 2D tile）共享单一 `CitySnapshot`；导出前强制全区一致性 `EnsureWholeMapConsistent()`，error 条目阻断导出**（10 §5，D-10-6/H-20/H-21/H-22） | v6 决策① |
 | **D-28** | **ADR-0001 批准但 core 改动推迟至 M9**：M8~M9 全程降级拉伸；M9 后提供「重建降级建筑高度」一次性迁移，`approximated` 与 `repeat` 互斥（10 §6，H-23） | v6 决策② |
 | **D-29** | **Unity Recorder 允许引入，仅限 `Sample/` 演示录制**，不得进入生成内核与 Runtime 依赖（v6 决策④，见 §11 关闭 Q-10） | v6 决策④ |
+| **D-30** | **`BuildingRecord.heightValue` 保留双义字段**（`stretchable × approximated` 二维表消歧：repeat / 缩放百分数 / 非拉伸哨兵），**不拆成 `repeat`+`scale` 两字段**；所有读取强制经 `RecordGeometry.Resolve` 单一入口 | v8 用户裁定 2026-11-03（11 §4.3/§13） |
 
 ## 8. 性能预算（v6 按 8km 档重写；收口验证见 §9）
 
