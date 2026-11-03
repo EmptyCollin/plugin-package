@@ -5,6 +5,11 @@
 ## [Unreleased]
 
 ### Added
+- **Modules/11-BuildingRecord.md**：`BuildingRecord` 接口冻结定稿（32B/栋、小端、region 分块 payload、
+  `slotKey` 唯一键与冲突协议、`heightValue` 双义消歧表、`intentVersion` 指纹输入清单、校验与迁移规则、
+  旧键名对照表）。新发现并解决 **H-26/H-27/H-28**，新增验收 **A-45~A-51**。
+  随附收敛：DESIGN/06/07/08/10 旧字段名统一到定稿键名，`CityBuildingTag` 收敛为仅 `slotKey` 反向指针；
+  总纲升 v8；内存口径统一钉为 **MiB**（8km 全图量化 31.3MiB + 记录 3.05MiB ≈ 34.4MiB，A-34 的 ≤40MiB 余量约 14%）。
 - M1：Modules/00 基础设施——格网（4m/2m 双档）、SplitMix64 确定性种子树、`ushort` 掩码、
   `PipelineRunner` 阶段调度与脏传播、`CityWindow` 面板壳；08 的 `manualVersion` / `UndoHistoryTracker` 骨架。
 
