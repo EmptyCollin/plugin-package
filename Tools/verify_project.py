@@ -159,6 +159,26 @@ def check_package_layout(packages):
                 vpath = os.path.join(path, video.replace("/", os.sep))
                 if not os.path.isfile(vpath):
                     add("FAIL", "showcase", "%s 演示视频缺失: %s" % (name, video))
+                else:
+                    # §6：视频必须覆盖"怎么用 + 用了之后的效果"两段，
+                    # 体积过小（占位/静音黑屏）不可能是有效演示。
+                    vsize = os.path.getsize(vpath)
+                    if vsize < 200 * 1024:
+                        add("FAIL", "showcase-video",
+                            "%s 演示视频仅 %d 字节，不足以承载操作过程（§6）"
+                            % (name, vsize))
+                    acc = os.path.join(path, "Docs", "ACCEPTANCE.md")
+                    text = ""
+                    if os.path.isfile(acc):
+                        with open(acc, encoding="utf-8") as fh:
+                            text = fh.read()
+                    has_two = ("怎么用" in text and "效果" in text
+                               and "演示视频" in text)
+                    has_note = "示意（非实录）" in text
+                    if not (has_two or has_note):
+                        add("WARN", "showcase-video",
+                            "%s 的 ACCEPTANCE 未记录「演示视频两点」验收或「示意（非实录）」标注（§6）"
+                            % name)
 
     for asmdef in glob_recursive(ROOT, ".asmdef"):
         if in_ignored_dir(asmdef):

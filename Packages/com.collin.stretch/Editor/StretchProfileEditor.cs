@@ -28,7 +28,7 @@ namespace Collin.Stretch.EditorTooling
             }
 
             EditorGUILayout.Space(6);
-            var users = FindObjectsOfType<StretchInstance>();
+            var users = FindObjectsByType<StretchInstance>();
             int found = 0;
             foreach (var inst in users)
             {
