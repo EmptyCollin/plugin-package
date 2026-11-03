@@ -37,23 +37,17 @@
 ③ 表现层（内存 GameObject，按需实例化）  新：ViewportRealizer —— 只把工作集内的建筑物化为对象
 ```
 - **建筑的真源是 `BuildingRecord` 数据，不是 GameObject**。GameObject 只是它的临时投影，可随意销毁重建。
-- `CityBuildingTag` 降级为**投影上的反向指针**（`recordId`），不再承载持久语义（07 §5 相应改写）。
+- `CityBuildingTag` 降级为**投影上的反向指针**（唯一字段 `slotKey`），不再承载持久语义（07 §5、11 §5）。
 - 收益：① 打开/保存场景恒定成本（与工作集大小相关、与全图无关）；② 导出三形态直接消费②；
   ③ "运行时生成"成为同一份数据的另一个消费者，不需要重写生成内核。
 
 ### 2.2 `BuildingRecord`（紧凑结构，全图常驻）
-```csharp
-struct BuildingRecord {         // 目标 ≤32 B/栋 → 10万栋 ≈ 3.2 MB
-    int   id;                   // 稳定 id（永不复用；由 parcelId+slotIndex+salt 派生，同 03 规则）
-    int   rowId;                // → BuildingProfile 行
-    uint  packedPos; uint packedPosZ;  // 定点量化（0.01m）
-    ushort yawCcq;              // 朝向（1/4 度）
-    short  repeatOrScale;       // stretch: 段复制份数；降级: 缩放×100
-    byte   flags;               // adopted|userModified|orphan|approximated|locked 位
-    byte   landUseDominant;     // 落位时主导维
-    ushort thresholdUsed;       // 落位时门槛（0~100，可舍入）
-}
-```
+> **结构已定稿并迁移到 Modules/11-BuildingRecord.md（接口冻结文档）**。
+> 本节不再维护字段表；定稿相对 v6 草案的变化：删除冗余 `id`/`landUseDominant`/`thresholdUsed`
+> （`slotKey` 统一为唯一键；`dominant=argmax(land*)`、`Th=land{dominant}` 为纯派生），
+> 新增 `landF/I/R/A` 四维追溯字节与 `footWQ/DQ` 占地覆盖（后者修 H-26 跨会话叠楼），
+> 并规定 `layoutSize=32`、小端、按 region 分块 + `blockIndex`、**禁用自动序列化器**（H-28）。
+> 冲突消解协议见 11 §4.2（H-27），`heightValue` 三义消歧表见 11 §4.3。
 - **人工改动也记在这里**（`flags.adopted/userModified` + 量化后的 pos/yaw），而不是靠场景组件存活 →
   这是 H-10 认回机制在 8km 下的正解：**认回靠记录，不靠遍历场景**（v5 方案在 10 万栋下同样不可行，见 §4）。
 - 记录是**半派生**的：`(rowId, pos, yaw, repeat)` 可由 f(意图层, seed) 重算，但 `flags`/人工改动是意图。
@@ -199,10 +193,11 @@ citydata.json = { schema:"citymap/1", region:{sizeM, extent}, grid:{cellSize:4, 
 - **H-23（后果，必须处理）**：切到 stretch 后，同一目标高度的几何**与等比缩放不同**（分段复制保持窗户比例，缩放会拉长）。
   若不追溯，M9 之后老建筑的视觉会与新生成的不一致（同一栋楼两种"高法"）。
   裁决：
-  1. 记录里 `repeatOrScale` 的语义由 `flags.approximated` 明确区分，两者互斥；
-  2. 提供一次性迁移动作「重建降级建筑高度」= 对 `approximated=true` 的记录逐个 `TryBind+SetRepeat`，
-     走 08 §5.2 journal（可整条撤销），完成后 `approximated` 清零；
-  3. 面板在 M9 前后都显示"降级建筑 N 栋"，N>0 时导出报告写明"其中 N 栋为等比缩放几何"（H-21 的 warning 级）。
+  1. 记录里 `heightValue` 的双义由 `flags.approximated` 区分（repeat ↔ 缩放百分数），两者互斥，
+     读取一律经 `RecordGeometry.Resolve`（11 §4.3 与 §13 风险第 1 条）；
+  2. 提供一次性迁移动作「重建降级建筑高度」= 对 `flags.approximated=1` 的记录逐个 `TryBind+SetRepeat`，
+     走 08 §5.2 journal（可整条撤销），完成后 `heightValue` 改写为 repeat、`approximated` 清 0；
+  3. 面板在 M9 前后都显示"降级建筑 N 栋"（**按记录统计**，含未加载区），N>0 时导出报告写明"其中 N 栋为等比缩放几何"（H-21 的 warning 级）。
 - ADR-0001 的**签名冻结时点**改为 M9 起点（而非 M0），但接口草案与批量成员保留在 06 §4.2（实现顺序：先接口，后注册）。
 
 ---

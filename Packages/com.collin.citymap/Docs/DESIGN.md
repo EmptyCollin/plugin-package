@@ -31,6 +31,13 @@
 >   同时**提前**建立包根 `Showcase.json`（§6 五字段，`order=20.0` 排在 core=0 / stretch=10 之后，
 >   `video` 暂为空串——校验器对空串跳过文件存在性检查，M10 补录视频后回填路径）。
 >   ⇒ M0 清单相应减少一项（见 §10）。
+> - **v8（2026-11-03）M0 已落地并提交（`ebb6f4b`，0.0.1）；本轮产出 Modules/11 接口冻结文档**：
+>   `BuildingRecord` 定为 **32 字节/栋**、小端、按 region 分块 + `blockIndex`、**禁用自动序列化器**。
+>   相对 v6 草案：删冗余 `id`/`landUseDominant`/`thresholdUsed`（纯派生）、增 `landF/I/R/A` 与 `footWQ/DQ`。
+>   定稿时新发现 **H-26**（footprint 覆盖不持久化→跨会话叠楼）、**H-27**（`slotKey` 冲突在 n=10⁵/2³¹ 下期望约 2.3 次，
+>   非边角情况）、**H-28**（`List<struct>` 走 SO 会退回 YAML → H-17 换皮回归）。
+>   活文档（DESIGN/06/07/08/10）的旧字段名已按 11 §9 对照表收敛；09 的历史推演行文不回改。
+>   **状态：结构定稿待用户确认冻结**（确认后任何字段增删须先登记 + 用户批准，见 11 §1/§11）。
 
 ## 0. 文档地图
 
@@ -45,8 +52,9 @@
 | Modules/06-BuildingProfile.md | 建筑配置表、四维值标度、stretch 桥接接口 | `BuildingProfile`、`IStretchService` |
 | Modules/07-BuildingFill.md | 准入过滤→加权随机→落位→拉伸驱动高度 | `BuildFillCommand`、`CityBuildingTag` |
 | **Modules/08-EditingWorkflow.md** | **编辑管线：操作顺序、L1~L4 反悔体系、锁区/负约束/adopt 局部反悔、冲突矩阵、历史面板** | `UndoHistoryTracker`、`LockRegionAsset`、`CityCheckpoint` |
-| **Modules/09-Workthrough.md** | **操作序列推演（设计验证）：R1 T1~T4 + R2~R4 走查，空洞 H-1~H-23 与回写裁决** | `CityCenterAnchor`、orphan 状态 |
+| **Modules/09-Workthrough.md** | **操作序列推演（设计验证）：四轮走查，空洞 H-1~H-25 与回写裁决** | `CityCenterAnchor`、orphan 状态 |
 | **Modules/10-StreamingExport.md** | **v6 新增：8km+ 大尺度的数据态真源、工作集流式、三形态导出（scene 切块/JSON/tile）** | `BuildingRecord`、`ViewportRealizer`、`CitySnapshot` |
+| **Modules/11-BuildingRecord.md** | **接口冻结：建筑落位记录字段/偏移/量化/位域/序列化布局/指纹输入/校验与迁移（H-26~H-28）** | `BuildingRecord`、`intentVersion`、`RecordGeometry.Resolve` |
 
 ---
 
@@ -207,10 +215,9 @@ r > outerR            → v = 0
 | 人工层：河流 | `RiverNetworkAsset`（折线+宽） | ✅ | 真源；下切剖面**派生不落盘** |
 | 人工层：骨架路网 | `RoadGraphAsset`（存原始点线） | ✅ | 真源；**平面化结果派生** |
 | 人工层：场域 | 场景内 `LandUseField` 组件 | ✅ 随场景 | 用户直觉 = 摆在地上 |
-| 建筑实例 | 场景 prefab 实例 + `CityBuildingTag` | ✅ 随场景 | 可被用户手动微调后 adopt |
 | 局部反悔层：锁区/负约束 | `LockRegionAsset`/`ConstraintAsset` | ✅ | 它们是意图层（08 §4） |
-| **建筑真源（v6）** | **`BuildingRecordAsset`（≤32B/栋紧凑记录）** | ✅ | 仅当存在人工改动/adopted 时必落盘；纯派生城可重算（D-25、10 §2.2） |
-| 建筑表现（v6） | 工作集内的 prefab 实例 + 反向指针 `CityBuildingTag.recordId` | ❌ | **投影，按需物化/回收，不是真源**（10 §2.1/§3.1） |
+| **建筑真源（v6/定稿）** | **`BuildingRecordAsset`（32B/栋，SO 元数据 + `byte[] payload`）** | ✅ | 仅当存在人工改动/adopted 时必落盘；纯派生城可重算（D-25、Modules/11） |
+| 建筑表现（v6） | 工作集内的 prefab 实例 + 反向指针 `CityBuildingTag.slotKey` | ❌ | **投影，按需物化/回收，不是真源**（10 §2.1/§3.1、11 §5） |
 | 场数据（高度/掩码/用途） | 按 region 的分块二进制（Library 缓存或结果层） | ❌ | 可重算；int16/byte 量化（D-26） |
 | 检查点 | `CityCheckpoint.asset`（命名）/ Library 自动快照 | 命名✅／自动❌ | 08 §8；v6 起含记录层，快照单位即 region |
 | 派生层：LandUseGrid/地块/slot/自动路网/网格 | 内存（调试可导出 `.tmp-inspect/`） | ❌ | 可重算，D-13 |
@@ -294,7 +301,7 @@ namespace Collin.Core {
 | **D-21** | **slot 失效的固化建筑转 `orphan` 保留（仍占位 + info 条目三选一）；Tracker 用集合哈希+版本差双检**（09 H-4/H-9→08 D-08-12） | v4 推演新增 |
 | **D-22** | ~~跨会话认回以 `CityBuildingTag` 为唯一依据~~ → **v6 由 D-25 修订**：主依据改为 `BuildingRecord` 资产 + `intentVersion` 指纹，tag 反查退为首次兜底；Tracker 首帧只建基线不触发重算（09 H-10/H-10b→08 D-08-14→10 §4） | v5 推演新增，v6 修订 |
 | **D-23** | **`重新生成`(保留人工层，免确认) 与 `新建城`(清空意图层，四重高危确认) 语义与按钮彻底分家；造城后显示"0 固化对象"+「冻结全城」入口**（09 H-16/H-14→08 §3.5） | v5 推演新增 |
-| **D-24** | **表行失效与 slot 失效同等对待 → 实例转 orphan 保留并占位；`profileRowId` 永不复用；桥接采用两段式合并 + 惰性解析 + 批量接口 + 注册唯一性检查**（09 H-15/H-11/H-12/H-13/H-14b） | v5 推演新增 |
+| **D-24** | **表行失效与 slot 失效同等对待 → 转 orphan 保留并占位；`rowId`/`slotKey` 永不复用；桥接采用两段式合并 + 惰性解析 + 批量接口 + 注册唯一性检查**（09 H-15/H-11/H-12/H-13/H-14b；键名统一见 Modules/11） | v5 推演新增，定稿收敛 |
 | **D-25** | **建筑真源 = `BuildingRecord` 数据层（≤32B/栋），GameObject 降为视口投影**；认回主依据从 tag 改为记录 + `intentVersion` 指纹（10 §2/§4，H-17/D-10-1/D-10-5） | v6 决策①③ |
 | **D-26** | **8km 档：逻辑格 4m + 高度 `int16` 量化 + 用途场 `byte` + region(1024m) 流式工作集**（常驻 <40MB；2m/float 口径实算 336MB 不可接受，H-18/D-10-2/D-10-3） | v6 决策③ |
 | **D-27** | **三形态导出（scene 切块 / citydata.json / 2D tile）共享单一 `CitySnapshot`；导出前强制全区一致性 `EnsureWholeMapConsistent()`，error 条目阻断导出**（10 §5，D-10-6/H-20/H-21/H-22） | v6 决策① |
@@ -338,6 +345,10 @@ A-37 影响预览与条目覆盖全图（未加载区可拉入） ｜ A-38 scene
 A-40 tile↔记录 双向一致（2D/3D 同源） ｜ A-41 导出前强制全区一致性、error 阻断 ｜ A-42 降级高度迁移可回滚
 **v7（Q-11/Q-12 落地）**：A-43 `chunkSizeM` 四档导出地形无跨块拼接缝、非法倍数值被拒 ｜ A-44 基准 tile 格式冻结后
 适配器改动零侵入基准通道，每适配器带字段对照表 + 往返像素一致用例（无用例不合并）
+**v8（Modules/11 接口冻结）**：A-45 `sizeof==32` 与偏移逐项断言 ｜ A-46 同输入两次 payload 逐字节一致（A-30 可判定形式）
+A-47 `slotKey` 冲突按 salt 协议消解、重复键 error 阻断保存（H-27）｜ A-48 footprint 覆盖跨会话存活无叠楼（H-26）
+A-49 10 万条时资产 YAML 行数 <500、打开保存不进分钟级（H-28）｜ A-50 面板门槛=派生值、无独立 threshold 字段
+A-51 `heightValue` 四种情形逐一验证、非法组合被校验阻断
 
 ## 10. 里程碑（v2 重排；一次交锁 = 一个可编译增量）
 

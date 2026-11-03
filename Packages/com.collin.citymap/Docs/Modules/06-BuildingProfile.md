@@ -132,7 +132,7 @@ citymap 侧：**惰性解析**——首次需要拉伸时 Services.TryGet(...)�
 | 项 | 行为 |
 |---|---|
 | 几何 | `Transform.localScale` 在 `stretchAxis` 上等比缩放（会拉伸窗户，观感次优） |
-| 标记 | 实例上 `CityBuildingTag.approximated = true`；面板黄色角标统计"降级 N 栋" |
+| 标记 | 写 `BuildingRecord.flags.approximated=1` 且 `heightValue`=缩放百分数（11 §4.3）；面板黄色角标统计"降级 N 栋"——**统计读记录而非投影组件**（未加载区同样可数） |
 | 不静默 | 主面板启动时若 `IStretchService` 不可用，显式提示「未检测到拉伸服务，已降级为等比缩放」 |
 
 ### 4.5 两段式合并（Modules/09 H-12 修订版，替代 v3 的笼统"申报"）
@@ -192,7 +192,7 @@ citymap 侧：**惰性解析**——首次需要拉伸时 Services.TryGet(...)�
 | A-6-3 | 四维全 0 行不参与主导准入，但统计摘要中可见 | 表校验 + 07 抽样日志 |
 | A-6-4 | CSV 导出→改值→导入，除被改字段外逐字节一致（列头固定、顺序稳定） | 往返 diff |
 | A-6-5 | `Services` 幂等注册：域重载两次后控制台**无** `IStretchService` 重复注册 error（门禁 §1.6b） | 触发域重载 + `console status` |
-| A-6-6 | `IStretchService` 可用时 `CityBuildingTag.stretchSource="com.collin.stretch"`；不可用时 `"fallback"` 且面板黄标统计 | 摘除/挂上 stretch 两种装配核对 |
+| A-6-6 | `IStretchService` 可用时新落位记录 `flags.approximated=0`（走 `SetRepeat`）；不可用时 `=1` 且面板黄标按**记录统计**给出数量（定稿后 tag 无 `stretchSource` 字段，装配状态由服务解析结果实时呈现，11 §4.3） | 摘除/挂上 stretch 两种装配核对 |
 | A-6-7 | 改 `Tuning.preset` 立刻改变下一次生成的多样性（同 seed 下唯一性统计差异显著） | 三档预设各跑一次，统计"相邻同类比例/唯一个数" |
 | A-6-8 | 表编辑器不阻断编辑、只阻断生成；`跳到第一处问题` 可定位 | 交互走查 |
 | **A-6-9** | 全项目 `Register<IStretchService>` 出现次数 **恰为 1**（位于 stretch 包内）；citymap 只 `TryGet` 从不注册；`Services` 域重载两次无重复注册 error | grep 断言 + `console status` 门禁（H-14b） |

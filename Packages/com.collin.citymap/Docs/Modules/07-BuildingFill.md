@@ -75,7 +75,10 @@ for parcel in 确定性顺序:
    **`orphan=true` 与 adopted/手刷对象一律视为已占位**（其 footprint 来自 `OccupiedHard` 掩码，00 §2.4/H-2），
    自动流程绝不与其重叠；
 3. 失败重试序列：`沿边滑动 ±step` → `旋转 90°` → `缩小 footprint（仅 footprint 覆盖值，不动几何）` → `跳过该 slot`；
-   重试次数上限 4，超限跳过并计数（跳过率进面板，>15% 提示"slot 与表尺寸不匹配"）；
+   重试次数上限 4，超限跳过并计数（跳过率进面板，>15% 提示"slot 与表尺寸不匹配"）。
+   **H-26 定稿要求**：第 3 步产生的覆盖值必须写入 `BuildingRecord.footWQ/DQ`（0=用表值，Modules/11 §2/§7）。
+   否则表是共享 Model（不能存实例差异，§0.1 原则2），跨会话重算后 footprint 回到表值 →
+   已让位的建筑重新重叠，**A-8 静默失效且无报错**。认回与 `OccupiedHard` 烘焙一律**先取记录覆盖值、无覆盖才 join 表**。
 4. 越界检查：不得进入 `Road/Water/WaterBuffer/OutOfBounds` 掩码格（A-8 断言对象）；
    `needsStilt=true` 的 slot（04 §3.4）首版跳过。
 5. 沿河 waterfront slot：朝向强制朝水（04 A-4-6），若与表内建筑正面约定冲突则允许 ±180° 翻转。
@@ -83,15 +86,24 @@ for parcel in 确定性顺序:
 ### 3.2 拉伸与高度（场域 → 形态的闭环）
 ```
 targetH = lerp(B.heightMin, B.heightMax, normalize(F_D(s))) × distanceDecay(dist 到城心)
-if B.stretchable and 拉伸服务可用:
+
+if B.stretchable and 拉伸服务可用:                          // 情形一：stretch 分段复制
     seg   = 首选可重复段（GetRepeatableSegmentCount>0）
     if GetPreferredRepeat(go, targetH, out n): SetRepeat(go, seg, n)
-    记 tag.stretchedHeight = GetHeight(go)
-elif B.stretchable:                       // 降级（06 §4.4）
-    localScale.y = targetH / 原始高； tag.approximated = true
-else:                                     // stretchable=false
-    几何与缩放恒等；若 targetH 与原始高差异 >10% → 记 "尺寸与形态不匹配" 建议（仅提示，不改）
+    record.heightValue = n            // = repeat（整数 ≥1）
+    record.flags.approximated = 0
+elif B.stretchable:                                        // 情形二：降级等比缩放（06 §4.4）
+    localScale.y = targetH / 原始高
+    record.heightValue = round(100 · targetH / 原始高)   // = scale 百分数（有效区 50~800）
+    record.flags.approximated = 1
+else:                                                    // 情形三：非拉伸行
+    几何与缩放恒等
+    record.heightValue = 1            // 哨兵值（11 §4.3 表第一列 false+0）
+    record.flags.approximated = 0     // false+1 为非法组合，校验 error（A-51）
+    若 targetH 与原始高差异 >10% → 记 "尺寸与形态不匹配" 建议（仅提示，不改）
 ```
+> `heightValue` 是**双义字段**，读侧一律经 `RecordGeometry.Resolve(record, row)` 单一入口解释（11 §4.3 与 §13 风险第 1 条），
+> 禁止在业务代码里手写 `heightValue/100` 这类推断。段号 `seg` 不持久化（11 §5：段模型属提供方）。
 - `distanceDecay`：城心高、外围矮（默认 `1 → 0.55`，半径外），中心**只读 `CityCenterAnchor`（01 §4.4，H-7 修订）**
   ——**不实时读场域位置**，否则"拖场域"会升级成全城重排。**无需新增参数**即可得到"CBD 塔楼群 + 外围低层"的城市轮廓。
 - 农业/工业地块：`targetH` 区间用表内该行的 `heightMin/Max`，不参与城心衰减（`decay=false` 的 tag 组，P1）。
@@ -99,26 +111,30 @@ else:                                     // stretchable=false
 
 ### 3.3 认回与增量重算（跨会话正确性的关键，Modules/09 H-10 修订；**v6 起主方案见 10 §4**）
 
-> **v6 修订（D-25）**：下方"扫场景 tag 建表"的 v5 方案在 8km/10 万栋下不可行（遍历 10 万对象且多数未加载），
-> 已改为「**`BuildingRecordAsset` + `intentVersion` 指纹为主，tag 反查仅作首次兜底（限工作集）**」。
-> 五步语义（不可替换集合、rowId 失效转 orphan、幂等要求）全部保留，仅数据源换层。
+> **v6 修订（D-25）+ 定稿收敛（Modules/11）**：v5 的"扫场景 tag 建表"在 8km/10 万栋下不可行
+> （遍历 10 万对象且多数未加载）；主方案 = **`BuildingRecordAsset` + `intentVersion` 指纹**，
+> tag 反查仅作首次兜底（限工作集）。旧文中的 `slotId`/`profileRowId` 统一为定稿的 **`slotKey`/`rowId`**，
+> 且判定一律读**记录字段**（`record.flags.*`），不再读组件字段（组件仅剩 `slotKey` 反向指针，§5）。
 
-**认回（reclaim）流程——映射靠 `CityBuildingTag` 反查，不靠内存快照：**
+**认回（reclaim）流程**
 ```
-S6 启动前：扫场景内所有带 CityBuildingTag 的实例 → reclaim 表 { slotId → instance }（O(实例数)）
-① tag.adopted || userModified || orphan || 属锁区 → 进"不可替换"集合，footprint 烘焙 OccupiedHard；
-② 同 slot 重算结果 rowId 相同且位置一致（容差 0.01m/1°）→ 保留实例（省一次 Instantiate，不闪）；
-③ 不一致 → 销毁旧 + 新建（正常重排）；
-④ tag.slotId 在本次派生结果中已不存在（地块消失）→ 转 orphan（走 08 §3.4 三选一处置）；
-⑤ 无 tag 的场景物体 → 永不触碰（可能是用户自己的东西）。
+S6 启动前：取记录集合 → 工作集内的投影按 record.slotKey join 现有 CityBuildingTag（O(工作集实例数)）
+① record.flags.(adopted|userModified|orphan|inLockRegion) 任一为真 → 进"不可替换"集合；
+   其 footprint = resolveRecordFootprint(record, row)（覆盖值优先，11 §7 H-26）→ 烘焙 OccupiedHard
+② 同 slotKey 的重算结果 rowId 相同 且 xQ/zQ/yawQ 一致 → 保留投影实例（省一次 Instantiate，不闪）
+③ 不一致 → 销毁旧投影 + 按新记录物化（正常重排）
+④ 记录里的 slotKey 在本次派生结果中已无对应 slot（地块消失）→ flags.orphan=1，记录保留、不删（走 08 三选一）
+⑤ 无 tag、也无记录匹配的场景物体 → 永不触碰（可能是用户自己的东西）
 ```
 ```
-会话内增量：prev = { slotId: (rowId, placeHash) }  ← 降级为**纯优化缓存**（少扫一遍场景），
-跨会话正确性完全由 tag 承担 ⇒ D-13（派生层不落盘）得以成立。
+会话内增量：prev = { slotKey: (rowId, placeHash) }  ← 纯优化缓存（少做一次 diff）
+跨会话正确性由【记录 + intentVersion】承担 ⇒ D-13（派生层不落盘）得以成立。
 ```
-- 幂等要求：**重开编辑器→保存，场景不得多出一栋楼**（A-30）。
-- **rowId 失效同判（H-15）**：认回第②步前检查 `tag.profileRowId` 在当前表中是否存在；不存在 → 该实例转 orphan 并
-  进"改绑/删除/保留为固化"三选一条目；`profileRowId` 永不复用（同 03 边 id 规则）。
+- 幂等要求：**重开编辑器→保存，记录 payload 逐字节不变、投影无净增实例**（A-30/A-46）。
+- **rowId 失效同判（H-15）**：认回第②步前检查 `record.rowId` 在当前表中是否存在；不存在 → `flags.orphan=1`
+  并进"改绑/删除/保留为固化"三选一条目；`rowId` 与 `slotKey` 均**永不复用**（同 03 边 id 规则，冲突协议见 11 §4.2）。
+- 表行被删但记录还在 = "无主 auto 物"：既不占位也不被 diff 认领，重排会叠楼——A-8 的静默破坏源，必须按上述转 orphan。
+- 不在"next"集合中的 parcel：一行代码都不执行（A-5-4 的落点）。
 - 表行被删但实例还在 = "无主 auto 物"：既不占位也不被 diff 认领，重排会叠楼——本条是 A-8 的静默破坏源，必须按上述转 orphan。
 - 不在"next"集合中的 parcel：一行代码都不执行（A-5-4 的落点）。
 
@@ -156,28 +172,27 @@ slot: id, pos, landUse(F,I,R,A 四项 + 主导维度 + 门槛 Th)
 
 ## 5. 数据与持久化
 ```csharp
-public sealed class CityBuildingTag : MonoBehaviour {   // 挂在每个生成建筑根上
-    [SerializeField] int   profileRowId;      // 表行稳定 id（删行不复用，同 03 规则）
-    [SerializeField] int   slotId, parcelId, fieldStableIdHash;
-    [SerializeField] float4 landUseAtPlace;   // 落位时的四维（事后场域变了仍可追溯"当初为什么选它"）
-    [SerializeField] int   thresholdUsed;
-    [SerializeField] bool  approximated;      // 降级拉伸
-    [SerializeField] bool  userModified;      // 人工改动 → 永不自动替换（A-14）
-    [SerializeField] bool  adopted;           // 由 auto 固化为人工层
-    [SerializeField] bool  orphan;            // 宿主 slot 已因上游变化消失（H-4）：保留对象+仍占位
-    [SerializeField] float stretchedHeight;
+// 定稿（Modules/11）：CityBuildingTag 只是【投影上的反向指针】，不承载任何持久语义。
+// 旧版（v5 遗留）在此存 rowId/landUse/threshold/adopted 等字段，与 BuildingRecord 重复 ⇒ 双真源，已废除。
+public sealed class CityBuildingTag : MonoBehaviour {
+    [SerializeField] int slotKey;        // 唯一字段 = BuildingRecord.slotKey（认回 join 键）
+    // 以下均为【投影期缓存】，回收前必须由保存钩子写回记录，读取一律以记录为准：
+    //   位置/朝向/footprint 覆盖/heightValue/flags —— 全部来自记录，不在此重复存储
 }
 ```
+> **禁止**在本组件上再加回 `adopted`/`orphan`/`approximated` 等布尔位：投影可被随意销毁重建，
+> 组件字段的生命周期短于记录，任何以组件为真源的判定都会在"未加载区"或跨会话后失效（10 §4、11 §5）。
+> 「为什么选它」面板（§4.3）读四维与门槛时一律从记录取（`land{F,I,R,A}` + `argmax`），随机数由 `objectSeed(6, slotKey)` 现算。
 > **v6 重大变更（D-25 / 10 §2）**：建筑的**真源是 `BuildingRecord` 数据（≤32B/栋，10 万栋 ≈3.2MB）**，
 > 场景 GameObject 只是工作集内的**投影**，可随意销毁重建。下方 `CityBuildingTag` 因此**降级为反向指针**
-> （`recordId` 为主，其余字段改为"投影期缓存"，回收前必须写回记录）。原"实例落盘"模型在 8km/10 万栋下
+> （唯一字段 `slotKey` 为反向指针，其余字段一律以记录为准，回收前必须写回）。原"实例落盘"模型在 8km/10 万栋下
 > 会让场景 YAML 膨胀到数百 MB、打开与保存进入分钟级（09 H-17，阻断级）。
 
 | 数据 | 载体 | 入 git | 说明 |
 |---|---|---|---|
-| **建筑真源：`BuildingRecordAsset`** | SO（紧凑二进制记录数组） | ✅（有人工改动/adopted 时必存；纯派生城可省） | 认回主依据 + `intentVersion` 指纹（10 §4） |
+| **建筑真源：`BuildingRecordAsset`** | SO 元数据 + `byte[] payload`（32B/栋，按 region 分块，11 §3） | ✅（有人工改动/adopted 时必存；纯派生城可省） | 认回主依据 + `intentVersion` 指纹；**禁止自动序列化器**（11 H-28） |
 | 建筑投影（prefab 实例） | 场景/内存，工作集内 | ❌ | 按需物化与 LRU 回收；**回收≠丢数据**（10 §3.1） |
-| `CityBuildingTag` | 投影上的组件 | ❌（随投影回收） | 仅 `recordId` 有持久含义；用户改动经保存钩子写回记录 |
+| `CityBuildingTag` | 投影上的组件 | ❌（随投影回收） | 仅 `slotKey` 有持久含义（反向指针）；用户改动经保存钩子写回记录 |
 | `ManualBuildingAsset`（手刷人工层） | SO | ✅ | 重生成保留（D-08） |
 | 落位快照 diff 表（§3.3 prev） | ❌ 内存 | — | **纯优化缓存**；跨会话正确性由**记录资产**承担（v5 曾写"由 tag 承担"，v6 修订：10 万对象遍历不可行，见 10 §4） |
 | 统计/调试 | `.tmp-inspect/` | ❌ | 不入库（AGENTS §9） |
@@ -219,7 +234,7 @@ public sealed class CityBuildingTag : MonoBehaviour {   // 挂在每个生成建
 | A-7-2 | 手刷人工层（`ManualBuildingAsset`）重生成后仍生效 | 用例 |
 | A-8 | 建筑两两 OBB 重叠率 ≤0.5%（超出记 warning）；无建筑落在 `Road/Water/WaterBuffer/OutOfBounds` 格；无建筑中心越出所属 parcel 外扩 2m | 空间哈希全量检测 |
 | A-9 | `stretchable=false` 的行：`localScale == prefab 默认`（1e-6 容差）且无 mesh 改动 | 抽样 200 栋断言 |
-| A-9b | `stretchable=true` 且服务可用：`tag.stretchedHeight` 与 `GetHeight()` 一致，`approximated=false`；服务不可用时 `approximated=true` 且黄标计数正确 | 两种装配（A-13） |
+| A-9b | `stretchable=true` 且服务可用：`record.heightValue`=repeat 且 `flags.approximated=0`，`GetHeight(go)` 与 `RecordGeometry.Resolve` 一致；服务不可用时 `approximated=1`、`heightValue`=缩放百分数、黄标计数正确 | 两种装配核对（A-13、11 §4.3） |
 | A-10 | 自动跟随=on 时，改场域/表/ρ 均无需点按钮即见结果；拖场域期间无全量重建 | 交互走查 + Profiler（配合 A-5-5） |
 | A-11 | 全量生成同 seed 两次：逐 slot 的 (rowId, pos, repeat) 完全一致 | 快照哈希比对（A-1 的建筑侧） |
 | A-12 | 分帧生成期间取消：无残留半成品节点，随后完整重跑与不取消结果一致 | 00 A-0-4 联合 |
