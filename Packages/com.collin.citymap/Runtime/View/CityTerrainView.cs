@@ -433,13 +433,20 @@ namespace Collin.CityMap
         private Mesh NewMesh(string name)
             => new Mesh { name = name, hideFlags = HideFlags.HideAndDontSave };
 
-        /// <summary>材质三级回退：引用 → URP Lit → Diffuse。本包不依赖任何 shader 包（01 §3.3）。</summary>
+        /// <summary>
+        /// 材质回退链：引用 → 本包自带顶点色着色器 → URP Lit → Diffuse。
+        /// <para>M3 交付缺口（用户实机反馈"地表没有材质，看起伏比较累"）：显示层已把坡度写进顶点色，
+        /// 但 URP/Lit 与 Diffuse <b>都不读 COLOR 语义</b> ⇒ 色带等于白写。本包按 01 §3.3 自带
+        /// 一个不依赖外部 shader 包的着色器（<c>Sample/Shaders/CityTerrainVertexColor.shader</c>），
+        /// 优先级放在 URP Lit 之前。正式项目仍可用 <see cref="materialOverride"/> 换成自己的地形材质。</para>
+        /// </summary>
         private Material ResolveMaterial()
         {
             if (materialOverride != null) return materialOverride;
             if (_autoMat != null) return _autoMat;
 
-            var sh = Shader.Find("Universal Render Pipeline/Lit");
+            var sh = Shader.Find(OwnShaderName);
+            if (sh == null) sh = Shader.Find("Universal Render Pipeline/Lit");
             if (sh == null) sh = Shader.Find("Diffuse");
             if (sh == null)
             {
@@ -453,6 +460,9 @@ namespace Collin.CityMap
             };
             return _autoMat;
         }
+
+        /// <summary>本包自带地形着色器的名字（单一真源，与 shader 文件内声明一致）。</summary>
+        public const string OwnShaderName = "Collin/CityMap/Terrain VertexColor";
 
         private void DestroyChunk(Vector2Int c)
         {

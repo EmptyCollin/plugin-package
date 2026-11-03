@@ -5,6 +5,29 @@
 ## [Unreleased]
 
 ### Added
+- **M4-a（材质补齐 + 资产归位 + 工作流重排提案）**，响应用户实机体验的两条反馈：
+  - **修复"地表没有材质，看起伏比较累"**（用户反馈①，根因是 M3 交付缺口）：显示层已写顶点色坡度带，
+    但回退链 `URP/Lit → Diffuse` **都不读 `COLOR` 语义** ⇒ 色带白写；01 §3.3 要求的"包内 URP-compatible 材质"漏交付。
+    补 `Sample/Shaders/CityTerrainVertexColor.shader`（单 pass 顶点色×兰伯特，实测 `isSupported=True`；
+    include 逐个核对真实存在，首版引用不存在的 `ShadowCasterAmbient.hlsl` 会致着色器编译失败污染控制台，已删）
+    + `Sample/Materials/CityTerrainVertexColor.mat`（`_Ambient=0.45`，由编辑器生成而非手搓 YAML）；
+    回退链改 **引用 → 自带 shader → URP/Lit → Diffuse**。
+    **端到端实测**：绑定项目重建 → `显示 3969/3969 chunk · 逻辑 2000²格 @4m · 显示 16m · chunk 128m`，
+    块渲染器实际 `shader=Collin/CityMap/Terrain VertexColor`。
+  - **H-44（本会话自造，校验器 `assets-layout` 抓到）**：`FindOrCreateProfile()` 原静默往 `Assets/Collin/`
+    建资产，违反 §0「插件内容须进包」，且用户点「创建地形实例」时已在磁盘留下违规目录。
+    改固定进 `Packages/com.collin.citymap/Sample/Profiles/`（stretch 同构先例）；**不改成弹保存框**——
+    `SaveFilePanelInProject` 只能落 `Assets/`，弹框反而把违规变成"用户自选"。
+    已生成资产用 `AssetDatabase.MoveAsset` **保留 GUID 迁回包内**（场景引用不断），校验器转 `[ ok ]`。
+  - **面板代建对象的自洽性缺陷**：`CreateTerrainInstance()` 未绑 `projectForStandalone` ⇒
+    面板一关（权威上下文消失）即 `无权威上下文且未绑定自建项目 / chunks=0` 永久空白。实测取证后补绑定。
+  - **`Docs/Modules/12-TerrainWorkflow.md`（提案，待批准、未动代码）**：用户裁定三段式工作流
+    （① 仅参数 → ② 平面+山水雕刻+噪音 → ③ 平整成地表）+ **三级坡度退让**。
+    结论：**与 01 §3.2 重放契约不冲突**（"雕刻先于平整"本就是契约第 3→4 步），要改的是里程碑次序
+    与新增 `hardRetreatSlope` 硬退让档；关键发现是**退让判定时机不能放 S1b**（路网在其之后已排定，
+    退让形同虚设）⇒ 必须"早判 steepMask 置 NoBuild + S3/S4 读之绕行"。含 2 个待用户定的参数。
+  - 门禁（M4-a 复跑）：编译 `failed=False`；`console clear`→重跑→**`consoleErrors=0/consoleWarnings=0/seeded=True`**；
+    本包 **100/100**；`assets-layout` 转绿。唯一 FAIL 仍为他包 `com.collin.stealth.lock` 超时（§3 不代删，如实上报）。
 - **M3-b（Modules/01 面板实时链路：改参数即时反映 / A-0-3 / 01 §4.4）已实现并自测**
   （本包 `test run --mode editor --filter_type assembly --filter com.collin.citymap.Tests` Total **100** / Failed 0，
   较 M3 增 1 条 `Value_Key_Covers_Every_Tunable_Field`）：

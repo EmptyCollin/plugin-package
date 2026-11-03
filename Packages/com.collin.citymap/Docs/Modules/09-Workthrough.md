@@ -664,3 +664,84 @@ GUI 可用性须你在 `Tools/Collin/CityMap/City Window` 实机确认。
 
 累计空洞 **H-1~H-43（43 处）**不变（§25.2 的双重 bump 属本会话自查修掉、未登记新号，
 因它在落盘前就被自己发现、没有成为对外缺陷）。
+
+---
+
+# 第八轮（用户实机反馈 → 材质补齐 + H-44 + 工作流重排，2026-11-03）
+
+> 用户拿去体验，回来给两条：① 「地表没有材质，看起伏比较累」；② 「没有山不够自然」，
+> 要求把流程改成**先创作山水、再生成城市**，且坡度过大的块应自然摆不了建筑。
+> 本轮把①修掉（含 2 个新缺陷），把②写成提案（`12-TerrainWorkflow.md`，**待批准、未动代码**）。
+
+## 26. 反馈①「看不清起伏」：不是用户操作错，是 M3 漏交付 + 我自己写的材质链有洞
+
+01 §3.3 原文有**两句**，M3 我只执行了前一句：
+> 顶点色可写坡度/用途用于调试着色。…… 材质：本包**不依赖任何 shader 包**，
+> 提供 URP-compatible 的 SimpleLit 材质引用（`Sample/` 内）。
+
+我把坡度写进了顶点色，却**没提供那个材质**——回退链只有 `URP/Lit → Diffuse`，
+而**这两者都不读 `COLOR` 语义** ⇒ 色带白写。用户看到的是"灰蒙蒙一片光照"，反馈完全合理。
+补 `Sample/Shaders/CityTerrainVertexColor.shader` + `.mat`，回退链改成 `引用 → 自带 shader → URP/Lit → Diffuse`。
+
+**写 shader 时的两次自我纠正（都值得记）**：
+1. 首版用 `_MainLightPosition` + 手加 `ShadowCaster pass`，并 include 了一个我以为存在的
+   `ShadowCasterAmbient.hlsl`。**反射核对 URP 包内文件后确认它不存在**（`MISS`）。
+   着色器编译失败会**直接污染控制台、破坏 §1.6b**，比 C# 报错更隐蔽（它不一定进 recompile_status 的 errors）。
+   ⇒ 删掉整个投影 pass（非必需，只影响地形是否投影），只留一个前向 pass，把 include 面压到最小。
+2. 改用 `GetMainLight()` 前先查了它到底定义在哪：`RealtimeLights.hlsl:100`，
+   而 `Lighting.hlsl` 第 7 行 include 了它 ⇒ 引用链成立。**不查就写 = 赌**。
+- 材质资产**由编辑器 `AssetDatabase.CreateAsset` 生成，不手搓 .mat 的 YAML**：
+  `serializedVersion` / `ShaderConfig` 等字段与 URP 版本耦合，手搓极易产出不合法资产（探针实测 `isSupported=True` 后才确认）。
+
+**决定性取证（不看"编译过了"，看真实渲染路径）**：反射给场景里的显示宿主绑项目+Profile 后 `RebuildNow()`，
+读 `chunk` 的 `MeshRenderer.sharedMaterial.shader.name`：
+```
+status=显示 3969/3969 chunk · 逻辑 2000²格 @4m · 显示 16m · chunk 128m
+shader=Collin/CityMap/Terrain VertexColor
+```
+
+## 27. H-44（本会话自造，**由校验器抓到**）：面板静默往 `Assets/Collin/` 建资产
+
+`FindOrCreateProfile()` 我当初为了"不打断手感"，写成自动 `CreateFolder("Assets","Collin")` + 建资产
+⇒ **直接违反 AGENTS §0「禁止把插件代码放 Assets/」** ⇒ 校验器 `assets-layout` **FAIL**，
+而且用户点「创建地形实例」时**已经在磁盘留下违规目录**。
+
+取证时有个意外收获：那个 `Assets/Collin/TerrainProfile.asset` 里参数全是默认值（18/1.2/0.25/12）
+—— 与用户"拖了滑条好像没反应"相互印证：**拖动中途被域重载打断，值没落盘**。
+
+修法两个选择，我选了后者并说明为什么不选前者：
+- ✗ 改成弹 `SaveFilePanelInProject`：它**只能落 `Assets/` 下**，弹框等于把违规路径变成"用户自己选的"，
+  §0 依然被破，还把缺陷责任推给用户。
+- ✓ 固定写包内 `Packages/com.collin.citymap/Sample/Profiles/`（**stretch 包同构先例**：
+  `com.collin.stretch/Sample/Profiles/`）。
+- 已生成的资产用 `AssetDatabase.MoveAsset` **保留 GUID** 迁回包内 ⇒ 场景里对它的引用不断，
+  再 `DeleteAsset` 清空目录。复跑校验器 `assets-layout` 转 `[ ok ]`。
+
+**纪律**：面板里任何"替用户自动创建资产"的路径，落点必须在包内；
+**且自动创建前应先想"这个对象脱离面板后还自洽吗"**（见 §28，同一次审查里抓出来的）。
+
+## 28. 现场读出的第二缺陷：面板代建的显示宿主没有数据源
+
+反射读现场不是猜的：
+```
+views=1 | status=无权威上下文且未绑定自建项目（Play 里需指定项目） chunks=0
+```
+根因：`CreateTerrainInstance()` 建了 `CityTerrainView` 却没绑 `projectForStandalone`。
+面板开着时有 `CityRuntime.ActiveContext` 可用，**面板一关（或进 Play、或换独立场景）权威上下文消失 ⇒ 永远空白**。
+修：创建时一并 `SetStandaloneProject(_project)`。
+
+## 29. 反馈②「先雕山水再建城」——结论：不违反 §3.2 契约，只是里程碑次序
+
+用户三段式映射到现有阶段：平面 = `baseAmplitude=0` 的 S1a 特例；山水 = S2 下切 + 雕刻 delta；平整 = S1b。
+`h_base → carve → sculpt → flatten` **次序本来就如此**（"人工雕刻优先于自动平整"正是 §3.2 第 3→4 步），
+所以**契约不动**，改的是里程碑次序（创作工具前移）+ 新增坡度硬退让档。详见 `12-TerrainWorkflow.md`。
+
+**但推演中发现一个真问题（提案 §2，用户裁定"三级退让"时没预料到的）**：
+`ExecutionOrder` 里 **S3 路网早于 S1b 平整**。若"太陡不可建"到 S1b 才判，路网早已穿过陡区、退让形同虚设。
+⇒ 必须**早判**：S1a/carve/sculpt 完成后立刻逐格算 `steepMask` 置 `NoBuild`，S3/S4 读之绕行。
+这条是"按用户直觉改设计、却发现与既有执行序冲突"的典型，写进提案供批准时判断成本。
+
+## 30. 本轮累计
+
+空洞 **H-1~H-44（44 处）**；阻断级仍 7 处。材质链与资产落点两处都是**只有实机/只有校验器才会暴露**的：
+纸面推演与单元测试都覆盖不到（单元测试不断言材质、校验器不在测试里跑）。

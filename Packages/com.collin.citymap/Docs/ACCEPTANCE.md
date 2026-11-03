@@ -49,6 +49,10 @@
 | 40 | **M3-b** 地形参数值指纹覆盖**每一个**可调字段（漏一个 = 该字段被 Inspector 直改时面板永远检不出） | `Value_Key_Covers_Every_Tunable_Field`（反射枚举全部 `[SerializeField]` 参数逐个扰动比对；枚举自校验 ≥18 个，实得 **20**；漏检字段数 = **0**；复位后指纹回到基线 = 无时间/地址副作用） | qianwen-work-assistant / `2026-11-03 m3-view` | 2026-11-03 | **通过**（见 §M3-9） |
 | 41 | **M3-b** 面板参数控件区 + Inspector 直改第二检已落盘并通过编译（§0.1 原则1「所见即所得」的交互面） | `CityWindow.DrawTerrainProfile()` / `DetectDirectProfileEdit()` / `TerrainProfile.ComputeValueKey()`；`script recompile_status` → `failed=False`、`errors=0`（rt+Editor+Tests 三侧 dll mtime ≥ 源码） | 同上 | 2026-11-03 | **编译通过、数据侧已断言；GUI 交互未取证**（见 §M3-9 末段：反射调 GUI 会抛「只能在 OnGUI 内调用」，故滑条手感须你实机确认） |
 | 42 | **M3-b** 面板增量交锁门禁复跑（最终） | `console clear` → 静默 → `test run --filter_type assembly --filter com.collin.citymap.Tests` → `verify_project.py` → `console status` | 同上 | 2026-11-03 | **本包 100/100**；**`consoleErrors=0/consoleWarnings=0/seeded=True`**；校验器 **`FAIL 0`、结论: 绿灯**（此前外部红灯已由 stealth 会话自行修复消解，本会话未越界处置，见 §M3-10 / §M3-11） |
+| 43 | **M4-a** 地表有材质且**坡度顶点色真的可见**（01 §3.3 交付项，用户反馈①） | `Sample/Shaders/CityTerrainVertexColor.shader` 实测 `Shader.Find(...).isSupported=True`；端到端：反射绑定 CityProject+Profile → `RebuildNow()` → `status=显示 3969/3969 chunk · 逻辑 2000²格 @4m · 显示 16m · chunk 128m`，`MeshRenderer.sharedMaterial.shader.name = Collin/CityMap/Terrain VertexColor` | qianwen-work-assistant / `2026-11-03 m4-terrain-workflow` | 2026-11-03 | **通过**（见 §M4-a-1；根因是 M3 回退链只有 URP/Lit→Diffuse，二者都不读 `COLOR` ⇒ 色带白写） |
+| 44 | **M4-a** 插件资产不落 `Assets/`（AGENTS §0） | `python Tools/verify_project.py` → `[ ok ] assets-layout`；`ls Assets/Collin` → 不存在；资产已在 `Packages/com.collin.citymap/Sample/Profiles/TerrainProfile.asset`（`MoveAsset` 保留 GUID，场景引用不断） | 同上 | 2026-11-03 | **通过**（H-44 为本会话自造缺陷、由校验器抓到，见 §M4-a-2） |
+| 45 | **M4-a** 面板代建的地形实例脱离面板仍自洽 | 现场读数原为 `无权威上下文且未绑定自建项目 / chunks=0`；补 `SetStandaloneProject(_project)` 后同一路径产出 3969 chunk（见条目 43） | 同上 | 2026-11-03 | **通过**（见 §M4-a-3） |
+| 46 | **M4-a** 工作流重排与三级坡度退让已成文，**未动代码** | `Docs/Modules/12-TerrainWorkflow.md`（§1 三段式映射 / §2 退让须早判 / §3 三档语义 / §4 里程碑重排 / §6 风险） | 同上 | 2026-11-03 | **提案待批准**：`hardRetreatSlope` 默认值与"整块丢弃 vs 只削陡角"两项须用户定，批准前不实现（§4 DESIGN 先于代码） |
 
 
 ## 未通过项
@@ -421,9 +425,73 @@ GUI 控件本身的可用性须你在编辑器 `Tools/Collin/CityMap/City Window
 - `script recompile_status` → `failed=False`、`errors=0`（rt+Editor+Tests 三侧 dll mtime ≥ 源码）；
 - `verify_project.py` 本包项（`pkg-layout`/`runtime-purity`/`dep-*`/`asmdef`/`showcase`/`manifest-sync`/`hygiene`）全 `[ ok ]`。
 
+## 本次会话执行记录（M4-a：材质补丁 + 资产归位 + 工作流提案，2026-11-03）
+
+> 同会话续做，起因是用户实机体验后的两条反馈。测试规模不变（本包 100 条）。
+
+### §M4-a-1 用户反馈①「地表没有材质，看起伏比较累」——根因与修复
+**根因（M3 交付缺口，非用户操作错误）**：显示层按 01 §3.3 已把坡度写进顶点色，
+但材质回退链只有 `URP/Lit → Diffuse`，而**这两者都不读 `COLOR` 语义** ⇒ 色带等于白写。
+01 §3.3 原文同时要求"本包不依赖任何 shader 包，提供 URP-compatible 材质引用（`Sample/` 内）"
+——这条要求 M3 漏交付了，本轮补齐：
+- `Sample/Shaders/CityTerrainVertexColor.shader`：单 pass 顶点色 × 兰伯特主光。
+  实测 `Shader.Find(...).isSupported = True`。**写之前逐个核对了 include 真实存在**：
+  `Core.hlsl`（坐标变换）+ `Lighting.hlsl`（其第 7 行 include `RealtimeLights.hlsl:100` 定义 `GetMainLight()`）。
+  首版曾引用不存在的 `ShadowCasterAmbient.hlsl`，会直接导致着色器编译失败污染控制台（§1.6b），已删除该 pass。
+- `Sample/Materials/CityTerrainVertexColor.mat`（`_Ambient=0.45`，由编辑器 `AssetDatabase.CreateAsset` 生成，
+  不手搓 .mat 的 YAML 以免序列化版本不符）。
+- `CityTerrainView.ResolveMaterial()` 回退链改为 **引用 → 自带顶点色 shader → URP/Lit → Diffuse**。
+
+**端到端取证（决定性证据，不是"编译通过就算好"）**：反射绑定项目 + Profile 后 `RebuildNow()`，实测
+```
+status=显示 3969/3969 chunk · 逻辑 2000²格 @4m · 显示 16m · chunk 128m   chunks=3969
+shader=Collin/CityMap/Terrain VertexColor
+```
+⇒ 3969 块全部产出，且**块渲染器实际用的就是自带着色器**，坡度色带这次真的可见。
+
+### §M4-a-2 H-44（本会话自造缺陷，由校验器抓到，非他包噪声）
+`CityWindow.FindOrCreateProfile()` 原先**静默往 `Assets/Collin/` 创建 Profile 资产**，
+直接违反 AGENTS §0「禁止把插件代码/资产放 Assets/」⇒ 校验器 `assets-layout` **FAIL**，
+且用户点「创建地形实例」时已在磁盘留下违规目录。
+- **取证**：`Assets/Collin/TerrainProfile.asset` 参数全为默认值（18/1.2/0.25/12），
+  与"用户反馈拖滑条没反应"相互印证（拖动中途被域重载打断，值未落盘）。
+- **修法**：目标目录固定为 `Packages/com.collin.citymap/Sample/Profiles/`（与 stretch 包同构先例一致）。
+  **没有**改成弹保存框：`SaveFilePanelInProject` 只能落 `Assets/` 下，弹框反而把违规路径变成"用户自选"。
+- **迁回**：用 `AssetDatabase.MoveAsset` 把已生成的资产移进包内（**保留 GUID ⇒ 场景引用不断**），
+  再 `DeleteAsset` 清掉空目录。复跑校验器 `assets-layout` 转 `[ ok ]`。
+- **纪律**：面板里任何"自动创建资产"的路径，必须写包内；`Assets/` 只留展板（§0）。
+
+### §M4-a-3 另一处实机才暴露的缺陷（面板创建的实例无数据源）
+反射读现场：`status=无权威上下文且未绑定自建项目（Play 里需指定项目） chunks=0`。
+根因：`CreateTerrainInstance()` 建了 `CityTerrainView` 却没绑 `projectForStandalone` ⇒
+**面板一关（权威上下文消失）画面就永远空白**。修法：创建时一并 `SetStandaloneProject(_project)`。
+教训：面板"代用户创建对象"时，必须保证**脱离面板后该对象仍自洽**。
+
+### §M4-a-4 豁免清单归属澄清（不是本会话塞的）
+门禁期间那条 Unity Connect 的 `services-gateway` error 从 FAIL 降为 WARN，
+是因为**其他会话**已建 `Tools/console_allowlist.json`（提交 `b753078`，`approved_by` 记录用户 2026-11-02 批准，
+条目为 `services-gateway` / `UnavailableForLegalReasons` / `generators.ai.unity.com`）。
+本会话**未修改该共享文件**；校验器现输出 `console: error=0 warning=0`（归零序列内本就干净）。
+
+### §M4-a-5 交锁三项门禁（M4-a 最终复跑）
+| 门禁 | 结果 |
+|---|---|
+| §1.6a 编译 | `recompile_status` `failed=False`、`errors=0`；Editor dll mtime ≥ 源码（H-36 新鲜度核验） |
+| §1.6b 控制台 | `console clear` → 重跑本包全量测试 + 校验器 → **`consoleErrors=0/consoleWarnings=0/seeded=True`** |
+| §1.6c 校验器 | 本包项全 `[ ok ]`（含转绿的 `assets-layout`）；**唯一 FAIL = 他包 `com.collin.stealth.lock` 超时 647s**（session 非本会话，§3 不代删） |
+| 测试 | 本包 `--filter_type assembly` → **Total 100 / Passed 100 / Failed 0** |
+
+红灯外部来源处置与 §M3-10 同：如实上报 + 持锁等待，未越界改删他人文件或锁。
+
+### §M4-a-6 工作流重排提案（已写就，**待批准，未动代码**）
+用户裁定三段式（① 仅参数 ② 平面+山水雕刻+噪音 ③ 平整成地表）与**三级坡度退让**。
+结论：与 01 §3.2 重放契约**不冲突**（"雕刻在平整前"本就是契约第 3→4 步），要改的是里程碑次序 + 新增硬退让档。
+提案落盘 `Docs/Modules/12-TerrainWorkflow.md`，内含两个**必须由用户定的参数**：
+`hardRetreatSlope` 默认值、陡区是整块丢弃还是只削陡角。按 §4「DESIGN 先于代码」，批准前不实现。
+
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~42）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~46）。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。
 - 未实测且当前无法验证的：所有需要河/路/场域/建筑真实数据的断言（A-2~A-8、A-26~A-44、A-48 的端到端形态）。
   **地形侧已在 M2/M3 打通**（S1a/S1b + 显示 mesh 均实机可见）；尚缺的是 01 依赖其他模块的条目：

@@ -1,0 +1,38 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 0}
+  m_Name: TerrainProfile
+  m_EditorClassIdentifier: com.collin.citymap:Collin.CityMap:TerrainProfile
+  schemaVersion: 1
+  stableId: terrain-0000014d-e401d5
+  ledger:
+    channels: []
+    manualVersion: 0
+  baseAmplitude: 18
+  baseWavelength: 520
+  octaves: 4
+  gain: 0.5
+  lacunarity: 2
+  domainWarpAmp: 0.35
+  detailAmplitude: 1.2
+  detailWavelength: 24
+  urbanFlatness: 0.25
+  urbanCenterFallback: {x: 0, y: 0}
+  urbanRadius: 0
+  flatnessInnerEdge: 0.6
+  flatnessOuterEdge: 1.4
+  maxParcelSlope: 5
+  freeWeight: 0.6
+  constraintInner: 12
+  constraintExtend: 12
+  targetPlaneMaxSlope: 12
+  roughnessLock: 0

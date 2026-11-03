@@ -404,6 +404,11 @@ namespace Collin.CityMap.EditorTooling
             go.AddComponent<CityTerrainView>();
             if (_project != null) terr.SetProfile(FindOrCreateProfile());
             _terrain = terr;
+            // 面板创建的实例必须同时绑定自建项目：面板一关（或独立场景 / Play），权威上下文就消失，
+            // 不绑定的话显示宿主没有数据源 ⇒「创建了实例但画面永远空白」。
+            // 实测原状：status=「无权威上下文且未绑定自建项目」，chunks=0。
+            var view = go.GetComponent<CityTerrainView>();
+            if (view != null && _project != null) view.SetStandaloneProject(_project);
             _stageKey = 0;
             SyncStages();
             Selection.activeGameObject = go;
@@ -421,19 +426,49 @@ namespace Collin.CityMap.EditorTooling
             Repaint();
         }
 
-        /// <summary>找同名 Profile 资产；没有则在项目资产旁建一个（避免每次弹保存框打断手感）。</summary>
+        /// <summary>
+        /// Profile 资产存放处 = **包内 Sample/Profiles/**（AGENTS §0「插件内容须进包」+ §0 showcase 定义；
+        /// stretch 包同构先例：`com.collin.stretch/Sample/Profiles/`）。
+        /// <para>H-44（校验器 assets-layout 抓到，本会话自造）：原实现静默往 `Assets/Collin` 建资产，
+        /// 直接违反 §0；用户点「创建地形实例」时已在磁盘留下游离资产。
+        /// 这里不改成弹保存框，是因为 <c>SaveFilePanelInProject</c> 只能落在 <c>Assets/</c> 下
+        /// （无法写入 Packages/），弹框反而会把违规路径变成"用户自己选的"。故固定进包内并 Ping 出来可见。</para>
+        /// </summary>
+        private const string ProfileFolder = "Packages/com.collin.citymap/Sample/Profiles";
+
+        /// <summary>找包内 Profile 资产；没有则在包内 Sample/Profiles 建一个。</summary>
         private TerrainProfile FindOrCreateProfile()
         {
             var guids = AssetDatabase.FindAssets("t:TerrainProfile");
             if (guids != null && guids.Length > 0)
-                return AssetDatabase.LoadAssetAtPath<TerrainProfile>(AssetDatabase.GUIDToAssetPath(guids[0]));
+            {
+                // 优先返回包内的：避免用户临时资产覆盖包内默认演示配置（也防止 assets-layout 再红）
+                foreach (var g in guids)
+                {
+                    var p = AssetDatabase.GUIDToAssetPath(g);
+                    if (p != null && p.StartsWith(ProfileFolder))
+                        return AssetDatabase.LoadAssetAtPath<TerrainProfile>(p);
+                }
+                var first = AssetDatabase.GUIDToAssetPath(guids[0]);
+                Debug.Log($"{PackageIdentity.LogPrefix} 使用已存在的 TerrainProfile：{first}");
+                return AssetDatabase.LoadAssetAtPath<TerrainProfile>(first);
+            }
 
-            var dir = "Assets/Collin";
-            if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder("Assets", "Collin");
-            var path = AssetDatabase.GenerateUniqueAssetPath($"{dir}/TerrainProfile.asset");
+            if (!AssetDatabase.IsValidFolder("Packages/com.collin.citymap/Sample"))
+            {
+                EditorUtility.DisplayDialog("CityMap",
+                    "包内 Sample 目录缺失，无法创建 TerrainProfile。请确认包已正确解析（package resolve）。", "好");
+                return null;
+            }
+            if (!AssetDatabase.IsValidFolder(ProfileFolder))
+                AssetDatabase.CreateFolder("Packages/com.collin.citymap/Sample", "Profiles");
+
+            var path = AssetDatabase.GenerateUniqueAssetPath($"{ProfileFolder}/TerrainProfile.asset");
             var asset = CreateInstance<TerrainProfile>();
             AssetDatabase.CreateAsset(asset, path);
             AssetDatabase.SaveAssets();
+            EditorGUIUtility.PingObject(asset);
+            Debug.Log($"{PackageIdentity.LogPrefix} 已创建 TerrainProfile：{path}");
             return asset;
         }
 
