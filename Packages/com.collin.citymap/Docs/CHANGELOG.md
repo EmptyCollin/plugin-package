@@ -5,6 +5,24 @@
 ## [Unreleased]
 
 ### Added
+- **M3-b（Modules/01 面板实时链路：改参数即时反映 / A-0-3 / 01 §4.4）已实现并自测**
+  （本包 `test run --mode editor --filter_type assembly --filter com.collin.citymap.Tests` Total **100** / Failed 0，
+  较 M3 增 1 条 `Value_Key_Covers_Every_Tunable_Field`）：
+  - `TerrainProfile.ComputeValueKey()`：地形参数**值指纹**（20 个可调字段全量覆盖、1e-4 量化、纯函数无副作用）。
+    用于面板的 **Inspector 直改第二检**——用户直接改 SO 字段不调 `SetXxx()` ⇒ 序列号不变 ⇒ Tracker 看不见
+    ⇒ "拖了参数地形不动"的静默失效；面板每帧比指纹补提交。
+  - `CityWindow.DrawTerrainProfile()`：参数控件区（起伏/波长/八度/增益/倍频/域扭曲/城内平整度/地块坡度/
+    自由权重/内切/外延/自动地块/冻结细节），全部走 Profile 显式写入口（Controller 只写 Model，§0.1 原则2），
+    并含"创建地形实例（含显示层）/新建 Profile"入口。
+  - `CityWindow.DetectDirectProfileEdit()`：值指纹第二检，**先比 `ManualVersion` 区分来源**
+    ——显式入口已 bump 则只同步基线，避免面板滑条被双重提交（自查抓到的自造缺陷，与 H-30 按通道记账同构）。
+  - **取证边界如实标注**：`Value_Key_Covers_Every_Tunable_Field` 断言数据地基；GUI 滑条手感**无法 EditMode 自动断言**
+    （反射调 OnGUI 抛「只能在 OnGUI 内调用」，项目既有实测），须用户实机确认。
+  - 交锁门禁：编译 `failed=False`（三侧 dll 新鲜度核验）；`console clear`→静默 60s→重跑→`console status`
+    **`consoleErrors=0/consoleWarnings=0/seeded=True`**；本包 **100/100**；校验器 **`FAIL 0`、结论: 绿灯**。
+    门禁期间曾被他包 `com.collin.stealth` 的 7 条 `CS0618` 警告与一条 Unity 内置 `services-gateway` 瞬时 error
+    挡红（均非本包产生），本会话全程**只持锁等待 + 如实归因、未改他人文件 / 未代删其锁 / 未塞 allowlist**；
+    stealth 会话自行修复后最终复跑转绿，无需任何带红提交。
 - **M3（Modules/01 显示层：chunk mesh + 面板实时接线）已实现并自测通过**（本包 `test run --mode editor
   --filter_type assembly --filter com.collin.citymap.Tests` Total 99 / Failed 0，
   新增 `Tests/Editor/TerrainViewTests.cs` 15 条显示层断言；全项目 `test list` → 141）：

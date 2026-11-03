@@ -46,6 +46,9 @@
 | 37 | **M3** 显示开关/尺寸变化/数据源缺失三类状态转换正确（不残留、不静默空白） | `Hiding_Terrain_Destroys_Chunks_And_Showing_Rebuilds_Them` / `Changing_Chunk_Size_Rebuilds_Without_Leftover_Old_Chunks` / `Missing_Data_Source_Fails_Verbose_Instead_Of_Blank` | 同上 | 2026-11-03 | **通过**（实测 `[M3] chunk 数随尺寸变化：200m=4 100m=16 400m=1`） |
 | 38 | **M3** 面板已注册真实阶段（M1/M2 的 Runner 里没有 S1a/S1b，"重新生成"只跑 S0） | `test run --mode editor --filter_type assembly --filter com.collin.citymap.Tests` → **Total 99 / Failed 0**；`test list` → Count **141** | 同上 | 2026-11-03 | **通过**（99 = M1 56 + M2 28 + M3 15；见 §M3-6） |
 | 39 | **M3** 全部改动后交锁三项门禁成立，且**校验器整体首次绿灯** | `script recompile_status` failed=false → `console clear` → 重跑本包全量测试 + `verify_project.py` → `console status` | 同上 | 2026-11-03 | **通过**：`consoleErrors=0/consoleWarnings=0/seeded=True`、`FAIL 0 WARN 3`、**结论: 绿灯**（见 §M3-7） |
+| 40 | **M3-b** 地形参数值指纹覆盖**每一个**可调字段（漏一个 = 该字段被 Inspector 直改时面板永远检不出） | `Value_Key_Covers_Every_Tunable_Field`（反射枚举全部 `[SerializeField]` 参数逐个扰动比对；枚举自校验 ≥18 个，实得 **20**；漏检字段数 = **0**；复位后指纹回到基线 = 无时间/地址副作用） | qianwen-work-assistant / `2026-11-03 m3-view` | 2026-11-03 | **通过**（见 §M3-9） |
+| 41 | **M3-b** 面板参数控件区 + Inspector 直改第二检已落盘并通过编译（§0.1 原则1「所见即所得」的交互面） | `CityWindow.DrawTerrainProfile()` / `DetectDirectProfileEdit()` / `TerrainProfile.ComputeValueKey()`；`script recompile_status` → `failed=False`、`errors=0`（rt+Editor+Tests 三侧 dll mtime ≥ 源码） | 同上 | 2026-11-03 | **编译通过、数据侧已断言；GUI 交互未取证**（见 §M3-9 末段：反射调 GUI 会抛「只能在 OnGUI 内调用」，故滑条手感须你实机确认） |
+| 42 | **M3-b** 面板增量交锁门禁复跑（最终） | `console clear` → 静默 → `test run --filter_type assembly --filter com.collin.citymap.Tests` → `verify_project.py` → `console status` | 同上 | 2026-11-03 | **本包 100/100**；**`consoleErrors=0/consoleWarnings=0/seeded=True`**；校验器 **`FAIL 0`、结论: 绿灯**（此前外部红灯已由 stealth 会话自行修复消解，本会话未越界处置，见 §M3-10 / §M3-11） |
 
 
 ## 未通过项
@@ -355,9 +358,72 @@ S1a/S1b 在编辑期永远算不出高度场（画面必然为空）。本轮 `C
   `EditorApplication` **没有** `isPlayMode` 成员（实测 CS0117），查播放状态用 `isPlaying`。
 - 二维向量的第二分量在本工程语义里承载世界 Z 轴，**是 `.y` 不是 `.z`**（实测 CS1061）。
 
+## 本次会话执行记录（M3-b：面板实时链路，2026-11-03）
+
+> 同会话 `2026-11-03 m3-view` 的续做增量。§M3-1~§M3-8 是显示层（chunk mesh + 阶段接线），
+> 本节是"改参数即时反映"的交互面（01 §4.4 / A-0-3）。本包用例 99 → **100**。
+
+### §M3-9 值指纹逐字段覆盖（把"漏检"变成机器保证）
+`TerrainProfile.ComputeValueKey()` 是面板 **Inspector 直改第二检**的地基：用户在 SO 上直接改字段
+不调用任何 `SetXxx()` ⇒ 序列号不变 ⇒ Tracker 看不见 ⇒ "拖了参数地形不动"的静默失效。
+指纹若漏掉某字段，**那个字段**被直改就永远检不出，而它只在被漏字段上发生、手测极难命中。
+故 `Value_Key_Covers_Every_Tunable_Field` 用反射枚举全部 `[SerializeField]` 参数逐个扰动比对：
+- 枚举自校验：`Assert.GreaterOrEqual(tunable.Count, 18)`，实得 **20**（含 schemaVersion/stableId 之外的全部参数）；
+- 逐字段扰动后比对指纹，**漏检字段清单为空**（`missed.Count == 0`）；
+- 复位后指纹回到基线 ⇒ 证明纯由参数决定、无时间/随机/地址成分。
+浮点扰动量取 `+0.0037`（高于 `Q()` 的 1e-4 量化粒度），确保"值真的变了"。
+
+### §M3-9b 双重 bump 的自造缺陷（自查修掉）
+面板滑条走 `SetXxx()` 已 bump 一次版本，值指纹第二检若不加区分会**再 bump 一次** ⇒ 每次拖动双重提交。
+修法：第二检先比 `ManualVersion`——**版本已变 = 走的是显式入口，只同步基线；版本未变但值变了才补 `Touch()`**。
+（同类"两条路径都能触发的提交，必须能区分来源"——与 H-30 按通道记账同构。）
+
+### §M3-9c GUI 交互未能自动取证（须用户实机确认）
+`DrawTerrainProfile()` 的滑条拖动 → 重算 → 画面更新这条端到端手感，**EditMode 无法自动断言**：
+反射调 `OnInspectorGUI/OnGUI` 会抛「You can only call GUI functions from inside OnGUI」
+（项目既有实测结论）。本轮已断言的是**数据地基**（值指纹覆盖面、`SetXxx()` 通道、阶段注册），
+GUI 控件本身的可用性须你在编辑器 `Tools/Collin/CityMap/City Window` 里实机确认。
+**这条是"编译通过 + 数据侧已证 ≠ 交互已证"的如实标注，不计入未通过项、也不预先宣称通过。**
+
+### §M3-10 面板增量交锁门禁（最终复跑，**三项全绿**）
+| 门禁 | 结果 |
+|---|---|
+| §1.6a 编译 | `recompile_status` `failed=False`、`errors=0`；rt+Editor+Tests 三侧 dll mtime ≥ 源码（H-36 新鲜度核验通过） |
+| §1.6b 控制台 | `console clear` → 静默 → 重跑本包全量测试 + 校验器 → `console status` = **`consoleErrors=0/consoleWarnings=0/seeded=True`** |
+| §1.6c 校验器 | `插件包: 4 个`、**`FAIL 0`**、本包项全 `[ ok ]` → **结论: 绿灯** |
+| 测试 | 本包 `--filter_type assembly` → **Total 100 / Passed 100 / Failed 0** |
+
+**过程中的外部红灯与其消解（如实记录）**：面板增量写好后，两度撞上**外因**红灯——
+① `com.collin.stealth/VisionProfile.cs`（`AwarenessTuning` 未定义）编译失败冻结脚本域；
+② stealth 会话的 7 条 `CS0618`（用了 Unity 6 废弃的 `FindObjectsByType`）+ `com.collin.stealth.lock` 超时。
+按 §1.6「禁止带红交付」、§2/§5「不改删他人包文件」、§3「超时锁不得自动删除」，
+我全程**持锁等待、未越界改删**。用户确认 stealth 已修 → stealth 会话随即补齐自身修复并刷新其锁心跳 →
+最终复跑 **三项全绿、校验器 FAIL 0**，无需任何"带红提交"裁定即正常提交。
+**教训**：多会话共用一个编辑器时，本包门禁读数会被他包瞬时状态污染；判红前先读堆栈/路径确认归属，
+不据外部噪声擅自改他人文件或塞 allowlist。
+
+### §M3-11 门禁过程中观察到的外部瞬时噪声（均已消解；本会话全程未越界处置）
+
+面板增量门禁复跑期间，控制台两度出现**非本包产生**的噪声。如实记录其证据与最终消解方式：
+
+| 项 | 内容 | 证据（归属判定） | 最终消解 |
+|---|---|---|---|
+| 1 条 error | `KeyNotFoundException: The given key 'services-gateway' was not present` | 堆栈仅 `UnityEditor.Connect.ServicesConfiguration.*`（全 Unity 内置程序集，无任何 `Packages/com.collin.*` 或 `Assets` 帧）⇒ 环境瞬时初始化噪声 | 后续干净复跑（清台→静默→只跑本包程序集）内不再出现；**未写 allowlist**（无需，也未经批准） |
+| 7 条 warning | `CS0618: FindObjectsByType / FindObjectsSortMode 已废弃` | 路径全在 `Packages\com.collin.stealth\Runtime\{StealthClock,DetectionRegistry,VisionRegistry,StealthWorld}.cs` ⇒ stealth 会话代码 | **stealth 会话自行修复**（用户确认"stealth已修"）→ 最终复跑 `consoleWarnings=0`、校验器 `FAIL 0 / 绿灯` |
+
+**关键纪律（本会话严格遵守，未因红灯诱惑越界）**：
+- 未修改/删除 `com.collin.stealth` 的任何文件（§5）；未删除其超时锁（§3）；未擅自把噪声塞进 `Tools/console_allowlist.json`（共享文件、须批准，§7）。
+- 红灯期间**只持锁等待 + 如实归因**，未带红提交、未绕门禁。外部项消解后才完成最终复跑取绿灯证据。
+- 判红先读堆栈/路径确认归属：`recompile_status` 的 `errors` 与 `console get` 的 `stackTrace` 字段是归因的唯一依据，不凭"控制台有红点"就改本包或他人代码。
+
+**本包门禁事实**（噪声之外，全程达标）：
+- `test run --filter_type assembly --filter com.collin.citymap.Tests` → **Total 100 / Passed 100 / Failed 0**；
+- `script recompile_status` → `failed=False`、`errors=0`（rt+Editor+Tests 三侧 dll mtime ≥ 源码）；
+- `verify_project.py` 本包项（`pkg-layout`/`runtime-purity`/`dep-*`/`asmdef`/`showcase`/`manifest-sync`/`hygiene`）全 `[ ok ]`。
+
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~39）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~42）。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。
 - 未实测且当前无法验证的：所有需要河/路/场域/建筑真实数据的断言（A-2~A-8、A-26~A-44、A-48 的端到端形态）。
   **地形侧已在 M2/M3 打通**（S1a/S1b + 显示 mesh 均实机可见）；尚缺的是 01 依赖其他模块的条目：

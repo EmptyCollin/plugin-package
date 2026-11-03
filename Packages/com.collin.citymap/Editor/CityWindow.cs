@@ -190,6 +190,7 @@ namespace Collin.CityMap.EditorTooling
             if (_ctx == null || _runner == null) return;
 
             UndoHistoryTracker.Scan();
+            DetectDirectProfileEdit();                  // 第二检：Inspector 直改 SO 字段不 bump 序列号
 
             if (!_autoFollow) return;                 // 关跟随：脏集合继续挂起，面板显示"未生效"
             if (!UndoHistoryTracker.ReadyToApply) return;
@@ -202,6 +203,43 @@ namespace Collin.CityMap.EditorTooling
             CommitAndNotify(dirty);
             Repaint();
         }
+
+        /// <summary>
+        /// 值指纹第二检（A-0-3 的实现面）：用户**直接在 Inspector 改 TerrainProfile 字段**
+        /// 不会调用任何 <c>SetXxx()</c> ⇒ 序列号不变 ⇒ Tracker 看不见 ⇒ "改了参数但地形不动"的静默失效。
+        /// 面板每帧比一次值指纹，变了就按 <see cref="IntentKind.TerrainModel"/> 通道显式上报。
+        /// <para>必须区分两种来源，否则面板滑条会被双重 bump（滑条走 <c>SetXxx()</c> 已 bump 一次，
+        /// 本检再 bump 一次）：<b>版本已变 = 走的是显式入口，只同步基线；版本未变但值变了 = Inspector 直改，才补提交。</b></para>
+        /// </summary>
+        private void DetectDirectProfileEdit()
+        {
+            var profile = _terrain != null ? _terrain.Profile : null;
+            if (profile == null) { _profileKeyInit = false; return; }
+
+            var key = profile.ComputeValueKey();
+            var ver = profile.ManualVersion;
+
+            if (!_profileKeyInit)                     // 首次只见基线，不标脏（A-33 同源）
+            {
+                _profileKeyInit = true;
+                _profileValueKey = key;
+                _profileVersion = ver;
+                return;
+            }
+
+            if (key == _profileValueKey) return;
+            var bumpedElsewhere = ver != _profileVersion;
+            _profileValueKey = key;
+            _profileVersion = ver;
+            if (bumpedElsewhere) return;              // 显式入口已记账，本检不重复提交
+
+            profile.Touch();                          // Inspector 直改：补上 TerrainModel 通道提交
+            UndoHistoryTracker.MarkIntent(profile);
+        }
+
+        ulong _profileValueKey;
+        long _profileVersion;
+        bool _profileKeyInit;
 
         private void OnGUI()
         {
@@ -221,6 +259,8 @@ namespace Collin.CityMap.EditorTooling
 
             EditorGUILayout.Space(4f);
             DrawProjectField();
+            EditorGUILayout.Space(4f);
+            DrawTerrainProfile();
             EditorGUILayout.Space(4f);
             DrawStageTree();
             EditorGUILayout.Space(4f);
@@ -274,6 +314,127 @@ namespace Collin.CityMap.EditorTooling
             AssetDatabase.CreateAsset(asset, path);
             EditorGUIUtility.PingObject(asset);
             Bind(asset);
+        }
+
+        /// <summary>
+        /// 地形参数区（AGENTS §0.1 原则1「所见即所得」+ 原则2「Controller 只写 Model」）。
+        /// <para>控件一律走 <see cref="TerrainProfile"/> 的显式写入口（内部 <c>Touch()</c> bump 序列号），
+        /// 面板<b>不直接写序列化字段</b>：那样会绕过意图记账，改动只有靠值指纹第二检才兜得住。</para>
+        /// <para>拖动即重算：写入口 bump 后由 <see cref="OnEditorUpdate"/> 的 Tracker 链路消费
+        /// （250ms 合并窗口内多次拖动只算一次，A-17），松手即看到画面变化。</para>
+        /// </summary>
+        private void DrawTerrainProfile()
+        {
+            if (_project == null) return;
+
+            EditorGUILayout.LabelField("地形参数（S1a / S1b）", EditorStyles.boldLabel);
+
+            if (_terrain == null) _terrain = FindTerrainInstance();
+            if (_terrain == null)
+            {
+                EditorGUILayout.HelpBox("场景里没有 CityTerrain 实例：地形无法计算与显示。", MessageType.Info);
+                if (GUILayout.Button("创建地形实例（含显示层）", GUILayout.Width(190f))) CreateTerrainInstance();
+                return;
+            }
+
+            var profile = _terrain.Profile;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                var next = (TerrainProfile)EditorGUILayout.ObjectField("TerrainProfile", profile,
+                    typeof(TerrainProfile), false);
+                if (!ReferenceEquals(next, profile))
+                {
+                    _terrain.SetProfile(next);            // 唯一写入口：换 Profile 走 TerrainModel 通道
+                    _stageKey = 0;                        // 阶段身份变了，强制重注册
+                    SyncStages();
+                }
+                if (GUILayout.Button("新建", GUILayout.Width(50f))) CreateProfile();
+            }
+            if (profile == null)
+            {
+                EditorGUILayout.HelpBox("未绑定 TerrainProfile：S1a 缺参数，不会产出高度场。", MessageType.Warning);
+                return;
+            }
+
+            // ── 低频基底 ──
+            var amp = EditorGUILayout.Slider("起伏幅度(m)", profile.BaseAmplitude, 0f, 60f);
+            var wave = EditorGUILayout.Slider("低频波长(m)", profile.BaseWavelength, 60f, 2000f);
+            var octs = EditorGUILayout.IntSlider("八度", profile.Octaves, 1, 8);
+            var gn = EditorGUILayout.Slider("增益", profile.Gain, 0.05f, 0.95f);
+            var lac = EditorGUILayout.Slider("倍频间隔", profile.Lacunarity, 1.05f, 4f);
+            var warp = EditorGUILayout.Slider("域扭曲", profile.DomainWarpAmp, 0f, 1f);
+            if (amp != profile.BaseAmplitude || wave != profile.BaseWavelength || octs != profile.Octaves
+                || gn != profile.Gain || lac != profile.Lacunarity || warp != profile.DomainWarpAmp)
+                profile.SetBaseShape(amp, wave, octs, gn, lac, warp);
+
+            // ── 城市平整：用户的主旋钮（A-1-1 的实机面）──
+            var flat = EditorGUILayout.Slider("城内平整度(0平 1起伏)", profile.UrbanFlatness, 0f, 1f);
+            if (!Mathf.Approximately(flat, profile.UrbanFlatness)) profile.SetUrbanFlatness(flat);
+
+            // ── 平整约束求解 ──
+            var slope = EditorGUILayout.Slider("地块最大坡度(°)", profile.MaxParcelSlope, 0.5f, 20f);
+            var freeW = EditorGUILayout.Slider("自由权重(保留自然度)", profile.FreeWeight, 0f, 3f);
+            var inner = EditorGUILayout.Slider("核心内切(m)", profile.ConstraintInner, 0f, 40f);
+            var extend = EditorGUILayout.Slider("过渡带外延(m)", profile.ConstraintExtend, 0.5f, 40f);
+            if (slope != profile.MaxParcelSlope || !Mathf.Approximately(freeW, profile.FreeWeight)
+                || !Mathf.Approximately(inner, profile.ConstraintInner)
+                || !Mathf.Approximately(extend, profile.ConstraintExtend))
+                profile.SetFlattenSolve(slope, freeW, inner, extend, profile.TargetPlaneMaxSlope);
+
+            // ── 自动试设地块（M2 起用于验证约束；M5 后由真实路网供数）──
+            var auto = EditorGUILayout.Toggle("自动试设地块", _terrain.AutoFlattenAtCenter);
+            var tiles = EditorGUILayout.IntSlider("地块数(N×N)", _terrain.AutoTileCount, 1, 12);
+            if (auto != _terrain.AutoFlattenAtCenter || tiles != _terrain.AutoTileCount)
+                _terrain.SetAutoFlatten(auto, tiles);
+
+            var lockDetail = EditorGUILayout.Toggle("冻结细节(只看规划)", profile.RoughnessLock);
+            if (lockDetail != profile.RoughnessLock) profile.SetRoughnessLock(lockDetail);
+
+            if (_terrain.LastConstraints > 0)
+                EditorGUILayout.LabelField($"S1b：约束 {_terrain.LastConstraints} 条 · 改动 {_terrain.LastCells} 格" +
+                    (_terrain.LastRejectedConstraints > 0 ? $" · 跳过 {_terrain.LastRejectedConstraints}" : string.Empty),
+                    EditorStyles.miniLabel);
+        }
+
+        /// <summary>创建地形实例 + 显示宿主（派生 View 与意图组件同物体，用户不必手动挂）。</summary>
+        private void CreateTerrainInstance()
+        {
+            var go = new GameObject("City Terrain");
+            var terr = go.AddComponent<CityTerrain>();
+            go.AddComponent<CityTerrainView>();
+            if (_project != null) terr.SetProfile(FindOrCreateProfile());
+            _terrain = terr;
+            _stageKey = 0;
+            SyncStages();
+            Selection.activeGameObject = go;
+            EditorGUIUtility.PingObject(go);
+            Undo.RegisterCreatedObjectUndo(go, "创建地形实例");
+            Repaint();
+        }
+
+        private void CreateProfile()
+        {
+            var asset = FindOrCreateProfile();
+            if (asset != null && _terrain != null) _terrain.SetProfile(asset);
+            _stageKey = 0;
+            SyncStages();
+            Repaint();
+        }
+
+        /// <summary>找同名 Profile 资产；没有则在项目资产旁建一个（避免每次弹保存框打断手感）。</summary>
+        private TerrainProfile FindOrCreateProfile()
+        {
+            var guids = AssetDatabase.FindAssets("t:TerrainProfile");
+            if (guids != null && guids.Length > 0)
+                return AssetDatabase.LoadAssetAtPath<TerrainProfile>(AssetDatabase.GUIDToAssetPath(guids[0]));
+
+            var dir = "Assets/Collin";
+            if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder("Assets", "Collin");
+            var path = AssetDatabase.GenerateUniqueAssetPath($"{dir}/TerrainProfile.asset");
+            var asset = CreateInstance<TerrainProfile>();
+            AssetDatabase.CreateAsset(asset, path);
+            AssetDatabase.SaveAssets();
+            return asset;
         }
 
         /// <summary>

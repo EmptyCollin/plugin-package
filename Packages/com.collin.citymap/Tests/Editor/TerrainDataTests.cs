@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -737,6 +739,64 @@ namespace Collin.CityMap.Tests
                 if (d > bestD) { bestD = d; best = z * g.Columns + x; }
             }
             return best;
+        }
+
+        // ────────────────── 面板实时链路（01 §4.4 / A-0-3） ──────────────────
+
+        /// <summary>
+        /// 值指纹必须覆盖<b>每一个</b>可调参数 —— 这是面板 Inspector 直改第二检的唯一地基。
+        /// <para>为何不能只测"改一个已知字段会变"：漏掉哪个字段，那个字段被直改就永远检不出来，
+        /// 表现是"拖了滑条地形不动"的静默失效，而它恰好**只在被漏的那个字段上发生**、
+        /// 手测极难命中。本用例反射枚举全部序列化参数逐个扰动，把覆盖面变成机器保证。</para>
+        /// <para>身份/版本字段（<c>schemaVersion</c> / <c>stableId</c> / 账本）刻意排除：
+        /// 它们不是"地形参数"，改 schemaVersion 不该触发全城重算。</para>
+        /// </summary>
+        [Test]
+        public void Value_Key_Covers_Every_Tunable_Field()
+        {
+            var profile = Track(ScriptableObject.CreateInstance<TerrainProfile>());
+
+            var tunable = new List<FieldInfo>();
+            foreach (var f in typeof(TerrainProfile)
+                         .GetFields(BindingFlags.Instance | BindingFlags.NonPublic))
+            {
+                if (!f.IsDefined(typeof(SerializeField), false)) continue;
+                if (f.Name == "schemaVersion" || f.Name == "stableId") continue;   // 身份/版本非参数
+                var t = f.FieldType;
+                if (t != typeof(float) && t != typeof(int) && t != typeof(bool) && t != typeof(Vector2)) continue;
+                tunable.Add(f);
+            }
+
+            // 自校验：必须真的枚举到足量参数，否则本用例形同空转（新增字段忘了 [SerializeField] 也会在这里暴露）
+            Assert.GreaterOrEqual(tunable.Count, 18,
+                $"应至少枚举 18 个地形参数（实得 {tunable.Count}），太少说明枚举条件写错");
+
+            var baseKey = profile.ComputeValueKey();
+            var missed = new List<string>();
+            foreach (var f in tunable)
+            {
+                var old = f.GetValue(profile);
+                var nv = Perturbed(f.FieldType, old);
+                Assert.IsNotNull(nv, $"无法为 {f.Name}({f.FieldType.Name}) 构造扰动值");
+                f.SetValue(profile, nv);
+                if (profile.ComputeValueKey() == baseKey) missed.Add(f.Name);
+                f.SetValue(profile, old);
+            }
+
+            Assert.AreEqual(0, missed.Count,
+                "值指纹漏字段（这些参数被 Inspector 直改时面板检不出来）：" + string.Join(", ", missed));
+
+            // 全部复位后必须回到基线 ⇒ 指纹纯由参数决定，不含时间/随机/地址成分
+            Assert.AreEqual(baseKey, profile.ComputeValueKey(), "指纹必须可逆且无副作用");
+        }
+
+        static object Perturbed(System.Type fieldType, object value)
+        {
+            if (fieldType == typeof(float)) return (float)value + 0.0037f;     // 高于 1e-4 量化粒度
+            if (fieldType == typeof(int)) return (int)value + 1;
+            if (fieldType == typeof(bool)) return !((bool)value);
+            if (fieldType == typeof(Vector2)) return (Vector2)value + new Vector2(0.0137f, 0.0211f);
+            return null;
         }
     }
 }

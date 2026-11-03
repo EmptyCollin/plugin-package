@@ -177,6 +177,46 @@ namespace Collin.CityMap
             return true;
         }
 
+        /// <summary>
+        /// 参数值指纹（顺序无关、与序列化字段一一对应）。
+        /// <para>存在理由：面板控件走 <c>SetXxx()</c> 会 <see cref="Touch"/> bump 序列号，Tracker 看得见；
+        /// 但用户**直接在 Inspector 改 SO 字段**（或 Ctrl+Z 回滚字段）不会调用任何 Set 方法 ⇒
+        /// 序列号不变 ⇒ "改了参数但地形不动"的静默失效。面板用本指纹做第二检，
+        /// 与 Tracker 的序列号检互为冗余（同 08 §5.1 的双检思路）。</para>
+        /// <para>纯函数、无副作用；浮点按 1e-4 精度取整后混合，避免末位噪声造成假变化。</para>
+        /// </summary>
+        public ulong ComputeValueKey()
+        {
+            unchecked
+            {
+                var h = 14695981039346656037UL;
+                h = CityRng.Mix(h, (ulong)Q(baseAmplitude));
+                h = CityRng.Mix(h, (ulong)Q(baseWavelength));
+                h = CityRng.Mix(h, (ulong)octaves);
+                h = CityRng.Mix(h, (ulong)Q(gain));
+                h = CityRng.Mix(h, (ulong)Q(lacunarity));
+                h = CityRng.Mix(h, (ulong)Q(domainWarpAmp));
+                h = CityRng.Mix(h, (ulong)Q(detailAmplitude));
+                h = CityRng.Mix(h, (ulong)Q(detailWavelength));
+                h = CityRng.Mix(h, (ulong)Q(urbanFlatness));
+                h = CityRng.Mix(h, (ulong)Q(urbanCenterFallback.x));
+                h = CityRng.Mix(h, (ulong)Q(urbanCenterFallback.y));
+                h = CityRng.Mix(h, (ulong)Q(urbanRadius));
+                h = CityRng.Mix(h, (ulong)Q(flatnessInnerEdge));
+                h = CityRng.Mix(h, (ulong)Q(flatnessOuterEdge));
+                h = CityRng.Mix(h, (ulong)Q(maxParcelSlope));
+                h = CityRng.Mix(h, (ulong)Q(freeWeight));
+                h = CityRng.Mix(h, (ulong)Q(constraintInner));
+                h = CityRng.Mix(h, (ulong)Q(constraintExtend));
+                h = CityRng.Mix(h, (ulong)Q(targetPlaneMaxSlope));
+                h = CityRng.Mix(h, (ulong)(roughnessLock ? 1 : 0));
+                return h;
+            }
+        }
+
+        /// <summary>浮点 → 1e-4 精度整数量（负数映射到高位，保持单射）。</summary>
+        static int Q(float v) => Mathf.RoundToInt(v * 10000f);
+
         private void OnEnable() { EnsureStableId(); ledger ??= new IntentChangeLedger(); IntentRegistry.Register(this); }
         private void OnDisable() => IntentRegistry.Unregister(this);
     }

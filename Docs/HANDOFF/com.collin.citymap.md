@@ -3,7 +3,7 @@
 > 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-03（会话 `2026-11-03 m3-view`）
 > 代码阶段：本会话按 §3 原子取锁开工，按 §1.6 三项门禁交锁。**未 push。**
 
-## 1. 已完成（M3：Modules/01 显示层 = chunk mesh + 面板实时接线）
+## 1. 已完成（M3：Modules/01 显示层 = chunk mesh + 面板阶段接线；M3-b：参数实时链路）
 - **用户实机体验的第一屏达成**：S1a/S1b 算出的高度场现在能画进场景，编辑期改参数即时反映（§0.1 原则1）。
 - Runtime/View 新增 2 文件：
   - `TerrainView.cs`：显示层**纯几何**（不触碰 Unity 对象、不引用 UnityEditor）。顶点按 `displayStep` 取解析网格线、
@@ -16,6 +16,16 @@
   "重新生成"只跑 S0 ⇒ 数据层全绿但场景永远为空）；`CommitAndNotify()` 在 `Tick` **之前**取脏区（Tick 后会 `ClearDirtyBounds`）。
 - **菜单入口统一收进 `Tools/Collin/CityMap/`**（用户 2026-11-03 要求：工具栏**不单开顶层 Collin**，与 stretch 包对齐）。
   实测全项目 `MenuItem` 注册路径无一例外在 `Tools/Collin/` 下，顶层 Collin 已消除。
+- **M3-b 参数实时链路（改参数即时反映，A-0-3 / 01 §4.4）**：
+  - `TerrainProfile.ComputeValueKey()`：地形参数**值指纹**（20 个可调字段全量覆盖、1e-4 量化、纯函数无副作用），
+    是**Inspector 直改第二检**的地基——直接改 SO 字段不调 `SetXxx()` ⇒ 序列号不变 ⇒ Tracker 看不见 ⇒ 静默失效。
+  - `CityWindow.DrawTerrainProfile()`：参数控件区（起伏/波长/八度/增益/倍频/域扭曲/城内平整度/地块坡度/自由权重/
+    内切/外延/自动地块/冻结细节）+「创建地形实例（含显示层）/新建 Profile」入口。全部走 Profile 显式写入口
+    （Controller 只写 Model，§0.1 原则2），面板**不直接写序列化字段**。
+  - `CityWindow.DetectDirectProfileEdit()`：值指纹第二检，**先比 `ManualVersion` 区分来源**——显式入口已 bump
+    则只同步基线、不补提交，避免面板滑条被**双重 bump**（自查抓到的自造缺陷，与 H-30 按通道记账同构）。
+  - 新增 1 条用例 `Value_Key_Covers_Every_Tunable_Field`（本包 99→**100**）：反射枚举全部参数逐个扰动，断言
+    「漏检字段清单为空」+ 枚举自校验（实得 20，阈值 ≥18）+ 复位后指纹回基线。**把"指纹漏字段"变成机器保证**。
 - `Tests/Editor/TerrainViewTests.cs`：新增 15 条显示层断言（本包 84→**99**，全项目 `test list` → **141**）。
 - **实现轮抓到并修复 5 处空洞**（详见 09 第七轮）：
   - H-38 绕序反 ⇒ 地表背面朝上（点积 −0.992）；H-39 误用裸缓冲流 `SetVertexBufferData` ⇒ 0 字节缓冲越界抛；
@@ -40,21 +50,31 @@
 - 两段式指令名整体加引号（`console clear` / `script recompile_status`）；`console get` 的 `--tail` 是**独立参数**不是指令名一部分。
 - 测试故意触发的 error 会真计入 `consoleErrors`；断言期用 `Debug.unityLogger.logEnabled=false`+`finally` 复位。
 - "只赋值不读取"的字段/局部变量产 CS0169/CS0414 warning ⇒ 破坏归零（本轮删了 `_wantRegions`/`_configPollAt`/`_ownSeq`/`_ctxKey`）。
+- **归零序列必须从"已静默的 clean 状态"起跑**：`CS0618`（他包用废弃 `FindObjectsByType`）**只在重编译那一刻**产生。
+  若紧接在一次 `script recompile` 之后取 `console status`，会把"别人触发的编译警告"误判成"我的改动破坏门禁"。
+  本轮做法：`console clear` → 静默 60s → 再跑验证动作 → 取读数（Unity Connect 的 `services-gateway`
+  KeyNotFound error 在静默窗口内**不复现**，属一次性瞬时初始化，不塞 allowlist）。
+- **新增第二检/兜底逻辑时，先问"第一检已经覆盖的那部分，我会不会再做一遍"**：面板滑条走 `SetXxx()` 已 bump 版本，
+  值指纹第二检若不加区分就**双重提交**（表现是"手感发黏"而非崩溃，难归因）。
+  按 `ManualVersion` 分辨来源即可消除——与 H-30「记账粒度到可变面而非对象」同构。
 
 ## 3. 未完成
 - **显示层只做地形 mesh**。道路条带 mesh、建筑 prefab 实例、SceneView overlay（城心圆环、约束带可视化、光标读数）未做（01 §3.3/§4.4）。
-- `CityWindow` 面板仍无 `TerrainProfile` 参数的**实时编辑控件**（滑杆/字段）：现在改参数要靠直接编辑 SO 或走 `SetXxx` 代码入口，
-  面板上只有阶段树与"重新生成"。A-1-3/A-0-3 的 Preview→Commit 两档手感尚未端到端验。
+- **面板参数控件的 GUI 交互尚未实机取证**：`DrawTerrainProfile()` / `DetectDirectProfileEdit()` 已落盘并编译通过、
+  数据地基（值指纹逐字段覆盖、`SetXxx` 通道归属、S1a/S1b 已注册）已断言；但滑条拖动 → 重算 → 画面这条手感
+  **EditMode 断言不了**（反射调 `OnGUI` 抛「只能在 OnGUI 内调用」，项目既有实测）⇒ 须用户在
+  `Tools/Collin/CityMap/City Window` 实机确认 A-1-3/A-0-3 的 Preview→Commit 两档。
 - 雕刻 delta（SculptDeltaAsset，M6）、河流下切层（M4）接入时按 01 §3.2 次序插在基底与约束之间；显示层需相应扩展重建触发面。
 - 无 PlayMode 测试；真实 `Ctrl+Z` 端到端链路（A-17 完整形态）待接。
 - `Sample` 小城与演示视频：M10。
 
 ## 4. 下一步（M4 建议顺序，或按用户优先级）
-1. **面板实时链路**：`CityWindow` 加 `TerrainProfile` 参数控件（拖动=Preview、松手=Commit），补 A-1-3/A-0-3。
-   这是"所见即所得"手感的核心，也是用户实机体验的第二屏。
+1. **实机验收 M3/M3-b**（建议先做，成本极低）：打开 `Tools/Collin/CityMap/City Window` → 绑定/新建 CityProject →
+   「创建地形实例（含显示层）」→ 拖「城内平整度」滑条，确认画面即时变化；再在 Inspector 直接改 SO 字段，
+   确认面板也能捕获（值指纹第二检）。**若手感不符，回来按实机现象登记缺陷**。
 2. **S2 河流下切**（Modules/02）：接入 01 §3.2 次序第 2 层，显示层随之支持 carve 叠加。
 3. SceneView overlay：城心圆环 + 约束带 + 光标处高度/坡度/掩码读数（01 §4.4）。
-4. 代码注释继续引用编号（`// 09 H-40`、`// 01 §3.3`），ACCEPTANCE 续接编号 **40+**。
+4. 代码注释继续引用编号（`// 09 H-40`、`// 01 §3.3`），ACCEPTANCE 续接编号 **43+**。
 
 ## 5. 勿碰项
 - 不改 AGENTS.md / §8 钉死版本 / `Packages/manifest.json` / `ProjectSettings/**`。
