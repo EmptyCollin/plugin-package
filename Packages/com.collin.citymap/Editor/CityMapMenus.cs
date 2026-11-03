@@ -12,7 +12,9 @@ namespace Collin.CityMap.EditorTooling
     /// </summary>
     internal static class CityMapMenus
     {
-        private const string MenuRoot = "Collin/CityMap/";
+        /// <summary>菜单一律收进 Tools 下（用户 2026-11-03 要求：工具栏不单开顶层 Collin 项，
+        /// 与 stretch 包的 Tools/Collin/… 约定对齐；顶层 Collin 曾由本包 MenuItem 产生）。</summary>
+        private const string MenuRoot = "Tools/Collin/CityMap/";
 
         [MenuItem(MenuRoot + "Package Info")]
         private static void ShowPackageInfo()

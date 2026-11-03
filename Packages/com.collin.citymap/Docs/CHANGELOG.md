@@ -5,6 +5,40 @@
 ## [Unreleased]
 
 ### Added
+- **M3（Modules/01 显示层：chunk mesh + 面板实时接线）已实现并自测通过**（本包 `test run --mode editor
+  --filter_type assembly --filter com.collin.citymap.Tests` Total 99 / Failed 0，
+  新增 `Tests/Editor/TerrainViewTests.cs` 15 条显示层断言；全项目 `test list` → 141）：
+  - `Runtime/View/TerrainView.cs`：显示层**纯几何**构建（不触碰 Unity 对象、不引用 UnityEditor）。
+    顶点按 `displayStep` 取解析网格线、法线走 `TerrainField.GetNormal` **同口径**（禁用 `RecalculateNormals`）、
+    UV = 世界 XZ / tileScale、顶点色 = 坡度带；逐 chunk 独立几何 + 脏区→chunk 最小映射 +
+    同拓扑局部更新（`SetVertices/SetNormals/SetUVs/SetColors`）/ 拓扑变化才重建 + 超 65k 顶点自动升 32bit 索引。
+  - `Runtime/View/CityTerrainView.cs`：场景侧显示宿主（`[ExecuteAlways]`）。两条数据路径（面板驱动 / 自建 S1a→S1b）、
+    **一条构建路径**（编辑态与 Play 态画面必然一致）；chunk 物体与 mesh 一律 `HideAndDontSave`（派生态不入库）。
+    `CityRuntime` 静态桥：面板 Commit → 提交序号驱动增量重建，杜绝"两份世界"。
+  - `Editor/CityWindow.cs`：**首次把真实阶段接进 Runner**（M1/M2 交付时 Editor 目录无任何 `_runner.Register`，
+    "重新生成"只跑 S0 ⇒ 数据层全绿但场景永远为空）。`SyncStages()` 注册 S0/S1a/S1b（身份指纹 = Profile×CityTerrain 实体 id）；
+    地形实例查找走 `IntentRegistry`（不用 `FindFirstObjectByType`，避 H-10 反模式）；
+    `CommitAndNotify()` **在 Tick 前取脏区**（Tick 后会 `ClearDirtyBounds`）。
+  - 菜单入口统一收进 `Tools/Collin/CityMap/`（用户 2026-11-03 要求：工具栏**不单开顶层 Collin**，与 stretch 包对齐）。
+- **实现轮抓到并修复 5 处空洞**（详见 Modules/09 第七轮）：
+  - **H-38**：三角形绕序凭直觉写 `(a,b,d)+(a,d,c)` ⇒ 几何法线点积 **−0.992**、整片地表**背面朝上**（从天空看什么都没有）。
+    右手定则重推改 `(a,c,b)+(c,d,b)`。
+  - **H-39**：同拓扑局部更新误用裸缓冲流 `SetVertexBufferData` ⇒ 抛 `copy 1452 bytes into a **0 byte buffer**`。
+    改 `SetVertices(...)` 系。**冷启动走全量路径看不出此错**，必须有覆盖增量路径的用例。
+  - **H-40**：显示顶点取在图幅角网格线 ⇒ 采样与**中心差分探针**双双越界被 clamp，顶点法线偏差 16.25°。
+    **第一轮修法方向错**（把缺陷写成分档断言"解释"掉）；重推后钉死探针安全域 = 四边各内缩**一个逻辑格**，
+    收敛成"对每一个顶点做绝对比较"。纪律：**分档/放宽阈值的断言，先怀疑实现**。
+  - **H-41**：`SnapRatio` 用 `RoundToInt` ⇒ `100/8=12.5` 归整依赖 midpoint 规则、实心得 96m **< 请求值**，
+    跨机器可能切出不同 chunk 数。改 `CeilToInt`。
+  - **H-42**：`ChunksTouching` 外扩余量误取"一整个 chunk" ⇒ 点状脏盒命中 9 块、增量重建收益归零。
+    改一个显示步（包围盒已含过渡带）⇒ 命中 1 块。
+  - **H-43**（我的断言口径错）：把坡度色带的 r/g 分量当单调量断言。先算三锚点（平 r82g115 / 土黄 r184g158 / 陡 r158g56）
+    才知 r、g 均非单调，唯一单调的是**红绿对比 `r−g` = −33→26→102**。判据写错时会本能去改设计凑绿——纪律：**先算术确定哪个量真单调再写断言**。
+- 交锁三项门禁（菜单改动重编译后复跑）：`script recompile_status` `failed=False`；`console clear`→重跑本包全量→
+  `console status` **`consoleErrors=0/consoleWarnings=0/seeded=True`**；`verify_project.py` **`FAIL 0`、结论: 绿灯**
+  （本会话内校验器整体首次转绿；此前因他包过期锁判红）。
+- 流程事实沉淀：`test run --filter_type assembly` 是多会话共用编辑器时唯一干净的取证方式；
+  `Summary.Total=0` 需区分"mode 传错"与"编辑器在 Play Mode"（后者看控制台）；二维向量第二分量承载世界 Z 轴、是 `.y` 不是 `.z`。
 - **M2（Modules/01 数据层：S1a 基底噪声 + S1b 平整约束）已实现并自测通过**（`test run --mode editor` Total 84 / Failed 0，
   新增 `Tests/Editor/TerrainDataTests.cs` 28 条地形断言）：
   - `Runtime/Core/CityNoise.cs`：纯 C# 确定性噪声内核（value noise + fbm + domain warp，splitmix64 派生子种子），

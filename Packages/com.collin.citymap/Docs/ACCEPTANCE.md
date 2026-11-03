@@ -35,6 +35,17 @@
 | 26 | **M2** 权重带几何正确：核心全权重、衰减带单调过渡、带外零权、`AffectedBounds` 覆盖衰减带、径向模式内半径正确 | `Constraint_Full_Weight_Inside_And_Zero_Beyond_Band` / `Constraint_Affected_Bounds_Covers_Decay_Band` / `Radial_Mode_Uses_Inner_Radius_From_HalfSize_X` | 同上 | 2026-11-03 | **通过**（见 §M2-5） |
 | 27 | **M2** S1b 语义：幂等无漂移、绝对高程区硬覆盖、零权重区被忽略且计数、缺 Profile 响亮失败、实例间不共享 scratch（H-4/H-31） | `A1_2_S1b_Is_Idempotent_No_Drift_On_Rerun` / `Absolute_Height_Zone_Holds_Target_Elevation` / `Zero_Weight_Zone_Is_Ignored_And_Counted` / `S1b_Without_Profile_Fails_Loudly_With_Reason` / `Two_Instances_Do_Not_Share_Scratch_Buffers` / `Constraint_Strength_Makes_Parcel_Core_Almost_Fully_Adherent`（倍率 8/4/1 与贴合度分测） | 同上 | 2026-11-03 | **通过**（见 §M2-6） |
 | 28 | **M2** 数据层读取正确 + 全部改动后交锁三项门禁仍成立 | `Sample_Is_Continuous_Between_Cell_Centers` / `Normal_And_Slope_Agree_With_Known_Plane` / `Quant_Roundtrip_Losses_Stay_Within_One_Step` / `EnsureField_Rebuilds_When_Grid_Size_Changes` + §1.6 三门禁 | 同上 | 2026-11-03 | **通过**（见 §M2-7 / §M2-8） |
+| 29 | **M3** 显示顶点落在「首格中心内缩一格」的探针安全域，且**每个**顶点高度对解析平面做绝对比较（A-1 显示侧） | `Plane_Field_Reproduces_Exact_Heights_And_Normals_On_Mesh`（75×75 网格里逐点断言，偏差阈值 1e-4m） | qianwen-work-assistant / `2026-11-03 m3-view` | 2026-11-03 | **通过**（H-40 为本轮实现缺陷，两轮才收敛，见 §M3-2） |
+| 30 | **M3** 顶点法线 = `GetNormal` 差分口径，**不用** `RecalculateNormals`（01 §3.3） | 同上用例的第 ③ 段（解析法线 `normalize(-A,1,-B)` 与逐点法线比较，阈值 0.05°） | 同上 | 2026-11-03 | **通过**（若改用几何平均，本条实测会红到 7.96°/16.25°） |
+| 31 | **M3** 三角形绕序使地表朝上（否则被背面剔除 = 用户看不到地形） | `Triangle_Winding_Makes_Surface_Face_Up`（逐三角形几何法线点积 ≥0.9 + 索引不越界 + 三角形数 = quad 数×6） | 同上 | 2026-11-03 | **通过**（H-38 首跑即红：点积 **−0.992**，见 §M3-1） |
+| 32 | **M3** chunk 尺寸对齐 displayStep **向上**取整、图外/退化 chunk 不产出、末尾按数据域截断 | `Chunk_Size_Snaps_To_Display_Step_Multiple` / `Chunk_Vertex_Rect_Covers_Full_Map_And_Clips_At_Edge` / `Degenerate_Chunk_Request_Is_Clamped_Not_Crashing` | 同上 | 2026-11-03 | **通过**（H-41：`RoundToInt` 使 100→96 比请求值更小且依赖舍入规则，见 §M3-3） |
+| 33 | **M3** 脏区→chunk 映射为最小集合（局部改动绝不触发全图） | `Dirty_Region_Maps_To_Minimal_Chunk_Set`（点状盒恰命中 **1** 块；30m 盒 < 全图；逐块相交复核 + 无重复） | 同上 | 2026-11-03 | **通过**（H-42：余量误取整块 chunk ⇒ 点状改动放大成 9 块，见 §M3-3） |
+| 34 | **M3** 增量写 mesh 走局部更新、拓扑变化才重建；超 65k 顶点自动升 32bit 索引 | `Apply_To_Mesh_Keeps_Topology_On_Resize_And_Grows_When_Needed` / `Mesh_Grows_To_Uint32_Only_When_Vertices_Exceed_16bit_Index` | 同上 | 2026-11-03 | **通过**（H-39：`SetVertexBufferData` 抛「copy 1452 bytes into a **0 byte buffer**」，见 §M3-1） |
+| 35 | **M3** 坡度顶点色可调、可辨、超参考值钳住；关闭时写纯白 | `Slope_Colors_Are_Banded_And_Monotonic`（单调判据 = **红绿差** r−g：−33→26→102）/ `Slope_Colors_Off_Writes_White_VertexColors` | 同上 | 2026-11-03 | **通过**（H-43 是我的断言口径错，见 §M3-4） |
+| 36 | **M3** 场景里真的出现地形：自建路径与面板驱动路径两条都产出 chunk 物体与 mesh，派生态不入库 | `Standalone_Rig_Builds_Chunk_Children_And_Meshes`（16/16 chunk、顶点总量 >100、`HideAndDontSave` 逐项断言）/ `Panel_Context_Takes_Precedence_Over_Standalone_And_Only_Rebuilds_On_Commit` | 同上 | 2026-11-03 | **通过**（实测 `[M3] 自建路径：显示 16/16 chunk · 逻辑 200²格 @2m · 显示 8m · chunk 128m`，见 §M3-5） |
+| 37 | **M3** 显示开关/尺寸变化/数据源缺失三类状态转换正确（不残留、不静默空白） | `Hiding_Terrain_Destroys_Chunks_And_Showing_Rebuilds_Them` / `Changing_Chunk_Size_Rebuilds_Without_Leftover_Old_Chunks` / `Missing_Data_Source_Fails_Verbose_Instead_Of_Blank` | 同上 | 2026-11-03 | **通过**（实测 `[M3] chunk 数随尺寸变化：200m=4 100m=16 400m=1`） |
+| 38 | **M3** 面板已注册真实阶段（M1/M2 的 Runner 里没有 S1a/S1b，"重新生成"只跑 S0） | `test run --mode editor --filter_type assembly --filter com.collin.citymap.Tests` → **Total 99 / Failed 0**；`test list` → Count **141** | 同上 | 2026-11-03 | **通过**（99 = M1 56 + M2 28 + M3 15；见 §M3-6） |
+| 39 | **M3** 全部改动后交锁三项门禁成立，且**校验器整体首次绿灯** | `script recompile_status` failed=false → `console clear` → 重跑本包全量测试 + `verify_project.py` → `console status` | 同上 | 2026-11-03 | **通过**：`consoleErrors=0/consoleWarnings=0/seeded=True`、`FAIL 0 WARN 3`、**结论: 绿灯**（见 §M3-7） |
 
 
 ## 未通过项
@@ -242,10 +253,115 @@ unity command "test run" --mode editor --timeout 300
    正确写法是 `console get` + 独立参数 `--tail 60`。教训：取归零证据期间**任何**指令拼错都会自己制造红灯，
    所以归零序列要么一次写对，要么重跑一遍取新证。
 
+## 本次会话执行记录（M3：Modules/01 显示层 = chunk mesh + 面板实时接线，全部为实测值）
+
+> 会话 `2026-11-03 m3-view`，客户端标识 qianwen-work-assistant，持 `com.collin.citymap` 锁。
+> 测试规模：本包程序集 84 → **99**（新增 `Tests/Editor/TerrainViewTests.cs` 15 条）；
+> 全项目 `test list --mode editor` → **Count 141**（其余 42 条属 `com.collin.stealth.Tests`，非本包）。
+
+### §M3-1 本轮实现缺陷（H-38 / H-39，两条都是"跑起来才看得见"）
+| 编号 | 缺陷 | 实测症状 | 修法 |
+|---|---|---|---|
+| **H-38** | 三角形绕序写成 `(a,b,d)+(a,d,c)`（想当然的"标准扇形"） | 逐三角形几何法线点积 **−0.992** ⇒ 整片地表**背面朝上**，从天空视角**什么都看不见**。这是显示层最刺眼的故障，但肉眼看代码完全看不出 | 按右手定则重推：`Cross(c−a, b−a).y = +Δz·Δx > 0` ⇒ 改为 `(a,c,b)+(c,d,b)`（与 Unity 官方程序化平面范例同构） |
+| **H-39** | 同拓扑局部更新用了 `SetVertexBufferData`（**裸缓冲流** API） | 抛 `SetVertexData() with out-of-bounds arguments; would need to copy 1452 bytes at offset 0 into a **0 byte buffer**`。"0 字节缓冲"正是"流未声明布局"的证据 | 改用 `SetVertices/SetNormals/SetUVs/SetColors(arr, start, length)`（反射枚举 `Mesh` 成员确认签名）。**冷启动走全量路径看不出此错，只有第二次同拓扑写入才触发** ⇒ 必须有覆盖"增量路径"的用例 |
+
+### §M3-2 H-40：显示顶点采样被 clamp（两轮才收敛，第一轮修法方向就错了）
+**症状**：解析平面场（`h = 0.25x − 0.15z`）上，顶点法线与解析法线偏差 **16.254°**。
+
+**第一轮**（方向错）：我以为偏差来自"最左/最下两排落在首列格中心外侧半格、被 `Sample` 的 clamp 钳位"，
+于是**在测试里按数据域内外分两档断言**，并把边缘偏差写成可解析预测 `A·cellSize/2 = 0.25m` 来"钉住成因"。
+——这是**给实现缺陷写断言开脱**：数值虽被解释通了，但那圈假平地仍然在画面里。
+
+**重新推导后才看见真问题**：`GetNormal` 是**中心差分**（探针 = `±cellSize/2`）。
+即使顶点本身落在数据域内，**它的探针照样越界**。把基准移到首格中心后偏差只剩 **7.96°**，
+而 `7.96° = atan(0.2915) − atan(0.1458)` —— 正是"有效梯度减半"的解析值，与残余完全吻合。
+
+**最终修法**：显示顶点的**探针安全域** = 四边各内缩**一个逻辑格**
+（`DisplayOrigin = Origin + cellSize`，`DisplayIndexCount = floor((Columns−2)·cellSize / DisplayStep) + 1`）。
+代价是地形边缘比图幅内缩 ≤ (1 格 + 1 显示步)（8km 图上 ≤12m），且完全落在 `buildableInset`（默认 60m）
+外环不可建带内 —— 视觉上不可见，远优于"边缘出现一圈比实际更平的假平地"。导出侧不受影响（10 §5.1 独立重切）。
+**收敛判据**：修正后**对每一个顶点**做绝对比较（高度 1e-4m、法线 0.05°），不再需要分档。
+
+### §M3-3 H-41 / H-42：chunk 尺寸与脏区余量两处量级/舍入错
+- **H-41**：`SnapRatio` 用 `RoundToInt` ⇒ `100/8 = 12.5` 归整依赖具体 midpoint 规则（可能 12 也可能 13），
+  实测给 **96m（比用户请求更小）**。跨机器可能切出不同数量 chunk = 破坏"同参数同结果"的地基承诺。
+  改 `CeilToInt` ⇒ 104m，且满足"对齐结果 ≥ 请求值"。
+- **H-42**：`ChunksTouching` 的外扩余量误取"一整个 chunk"（128m）。
+  但阶段上报的包围盒（`PlaneConstraint.GetAffectedBounds`）**已经包含** `ExtendMeters` + 半格容差；
+  显示层真正需要的只是**几何影响半径 = 一个显示步**。实测点状脏盒命中 **9** 块（3×3）⇒ 增量重建收益当场归零，
+  表现为"改了没报错但明显卡"。改 `m = max(cellSize, DisplayStep)` ⇒ 点状盒命中 **1** 块。
+
+### §M3-4 H-43：我的断言口径错（凭直觉写判据，险险把设计改坏）
+`Slope_Colors_..._Monotonic` 我先后写过两条错判据：
+1. `mid.g > mid.r`（"半程仍以绿为主"）—— 色带在 t=0.5 处正好是土黄锚点，那里 r 已大于 g；
+2. `steep.r > mid.r`（"半程之后继续变红"）—— 把红分量当成了单调量。
+
+**先把三个锚点算出来再写判据**：平 (r82,g115)、土黄 (r184,g158)、陡 (r158,g56)
+⇒ **r 与 g 都非单调**（r 先升后降、g 先升后降），唯一单调的是**红绿对比 `r−g` = −33 → 26 → 102**。
+判据改为：`dFlat < dMid < dSteep`，并加一条"色带必须跨越偏绿→偏红分界"（`dFlat < 0 < dSteep`）。
+
+**这条的风险**：判据写错时，人会本能地去调锚点颜色"凑绿" —— 那是被自己的断言牵着改设计。
+纪律：**先用算术确定哪个量真的单调，再写断言**。
+
+### §M3-5 实机可见性证据（控制台打点，两次独立复跑数值一致）
+```
+[M3] 自建路径：显示 16/16 chunk · 逻辑 200²格 @2m · 显示 8m · chunk 128m
+[M3] chunk 数随尺寸变化：200m=4 100m=16 400m=1
+```
+- 自建路径（Play / 无面板）：`projectForStandalone` + `TerrainProfile` → 自己跑 S1a→S1b → **16 个 chunk 全部产出**；
+  每块都有非空 `MeshFilter/MeshRenderer`、`vertexCount > 3`、三角形数 > 0；
+  派生根与全部 chunk 物体逐项断言 `HideAndDontSave`（01 §6：显示 mesh 不落盘）。
+- chunk 数随尺寸正确变化（400m 档 = 1 块覆盖全图、100m 档 = 16 块），且**缩小后旧块被回收**（不残留成"两层地形叠一起"）。
+- M2 的两条打点在本轮复跑中数值未变（`urbanFlatness 含细节 0→0.813m`、`A1_3 坡度 4.79°→1.41°`）
+  ⇒ 显示层改动没有回退数据层行为。
+
+### §M3-6 面板接上了真实阶段（M1/M2 遗留的"只有骨架"闭环）
+`grep` 实测：M2 交付时 Editor 目录**没有任何 `_runner.Register`** ⇒ 面板"重新生成"只跑 S0，
+S1a/S1b 在编辑期永远算不出高度场（画面必然为空）。本轮 `CityWindow.SyncStages()`：
+- 注册 `AssembleStage` + `TerrainBaseStage` + `FlattenSolveStage`，身份指纹 = (Profile × CityTerrain) 的
+  `GetEntityId().GetHashCode()`（Unity 6 起 `GetInstanceID` 废弃为 error），变了才重注册；
+- 地形实例查找走 `IntentRegistry`（O(千级)），**不用 `FindFirstObjectByType`**（场景无 CityTerrain 时每帧全场景遍历 = 09 H-10 反模式）；
+- `CommitAndNotify()`：**脏区域必须在 `Tick` 之前取**（`Runner.Tick` 成功后会 `ClearDirtyBounds()`，
+  事后取永远是 null ⇒ 增量重建成空话）；
+- 本包测试 `test run --mode editor --filter_type assembly --filter com.collin.citymap.Tests` → **Total 99 / Failed 0**。
+
+### §M3-7 交锁三项门禁（实测，**校验器整体首次绿灯**）
+| 门禁 | 指令 | 结果 |
+|---|---|---|
+| §1.6a 编译 | `script recompile_status`（先做 H-36 新鲜度核验：rt/tests 两个 dll mtime ≥ 源码） | `completed`、**`failed=False`、`errors=0`** |
+| §1.6b 控制台 | `console clear` → 重跑本包全量测试 + 校验器 → `console status` | **`consoleErrors=0`、`consoleWarnings=0`、`seeded=True`**；校验器 `console: error=0 warning=0` |
+| §1.6c 校验器 | `python Tools/verify_project.py` | `插件包: 4 个`、**`FAIL 0`**、`WARN 3`（全是 `lock-active`）→ **结论: 绿灯** |
+
+**门禁过程记录（三次波折，如实留下）**：
+1. 第一次全量跑 141 条：**134 通过 / 7 失败** → 归因 4 实现缺陷（H-38/39/40/41/42）+ 3 断言口径错。
+2. 修完第二次：140/1（仅 `Plane_Field` 残余 7.96°）→ 才发现 H-40 的第一轮修法方向错（见 §M3-2）。
+3. 第三次 `test run` 返回 **Total 0（不是"没有测试"）**：控制台报 9 条
+   `InvalidOperationException: This cannot be used during play mode` / `Test tree is not available`；
+   反射查询实测 `isPlaying=False`、当前活动场景是 **`com.collin.stretch/Sample/TestPlayground.unity`**
+   ⇒ 是**其他会话把编辑器切进 Play Mode 又退出**造成的时序冲突（共用同一实例，§2）。
+   等其退出后重跑：**141/141 全绿**。
+4. 但全量跑会把他包错误计入共享控制台 ⇒ 破坏 §1.6b。实测那条 error 的堆栈是
+   `Collin.Stealth.Tests.StealthContractConsumerTests.Services_DuplicateRegistration_KeepsFirstAndLogsError`
+   —— stealth **故意触发**的断言（不是环境噪声，也不是本包代码），我不改他人测试，
+   改为**按程序集取证**（`--filter_type assembly`）：本包 99/99 且归零序列内 `error=0/warning=0`。
+   与 M1 §M1-2 记录的同款纪律一致：**归零门禁以"本会话验证动作新产生的条目"为准**。
+
+### §M3-8 本会话新增的流程事实（供下一会话直接照做）
+- `test run` 支持 `--filter <名或程序集>` + `--filter_type testName|assembly|category`；
+  **按程序集过滤是多会话共用编辑器时唯一干净的取证方式**。
+- `test run` 返回 `Summary.Total = 0` 有两种成因，必须区分：①`--mode` 传错值；
+  ②编辑器当时在 Play Mode（`Test tree is not available`）。后者要看控制台，不是重发命令。
+- `script eval` 对引号/换行脆弱，跨行 C# 一律用 `script eval_file --file <win路径>`；
+  `EditorApplication` **没有** `isPlayMode` 成员（实测 CS0117），查播放状态用 `isPlaying`。
+- 二维向量的第二分量在本工程语义里承载世界 Z 轴，**是 `.y` 不是 `.z`**（实测 CS1061）。
+
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~28）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~39）。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。
-- 未实测且当前无法验证的：所有需要地形/河/路/场域/建筑真实数据的断言（A-2~A-8、A-26~A-44、A-48 的端到端形态）。
+- 未实测且当前无法验证的：所有需要河/路/场域/建筑真实数据的断言（A-2~A-8、A-26~A-44、A-48 的端到端形态）。
+  **地形侧已在 M2/M3 打通**（S1a/S1b + 显示 mesh 均实机可见）；尚缺的是 01 依赖其他模块的条目：
+  A-1-2（重生成下 delta 保持，需 M6 雕刻工具）、A-1-4（道路各向异性，需 M5 路网）、
+  A-1-5/A-1-6（笔划与 undo 合并，需 M6 工具）、A-1-8 的"拖动场域不触发 S1a"端到端形态（需 M7 场域）。
 - `Sample` 小城与演示视频：M10。
 - 本文档为覆写式，非追加日志（AGENTS §4）。

@@ -32,11 +32,17 @@ namespace Collin.CityMap.EditorTooling
         private string _lastRunLine = "尚未执行任何阶段";
         private int _lastExecutedStages;
 
+        /// <summary>地形实例（S1b 的约束来源）。面板不创建它，只找现成的并绑定。</summary>
+        private CityTerrain _terrain;
+        /// <summary>已注册阶段的身份指纹（Profile × CityTerrain 实体 id）。变则重注册。</summary>
+        private ulong _stageKey;
+
         public static CityProject ActiveProject => _instance != null ? _instance._project : null;
         public static PipelineRunner ActiveRunner => _instance?._runner;
         public static ToolMode CurrentMode => _instance != null ? _instance._mode : ToolMode.Inspect;
 
-        [MenuItem("Collin/CityMap/City Window")]
+        // 菜单收进 Tools 下（用户 2026-11-03 要求，工具栏不单开顶层 Collin；与 stretch 的 Tools/Collin/… 对齐）
+        [MenuItem("Tools/Collin/CityMap/City Window")]
         public static void Open()
         {
             if (_instance != null) { _instance.Focus(); return; }
@@ -54,6 +60,82 @@ namespace Collin.CityMap.EditorTooling
         private void OnDisable()
         {
             EditorApplication.update -= OnEditorUpdate;
+            // 面板关闭 ⇒ 权威上下文消失，View 回落到自建路径；不显式交还会让 View 消费已 Dispose 的上下文
+            CityRuntime.Deactivate();
+            _stageKey = 0;
+        }
+
+        // ─────────── M3：真实阶段注册 + 显示层通知（面板是驱动方） ───────────
+
+        /// <summary>
+        /// 把地形阶段接进 Runner。M1/M2 的 Runner 里没有真实阶段（面板"重新生成"只跑 S0），
+        /// M3 起 S1a/S1b 必须注册，否则编辑期永远算不出高度场、画面也就永远是空的。
+        /// <para>阶段身份 = (Profile, CityTerrain) 指针对：换 Profile 不重注册会算出旧参数的地形
+        /// （00 §4.1 禁止阶段互相持有引用 ⇒ 阶段构造时快照，变了必须重建阶段对象）。</para>
+        /// </summary>
+        private void SyncStages()
+        {
+            if (_runner == null || _project == null) return;
+
+            // 地形实例：从意图注册表取（O(千级)，且只在身份变化时走这里）。
+            // 不用 FindFirstObjectByType：场景里若无 CityTerrain，它会在每帧全场景遍历 = 09 H-10 明令的反模式。
+            if (_terrain == null || _terrain.Profile == null) _terrain = FindTerrainInstance();
+
+            unchecked
+            {
+                var prof = _terrain != null ? _terrain.Profile : null;
+                var key = 14695981039346656037UL;
+                if (prof != null) key = CityRng.Mix(key, (ulong)prof.GetEntityId().GetHashCode());
+                if (_terrain != null) key = CityRng.Mix(key, (ulong)_terrain.GetEntityId().GetHashCode());
+                if (key == 0UL || key == _stageKey) return;
+                _stageKey = key;
+            }
+
+            _runner.Unregister(StageId.S0_Assemble);
+            _runner.Register(new AssembleStage(null));      // 无负约束资产时 S0 仍负责外环带掩码
+
+            var profile = _terrain != null ? _terrain.Profile : null;
+            _runner.Unregister(StageId.S1a_TerrainBase);
+            _runner.Unregister(StageId.S1b_Flatten);
+            if (profile != null)
+            {
+                _runner.Register(new TerrainBaseStage(profile, _project));
+                _runner.Register(new FlattenSolveStage(profile, _terrain));
+            }
+        }
+
+        /// <summary>
+        /// 从意图登记表找地形实例。登记表是 O(千级) 且不含隐藏物体；
+        /// 多个城市实例时取第一个带 Profile 的（面板当前只驱动一个城市，多城切换在 M11 之后）。
+        /// </summary>
+        private static CityTerrain FindTerrainInstance()
+        {
+            foreach (var t in IntentRegistry.All)
+            {
+                var ct = t as CityTerrain;
+                // 只要求自身 enabled：编辑态下物体可能未 activeInHierarchy（未打开的场景），
+                // 但它仍是有效的意图对象，不该因此找不到地形
+                if (ct != null && ct.Profile != null && ct.enabled) return ct;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 一次 Commit 完成后通知显示层。<b>脏区域必须在 Tick 之前取</b>——
+        /// <c>Runner.Tick</c> 成功后会 <c>ClearDirtyBounds()</c>，事后取永远是 null（= 全图），
+        /// 增量重建就成了空话。
+        /// </summary>
+        private void CommitAndNotify(DirtyBits dirty)
+        {
+            var region = _ctx.UnionOfDirtyBounds();
+            _lastExecutedStages = _runner.Tick(_ctx, RunMode.Commit);
+            _lastRunLine = $"最近执行：{_lastExecutedStages} 阶段 / {_ctx.Report.TotalMs}ms" +
+                           $"（警告 {_ctx.Report.TotalWarnings}）" +
+                           (_ctx.Report.AnyFailure ? "　含失败阶段" : string.Empty);
+            _ctx.Report.Clear();
+            CityRuntime.MarkCommitted(region);
+            // 编辑态没有稳定帧循环，显式踢一次，避免"算了但画面不动"
+            EditorApplication.QueuePlayerLoopUpdate();
         }
 
         private void OnSelectionChange()
@@ -69,17 +151,30 @@ namespace Collin.CityMap.EditorTooling
         public void Bind(CityProject project)
         {
             _project = project;
-            if (project == null) { _ctx = null; _statusLine = "未绑定项目"; return; }
+            _terrain = null;
+            _stageKey = 0;
+            if (project == null)
+            {
+                _ctx = null;
+                CityRuntime.Deactivate();
+                _statusLine = "未绑定项目";
+                Repaint();
+                return;
+            }
             try
             {
                 _ctx = new PipelineContext(project);
                 var g = _ctx.Grid;
                 _statusLine = $"格 {g.Columns}×{g.Rows}（{(int)g.CellSize}m 档）· 图幅 {g.WorldSize:0}m · " +
                               $"chunk {g.ChunkCols}² · region {g.RegionCols}² · 掩码 {g.CellCount} 格";
+                // 面板成为权威上下文：View 由此停止自建、改为消费面板算出的高度场
+                CityRuntime.Activate(_ctx);
+                SyncStages();
             }
             catch (Exception ex)
             {
                 _ctx = null;
+                CityRuntime.Deactivate();
                 _statusLine = "参数非法：" + ex.Message;   // A-0-7：非法档位在此呈现，不静默取整
                 Debug.LogException(ex);
             }
@@ -102,12 +197,9 @@ namespace Collin.CityMap.EditorTooling
             var dirty = UndoHistoryTracker.ConsumeDirty();
             if (dirty == DirtyBits.None) return;
 
+            SyncStages();                             // Profile 可能刚被换/清空
             _runner.MarkDirty(dirty);
-            _lastExecutedStages = _runner.Tick(_ctx, RunMode.Commit);
-            _lastRunLine = $"最近执行：{_lastExecutedStages} 阶段 / {_ctx.Report.TotalMs}ms" +
-                           $"（警告 {_ctx.Report.TotalWarnings}）" +
-                           (_ctx.Report.AnyFailure ? "　含失败阶段" : string.Empty);
-            _ctx.Report.Clear();
+            CommitAndNotify(dirty);
             Repaint();
         }
 
@@ -259,11 +351,12 @@ namespace Collin.CityMap.EditorTooling
         private void Regenerate()
         {
             if (_ctx == null) { EditorUtility.DisplayDialog("CityMap", "请先绑定城市项目", "好"); return; }
+            SyncStages();
             _runner.MarkDirty(DirtyBits.All);
-            _lastExecutedStages = _runner.Tick(_ctx, RunMode.Commit);
+            // 全量重算的影响面 = 整图：显式传 null（= 全图），让 View 全量重建而不是按残留脏盒增量
+            CommitAndNotify(DirtyBits.All);
             _lastRunLine = $"全量重算：执行 {_lastExecutedStages} 阶段 / {_ctx.Report.TotalMs}ms" +
                            $"（警告 {_ctx.Report.TotalWarnings}）";
-            _ctx.Report.Clear();
             UndoHistoryTracker.RebuildBaseline();
             Repaint();
         }
