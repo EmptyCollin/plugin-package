@@ -51,14 +51,36 @@
     NoRoad=512,         // 负约束：禁路（08 §4.3）
     NoBuild=1024,       // 负约束：禁建
     NoWater=2048,       // 负约束：禁水
-    Interior=4096       // 过大地块内部不产 slot（04 §3.3 depthCap）
+    Interior=4096,      // 过大地块内部不产 slot（04 §3.3 depthCap）
+    InsetBand=8192      // 外环不可建带（§2.3）；与 OutOfBounds 区分：带内仍属图内，参与地形与导出
 }
 ```
-`ManualLocked`：被人工层显式钉住的格。`OccupiedHard` 由 **adopt 集合与 `CityBuildingTag` 反烘焙**得到——
-这是"固化对象不挡自动生长"这类恶性 bug 的结构性防线（Modules/09 H-2）。
+`ManualLocked`：被人工层显式钉住的格。`OccupiedHard` 由 **`BuildingRecord` 烘焙**得到
+（定稿后**不再依赖 `CityBuildingTag`**——投影组件已只剩 `slotKey`，且未加载区没有对象可遍历；
+这是"固化对象不挡自动生长"这类恶性 bug 的结构性防线，Modules/09 H-2 → 11 §5/§8）。
 负约束（`NoRoad/NoBuild/NoWater`）由 `ConstraintAsset` 在 S0 烘焙进掩码，使"禁止"成为每格 O(1) 判定而非各自查询。
-掩码由 S0/S2/S3/S4/08 分阶段写入，S6 只读。
-**位预算纪律**：`ushort` 共 16 位，已用 12 位；新增位须登记于此并同步 00 校验（原 byte 8 位已用尽，Modules/09 H-3）。
+掩码由 S0/S2/S3/S4/08 分阶段写入，S6 只读；**唯一写口是 `MaskWriter`**（§9 风险条），禁止各阶段直接触碰数组。
+
+**位预算纪律**：`ushort` 共 16 位，**已用 13 位**（`InsetBand` 为 Modules/11 定稿时新增并在此登记）；
+新增位须先登记于下表并同步实现，余 3 位；用尽前不得再加位，须改用第二张掩码（原 byte 8 位已用尽，Modules/09 H-3）。
+
+| 位 | 名称 | 值 | 登记来源 |
+|---|---|---|---|
+| 0..6 | Buildable / Water / WaterBuffer / Road / Parcel / ManualLocked / OutOfBounds | 1..128 | v6 |
+| 7 | OccupiedHard | 256 | 09 H-2 |
+| 8..10 | NoRoad / NoBuild / NoWater | 512 / 1024 / 2048 | 09 H-3 |
+| 11 | Interior | 4096 | 09 H-3 |
+| 12 | InsetBand | 8192 | Modules/11 定稿新增 |
+| 13..15 | 保留 | — | — |
+
+### 2.5 尺度档位（v6 D-26，本会话实现登记）
+| 档 | worldSize | cellSize | 用途 |
+|---|---|---|---|
+| `WorldScale.Small2km` | 2000m | **2m** | Sample 小城 + EditMode 回归基线（快，格数 1M） |
+| `WorldScale.Large8km` | 8000m | **4m** | 正式档（默认值即此）；16M 格 float 口径 336MB 不可接受，实算见 11 §3.1 |
+
+§2.3 的"默认 2000m"是 v6 前的旧默认，现按档位呈现：`CityProject.scaleProfile` 决定 `cellSize`，
+`worldSize` 独立可调；两档共用同一套代码路径，仅参数不同（总纲 §8 末行）。
 
 ## 3. 确定性随机与噪声内核
 
@@ -107,12 +129,34 @@ interface IPipelineStage {
 **阶段之间只通过 Context 交换数据，禁止阶段互相持有引用**（否则脏传播会漏，出现"改了没刷新"的假死）。
 
 ### 4.2 脏标记与调度
-```
-[Flags] DirtyBits { Seed, World, Terrain, River, Road, Budget, Parcel, Field, Profile, Building, All }
+```csharp
+// 实现真源：Runtime/Core/PipelineTypes.cs（位值已冻结如下）
+[Flags] enum DirtyBits : int {
+    None=0, Seed=1<<0, World=1<<1,
+    Terrain=1<<2,        // S1a 噪声基底（贵、全城）
+    Flatten=1<<3,        // S1b 平整约束回写（局部）——必须与 Terrain 分家（09 H-29）
+    River=1<<4, Road=1<<5, Budget=1<<6, Parcel=1<<7, Field=1<<8, Profile=1<<9, Building=1<<10,
+    Occupancy=1<<11,     // 结构占用变化：adopt/手刷/锁区/负约束 → 河/路/地块/落位全部复检（09 H-2）
+    OccupiedReloc=1<<12, // 【终端位】仅挪动已固化对象：S0 重烘焙 + S3/S6 借 DependsOn 认领，不向任何下游传播
+    Center=1<<13,        // 城心锚点：近全链、高危（09 H-7）
+    // 14..15 保留
+}
 ```
 - 每个工具改完数据 → `ctx.MarkDirty(bits, bounds)`（bounds = 影响的 AABB/圆环，用于局部重算）。
-- `PipelineRunner` 每帧（或滑杆 change 事件）合并脏位 → 按 §3.2 总纲表求"最小脏集合" → 拓扑序执行 → 触发 View 重建。
+- `PipelineRunner` 每帧合并脏位 → **`IntentChangePlanner.Expand` 求不动点闭包**（幂等，A-0-3）
+  → 按固定 `ExecutionOrder` 执行（S1a 严格早于 S1b，D-12）→ 触发 View 重建。
 - 合并窗口：同帧内多次 Mark 只跑一次（避免拖 handle 时每 tick 全量重算）。
+
+**两张表缺一不可，且必须是单一真源**：
+
+| 表 | 职责 | 实现位置 |
+|---|---|---|
+| `IntentChangePlanner` | 「位 → 位」下游传播（`DirtyOf` + `Expand`） | Runtime/Core/PipelineTypes.cs |
+| `StageClaims` | 「位 → 阶段」认领（哪个阶段被哪些位触发） | 同上 |
+
+`StageClaims.Of(stage)` 是 `IPipelineStage.DependsOn` 的基线，也是 CityWindow 阶段树的读取源。
+**面板/阶段都不许自持一份映射**：M1 实现时面板曾有一份私有 `StageBitOf` 副本，与真实 `DependsOn` 并存即分叉
+（"面板说脏、Runner 不跑"或反之），已收敛为 `StageBitOf(id) => StageClaims.Of(id)` 一行转发。
 
 ### 4.3 执行档位（这是"实时"的关键）
 | 档位 | 何时 | 范围 | 内容 |

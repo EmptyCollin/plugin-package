@@ -1,0 +1,21 @@
+{
+  "name": "com.collin.citymap.Tests",
+  "rootNamespace": "Collin.CityMap.Tests",
+  "references": [
+    "com.collin.core",
+    "com.collin.citymap",
+    "com.collin.citymap.Editor",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": ["nunit.framework.dll"],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "validateReferences": true
+}

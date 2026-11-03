@@ -349,3 +349,76 @@ A-1 确定性口径由"逐位一致"改为"**量化后一致（≤0.01m / ≤1 �
 ~~Q-11 / Q-12~~ → **v7 已全部关闭**：Q-11 =「基准格式先行、对接时补 `ExportAdapter`」（A-44）；
 Q-12 =「`chunkSizeM` 可自定义、默认 1024m」（A-43）。至此总纲 §11 无阻塞项，设计阶段可收口进入 M0。
 
+---
+
+# 第五轮（M1 实现自测，2026-11-03）
+
+> 方法变化：前四轮是**纸面推演**，本轮是**代码 + EditMode 测试真实执行**（54 个用例跑在活编辑器里）。
+> 这正是"推演只能发现设计缺陷，实现才能发现语义歧义"的分界。抓到 1 处实现缺陷 + 2 处文档/注释错误结论。
+
+## 10. H-29（实现抓到的组合性缺陷，已修）
+
+设计文档 08 §5.1 表末行写「adopted 建筑挪动 → **仅** OccupiedHard 重烘焙（旧+新 footprint）→**S3,S6 冲突复检**」。
+实现时我把"复检 S3"直译成"置 `Road` 位"，于是 `Road` 的下游规则（`Parcel|Field|Building`）被连带触发
+⇒ **挪一栋已固化的楼 = 重算地块**，恰好违反该行自己声明的"不得牵连"。
+
+测试 `H29_OccupiedReloc_...` 首跑即失败（实际多出了 `Parcel` 位），当场暴露。
+
+**修法**：`OccupiedReloc` 定义为**终端位**——`Expand` 对它不写任何传播规则，
+由 `StageClaims` 让 S0/S3/S6 各自 `DependsOn` 直接认领它。撤销了我中途引入的多余 `Recheck` 位。
+
+**沉淀为通用纪律**：文档里「→Sx 复检」这种写法，**不等于"置 Sx 的触发位"**。
+复检某阶段要用只被该阶段认领的终端位，否则该位的下游规则会越权。这条适用于 08 §5.1 全表。
+
+## 11. H-30（实现第二轮自测抓到：对象级单一 Kind 会让脏位归因错到不可见）
+
+M1 首版接口是"每个意图对象一个 `Kind` + 一个 `manualVersion`"。但一个对象常承载**多种互不相干的可变面**：
+`CityProject` 同时握着"世界参数（seed/尺寸/档位）"与"城心锚点"。它的 `Kind` 只能返回一个值（我写死 `WorldParam`），于是：
+
+```
+用户点「设为城心」 → TrySetCenterAnchor 只 bump 版本 → Tracker 读到 Kind=WorldParam
+                  → DirtyOf ⇒ Seed|World ⇒ Expand ⇒ **All（全量重算）**
+```
+
+后果三层，且**都不报错**：① 城心变更绕过 `Center` 的近全链语义；
+② **H-7 的修复被这条接线静默抵消**（城心重新变成"一动就全城重算"）；
+③ 面板显示的脏位也是错的，用户看到的"将要重算什么"与实际发生的不符——比报错更糟。
+
+**修法（接口契约级）**：变化不记在"对象"上，记在**通道（`IntentKind`）**上 —— `IntentChangeLedger`
+持有 `List<(Kind, Sequence, Center, Size)>`，Tracker 按 `(对象 × 通道)` 粒度比对。`IntentKind` 同步改为 `[Flags]`
+（同一对象一帧内可能多种变化，单值会互相覆盖），`DirtyOf` 从 `switch(kind)` 改为**逐位求并集**
+（否则组合值落 `default` 返回 None = 静默丢脏）。
+
+**必须序列化的原因**（这条同时补强了 H-9）：通道 `Sequence` 是 `[SerializeField]`。
+Unity Undo 只还原序列化字段 ⇒ undo 后序列号回到旧值 ⇒ 与基线不等 ⇒ 标脏。
+若账本用普通 C# 字段，undo 后序列号不变、Tracker 全瞎 —— 正是 H-9 的漏检形态，我首版就差点这么写。
+
+守卫用例（新增 2 条，共 56 条全通过）：
+`Channels_On_One_Object_Do_Not_Pollute_Each_Other`（城心提交不得推进 WorldParam 通道，反向同理）、
+`Tracker_Dirties_On_Change_And_On_Value_Rollback`（首帧零重算 + 归因到 Center + 序列号回滚仍被感知）。
+
+> 与 H-29 同源的方法论：**接口粒度不够时，缺陷不会崩，只会静默改变"重算什么"。**
+> 凡"一个对象多个可变面"（本项目里遍地都是：表行 × 四维度、场域 × 几何与强度、记录 × 位置与 flags），
+> 记账粒度必须到**面**，不能到对象。
+
+## 12. 本轮同时纠正的两处我自己的错误结论
+
+| 错误结论 | 出处 | 实测真相 |
+|---|---|---|
+| "面板存在私有 `StageBitOf` 副本，与 `DependsOn` 分叉" | 我写 `StageClaims` 时的注释措辞像事后诸葛 | **核实为真**（CityWindow 确有私有副本，AssembleStage 另有硬编码 `DependsOn`），已统一转发 `StageClaims.Of`；注释里的"必然分叉"改述为实测位置 |
+| "`ScriptableObject.CreateInstance` 不一定触发 OnEnable" | `CityProject.EnsureRegistered` 注释（凭记忆写的） | **实测会触发**：`MakeConstraint()` 未显式登记也能 `TryGet` 命中。故 `EnsureRegistered` 降级为"显式保险"，注释改为实测结论，测试也按真实语义构造坏状态（先注销再清空 id） |
+
+> 教训与交接单 §3 的端口错误同源：**没跑过的 API 行为不要写成"实测"**。这次是我自己写了"实测：仅反序列化时触发"这种话。
+
+## 13. 顺带清掉的门禁隐患
+
+按通道改造后，`Tracker` 里的 `structural` 标记与 `ComputeSetHash(out int count)` 变成"只赋值不读取"的死变量
+⇒ 会产 CS0219 级 warning ⇒ **直接破坏 §1.6b 控制台归零门禁**。已全部删除（不靠 warning 抑制手段绕过）。
+
+## 14. 第五轮累计：**27 处空洞**（H-1~H-30，实现轮新增 H-29、H-30）；阻断级仍为 7 处。
+M1 的 **56 个** EditMode 用例全部通过（`test run --mode editor`，Total 56 / Failed 0），其中
+A-27 / H29 / H2 / H7 / A-51 / A-48 / A0-3 / A0-4 / 通道守卫×2 这 9 条是"规则表与归因类"断言——
+它们能在后续任何改动 `Expand` / `DirtyOf` / 账本粒度的时候立刻挡住回归，属本包最便宜的护栏。
+
+
+

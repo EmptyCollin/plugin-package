@@ -1,74 +1,60 @@
 # 交接单 — com.collin.citymap
 
-> 覆写式交接单（AGENTS §4）。最近更新：2026-11-03（会话 `2026-11-03 record-freeze`）
+> 覆写式交接单（AGENTS §4）。最近更新：2026-11-03（会话 `2026-11-03 m1-foundation`）
+> 代码阶段：本会话按 §3 原子取锁开工，按 §1.6 三项门禁交锁。**未 push。**
 
-## 1. 已完成
-- **M0 已落地并提交**（上一会话）：`ebb6f4b com.collin.citymap: M0 包骨架`，0.0.1，包被 Unity 识别（插件包 3 个）。
-- **本会话 = `BuildingRecord` 接口冻结定稿**（交接单 §4 指定的"M0 后、M7 前"前置项已完成）：
-  - 新增 **`Docs/Modules/11-BuildingRecord.md`**（13 节：冻结范围 / 32B 偏移表 / 序列化布局 / 位域与取值语义 /
-    不存字段清单 / `intentVersion` 指纹输入 / 新发现隐患 / 下游映射 / 旧键名对照 / 校验规则 / 版本迁移 / 验收 / 风险）。
-  - 结构定为 **32 B/栋**、小端、按 region 分块 + `blockIndex`、记录顺序固定 `slotKey` 升序、**禁用自动序列化器**。
-  - 相对 v6 草案的字段变更：删冗余 `id`/`landUseDominant`/`thresholdUsed`（`dominant=argmax(land*)`、`Th=land{dominant}` 为纯派生），
-    增 `landF/I/R/A`（4B 四维追溯，byte 与整数门槛同标度）与 `footWQ/DQ`（4B 占地覆盖，见 H-26）。
-  - **`heightValue` 双义**（repeat ↔ 缩放百分数）用 `stretchable × approximated` 二维表消歧，读取强制经
-    `RecordGeometry.Resolve` 单一入口（11 §4.3）；非拉伸行写哨兵 1。
-- **定稿过程中新发现 3 处隐患（H-26~H-28），全部已在文档内解决**：
-  - H-26：07 §3.1 重试序列会"缩小 footprint 适配"，但覆盖值无处存放（表是共享 Model）→
-    跨会话回到表值 → **已让位的建筑重新重叠，A-8 静默失效**。→ `footWQ/DQ` 入记录，0=用表值。
-  - H-27：草案把 `slotKey` 当纯 hash 用没算冲突。n=10⁵ 落进 2³¹ 空间，**期望冲突对数 2.33（本会话实算）**，
-    是数学必然 → 两条记录认领同一 slot = 两栋楼同位置。→ salt 重算协议 + 加载期 O(n) 重复键检测 = error 阻断保存。
-  - H-28：草案写 `List<BuildingRecord>` 进 SO，Unity 会把 `[Serializable]` 结构列表**序列化成 YAML 明文**，
-    10 万条 ≈ 数百万行 → **H-17 换皮回归**（看着用了数据层，实际又把数据塞回 YAML）。→ SO 只存元数据 + `byte[] payload`。
-- **活文档已按 11 §9 对照表收敛旧字段名**（`slotId→slotKey`、`profileRowId→rowId`、`tag.*→record.flags.*`、
-  `repeatOrScale→heightValue`、`recordId→slotKey`）：改动落在 DESIGN / 06 / 07 / 08 / 10。
-  `CityBuildingTag` 在 07 §5 收敛为**只剩 `slotKey` 一个字段**（其余全为投影期缓存），消除与记录的双真源。
-  09 的历史推演行文**不回改**（是历史事实），靠 11 §9 对照表读。
-- 顺带修掉 A-6-6 的历史错误：它引用了从未定义过的 `CityBuildingTag.stretchSource`，已改为按 `flags.approximated` 核对。
-- 总纲升 **v8**：文档地图登记 11、验收索引追加 A-45~A-51、修订记录补 v8 段。
+## 1. 已完成（M1：Modules/00 基础设施 + 08 反悔骨架 + 11 结构落地）
+- **`Modules/11` 已由用户确认冻结**；`BuildingRecord` 按冻结表**落成代码**（32B/栋，
+  `ValidateLayout()` 对全部 15 个字段偏移自证 = A-45 的静态部分）。
+- Runtime/Core 新增：`CityGrid`（四层分辨率解耦、2km/8km 双档、floor 换算、圆外接盒、`RecordQuant`）、
+  `DeterministicRandom`（splitmix64 种子树 + `RngStream` + `IntentHash`）、`CellFlag`+`MaskWriter`（13 位掩码、禁建合集）、
+  `PipelineTypes`（`DirtyBits` / `IntentChangePlanner` 不动点闭包 / **`StageClaims` 阶段认领单一真源**）、
+  `Pipeline`（Context/Runner/GenerationReport）、`Falloff`（全工程唯一衰减口径）、
+  `CityProject`（含 `CityCenterAnchor`、世界参数与城心的显式提交入口、**`IntentChangeLedger` 通道记账**）、
+  `AssembleStage` + `ConstraintAsset`（S0：外环带 + 负约束烘焙）。
+- Editor 新增：`UndoHistoryTracker`（首帧基线 / 双检 / 250ms 合并窗口）、`CityWindow`（阶段树=信息非门禁、
+  自动跟随、工具模式互斥）。
+- `Tests/Editor`：测试程序集 + **56 条 EditMode 用例，`test run --mode editor` Total 56 / Failed 0**。
+- **实现轮抓到并修复 2 处空洞**（详见 09 第五轮）：
+  - **H-29**：文档"→S3 复检"被直译成"置 `Road` 位"⇒ 下游把 Parcel/Field/Flatten 拖进来 ⇒ **挪一栋固化楼会重算地块**
+    （违反 08 表末行自己写的"不得牵连"）。修法：`OccupiedReloc` 设**终端位**，由 `StageClaims` 让 S0/S3/S6 直接认领。
+  - **H-30**：意图对象用"单一 Kind + 单一版本"记账 ⇒ 「设为城心」被读成 `WorldParam` ⇒ Expand 成 `All` ⇒
+    **H-7 的修复被静默抵消**，面板脏位也错，全程不报错。修法：`IntentChangeLedger` **按通道（对象 × IntentKind）记账**、
+    `IntentKind` 升 `[Flags]`、`DirtyOf` 逐位求并集；`Sequence` 必须 `[SerializeField]`（否则 undo 看不见 = H-9 漏检形态）。
+- 纪律沉淀：**"→Sx 复检" ≠ "置 Sx 的触发位"**；**记账粒度必须到"可变面"而非"对象"**。
 
-## 2. 实测与算术复核（本会话自行验证，非引用文档）
-- 32B 偏移表逐项累加 **= 32，无重叠、无空洞**；最大对齐 4（int/uint），32 % 4 == 0 ⇒ 声明成立。
-- `flags` 用单 byte 承载 6 个已定义位（余 2 位保留）⇒ 足够。
-- 冲突期望 **2.33** 次（n=100000，空间 2³¹）。
-- 内存口径（MiB）：8km/4m 全图场数据量化合计 **31.3**；+ 记录 3.05 ⇒ **≈34.4**，
-  而 A-34 写的是"≤40MB" ⇒ **余量只有约 14%**。已在 11 §3.1 钉明"40 一律读作 40 MiB 且含索引"，
-  并警告用途场若退回 `float`（61 MiB）预算立刻穿帮。历史文档 MB/MiB 混用，断言前必须先统一口径。
+## 2. 实测得到的环境事实（新会话直接照做）
+- **`test run` 的 `--mode` 只接受 `editor|playmode|all`**（`test list` 可接受 `edit`）；
+  传错值时 Summary 全 0，极易误判成"工程里没有测试"。异步执行，须读重定向的完整 JSON 或轮询 `test status`。
+- **测试故意触发的 error 会真实计入 `consoleErrors` ⇒ 破坏 §1.6b 归零门禁**。
+  `LogAssert.Expect` 只让测试不失败、不回退计数；堆栈含本包程序集 ⇒ 不可用 §1.8 豁免。
+  正解：断言期间 `Debug.unityLogger.logEnabled=false` + `finally` 复位（已在两处用例这样处理）。
+- "只赋值不读取"的局部变量会产生 warning ⇒ 同样破坏归零（本轮清掉 `structural` 与 `ComputeSetHash(out int)`）。
+- 端口读数会漂移（同一 PID 先后读到 7801/7800）：**发指令前现查 `unity status`，失败先重试再判故障**。
+- 新建内嵌包仍需 `package resolve`（M0 记录，仍有效）。
 
 ## 3. 未完成
-- ~~`heightValue` 双义 vs 拆字段~~ → **用户已裁定（2026-11-03）：保留双义**（总纲 D-30，11 §4.3 已改写为裁定文本）。
-- **仅剩「确认冻结」一步**：11 号文档头部现为「字段方案已裁定；待用户确认冻结」。
-  用户说一声"冻结"即改状态为「已冻结」，§1 冻结范围随之生效（此后字段增删/语义变更须先登记 + 用户批准，
-  reserved 位占用须在 11 追加登记行）。
-- M1~M11 全部代码（M0 只给了结构与自检入口，无任何生成能力）。
-- R5 可选推演（AGENTS §6 插件包 unitypackage 提取 × 人工层/记录是否丢固化成果）。
-- 文档待办（未变）：`minParcelArea` 03/04 双处配置未归一（M5 前）；01~05 仍沿用 v6 前"实例/GameObject"措辞（M11 前统一）；
-  00 §8 旧数值与 4m/byte 口径不一致（M1 实测覆写，届时一并按 11 §3.1 的 MiB 口径校准）。
-- `CityMapMenus` 只有 `Package Info` 一项；City Window 与工具入口待 M1+ 挂菜单。无测试程序集（建议 M1 随 PipelineRunner 建 `Tests/`）。
+- M2~M11 全部功能代码。M1 只交付框架与内核，**不含任何生成能力**：
+  S1a~S6 六阶段目前是空槽（`StageClaims` 已定义认领关系，缺 `IPipelineStage` 实现）。
+- `CityWindow` 只有骨架：`新建城…` 按钮是占位 Label（08 §3.5 四重确认流未实现）；阶段树无真实耗时来源（无阶段可跑）。
+- `OccupiedHard` 烘焙只留了接口（输入是 `BuildingRecord` 集合，M8 才有数据）。
+- 无 PlayMode 测试；`IntentChangeLedger` 的 undo 感知目前靠**人为回滚序列号**模拟，真实 `Ctrl+Z` 链路待 M2 接上场景对象后补验（A-17 完整形态）。
+- R5 可选推演（AGENTS §6 插件包 unitypackage 提取 × 人工层）。
+- 文档待办（未变）：`minParcelArea` 03/04 双处配置未归一（M5 前）；01~05 仍用 v6 前"实例/GameObject"措辞（M11 前统一）。
 
-## 4. 已知坏
-- 本包无已知缺陷；门禁实测见下。
-- **环境（本会话更正一条我自己的错误结论）**：上一轮我写下"AGENTS §1.3 的 7800 已过时、实测为 7801"。
-  **该结论不成立**：本会话对**同一 PID 3512** 两次查询 `unity status`，先读到 **7801**、后读到 **7800**。
-  即 `unity status` 的 Port 列显示会在同一实例上漂移，根因未查明（不确定是 CLI 解析、多监听口还是缓存所致）。
-  ⇒ **不得据端口读数断定"实例已换"或"文档过时"**，也不因此去改 AGENTS §1.3（§10 高风险，用户未批准）。
-  操作指引：发指令前现查 `unity status`；若某端口指令失败，换另一读数重试或直接重试同一命令，两次仍失败才当作真故障上报。
-- **纪律（本轮两次踩到，写给所有会话）**：**单时刻观测不可写成永久结论**。
-  同类错误：① "stretch 锁已释放"（随后被重新取得）；② "端口实为 7801"（随后读回 7800）。
-  涉及锁、端口、编译状态、内存实测的表述，一律写成"某会话某时刻实测值 + 使用前必须复核"。
-- `git status` 里 `Assets/桥_杆_桥_stretchProfile*.asset` 等未跟踪文件属其他会话产物，非本包、未触碰。
+## 4. 下一步（M2 建议顺序）
+1. **S1a 基底噪声 + 显示 mesh + S1b 平整约束**（01 模块），把第一个真实阶段接进 `PipelineRunner`
+   —— 顺带验证 `StageClaims`/`Expand` 在真阶段下是否仍然正确（M1 的 FakeStage 只测了调度语义）。
+2. `TerrainProfile` SO + 编辑器参数实时链路（Preview→Commit 两档，A-1-3/A-0-3）。
+3. 噪声实现必须是纯函数（A-0-1 已锁死种子侧，噪声侧尚未有测试）→ 补 `fbm` 的确定性用例。
+4. 代码注释引用编号（`// 09 H-29`、`// 11 §4.3`），ACCEPTANCE 续接编号 21+。
 
-## 5. 下一步
-1. **用户确认冻结** → 11 状态改「已冻结」；若要改字段，改前先谈影响面（07 输出 / 08 认回 / 10 导出三方）。
-2. M1：格网（4m/2m 双档）→ SplitMix64 种子树 → `ushort` 掩码 → `PipelineRunner` 脏传播 →
-   `CityWindow` 壳 → 08 的 `manualVersion` + `UndoHistoryTracker`（首帧建基线）→ `CityCenterAnchor`。
-   代码注释引用编号（`// 09 H-17`、`// 11 H-26`、`// 10 H-25`），ACCEPTANCE 逐条对 A-xx（A-45~A-51 属本定稿）。
-3. 本会话改动**待用户决定是否提交**（AGENTS §9：一次交锁=一次提交；未获指示不 push）。
-
-## 6. 勿碰项
-- 不改 09 的历史推演行文（旧键名按 11 §9 读，不改写历史事实）。
-- 新建内嵌包后必须 `package resolve` 触发发现；asmdef 目录不留空（M0 ACCEPTANCE §9 两条实测坑）。
+## 5. 勿碰项
 - 不改 AGENTS.md / §8 钉死版本 / `Packages/manifest.json` / `ProjectSettings/**`。
-- 不动 `com.collin.core`、`com.collin.stretch` 文件；M9 段 1 才向 core 加接口文件（需先申报取锁）。
-- citymap 侧禁止注册 `IStretchService`（H-14b）；不引第三方 UPM 进生成内核（Recorder 仅 M10 Sample）。
-- 多会话共用同一编辑器实例：**不擅自 `console clear`**，除非自己要取归零证据且已跑完本会话验证动作。
+- 不动 `com.collin.core`、`com.collin.stretch`；citymap 侧禁止注册 `IStretchService`（H-14b）。
+- **不改 `Modules/11` 的冻结表**：字段增删/偏移/标度/位定义变更须先在该文档追加登记行并经用户批准
+  （三方消费者：07 输出、08/10 认回、10 导出）。
+- 脏位新增须同步三处：`DirtyBits` 枚举 + `IntentChangePlanner` 传播 + `StageClaims` 认领，且 00 §2.4/§4.2 文档同步。
+- 不引第三方 UPM 包进 Runtime/生成内核（Recorder 仅 M10 Sample）。展板场景 `Assets/Showcase/` 不因本包改动。
+- 多会话共用同一编辑器实例：**不擅自 `console clear`**（除取归零证据的必要时刻），不动他人锁。
 - 已交付文档原地更新；仅用户明确要求新版本时另存。

@@ -165,16 +165,16 @@ struct NoWater { bounds }                   // S2 自动支流/补下游禁入
 ### 5.1 L1 与派生层的一致性：`UndoHistoryTracker`（本模块最重要的实现件）
 Unity undo 只回滚了意图层对象，**派生层还停在 undo 前**（建筑还站在撤销前的路上）。解法（R-B 落地）：
 ```
-每个意图层提交点（Commit/undo/redo 前后）bump 所属对象的 manualVersion；
-Tracker 在 EditorApplication.update 里比对两件事（Modules/09 H-9 修订）：
-  ① 意图对象集合哈希（对象 id 全集 + 各类计数）  ← 捕捉 undo"恢复被删对象"（其版本可能等于记忆值，仅版本差会漏检）
-  ② 逐对象 manualVersion 差                      ← 捕捉参数改动
-差异 → 按对象类型映射脏位与 bounds → ctx.MarkDirty(...) → 自动跟随管线重算。
+每个意图层提交点（Commit/undo/redo 前后）bump 该对象**对应通道**的序列号（`IntentChangeLedger`）；
+Tracker 在 EditorApplication.update 里比对两件事（Modules/09 H-9 / H-30 修订）：
+  ① 意图对象集合哈希（stableId 全集）          ← 捕捉对象增删与 undo"恢复被删对象"
+  ② 逐通道序列号差（对象 × IntentKind 粒度）    ← 捕捉参数改动，并把脏位归因到**变化本身**
+差异 → 按通道映射脏位与 bounds → ctx.MarkDirty(...) → 自动跟随管线重算。
 ```
 **首帧基线规则（Modules/09 H-10b）**：会话/域重载后的第一帧，Tracker **只建立基线、不触发重算**
 （否则场景加载会把全部对象判为差异 → 近全量重算）。基线 = 加载完成时各意图对象的（集合哈希 + 逐对象版本）。
-此后仅在"集合哈希变化 或 版本差非空"时标脏；场景加载与认回（07 §3.3）本身不算用户编辑。
-**对象类型 × 变化 → 脏集合映射表**（Tracker 的唯一规则表，实现时照抄）：
+此后仅在"集合哈希变化 或 **某通道序列号差非空**"时标脏；场景加载与认回（07 §3.3）本身不算用户编辑。
+**通道 × 变化 → 脏集合映射表**（Tracker 的唯一规则表，实现时照抄；"通道"即 `IntentKind`，见下方 H-30）：
 
 | 意图对象 | 变化 | 脏位 | bounds |
 |---|---|---|---|
@@ -184,9 +184,15 @@ Tracker 在 EditorApplication.update 里比对两件事（Modules/09 H-9 修订�
 | pinned 边/节点 | 增删改 | Road(栈失效重建,03 H-1)→S3,S4,S5,S6 | 边+受影响区域 |
 | ρ/预算参数 | 改值 | Budget→S3,S4,S5,S6 | 全图（增量弹栈） |
 | 表行 | 增删改值 | Profile→S6 | 脏 parcel |
-| adopt/手刷/锁区/负约束 | 增删 | **Occupied 重烘焙**→S2,S3,S4,S6 禁入判定 | footprint |
-| adopted 建筑 Transform | 挪动 | **仅 OccupiedHard 重烘焙**（旧+新 footprint）→S3,S6 冲突复检 | 两 footprint |
-| 城心锚点 | 提交 | Terrain→S1a..S6 近全链（高危，过 §6.2） | 全图 |
+| adopt/手刷/锁区/负约束 | 增删 | **`Occupancy`**：S0 重烘焙 → S2,S3,S4,S6 禁入复检 | footprint 并集 |
+| adopted 建筑 Transform | 挪动 | **`OccupiedReloc`（终端位）**：S0 重烘焙旧+新 footprint，S3/S6 借 DependsOn 复检 | 两 footprint |
+| 城心锚点 | 提交 | `Center`→S1a..S6 近全链（高危，过 §6.2） | 全图 |
+
+> **措辞纠正（实现自测抓到，登记为 09 H-29）**：本表原先写"挪动 → 仅重烘焙 →S3,S6 冲突复检"，
+> 实现时"复检 S3"被直译成"置 `Road` 位"——而 `Road` 的传播规则会把 `Parcel/Field/Flatten` 一并拖进来，
+> 结果**挪一栋固化楼会触发地块重算**，正是本行明令禁止的事。
+> 结论：**"复检某阶段" ≠ "置该阶段的触发位"**。终端位 `OccupiedReloc` 自身不向任何位传播，
+> 由 `StageClaims` 让 S0/S3/S6 直接认领它。这条区分适用于全表所有"→Sx 复检"的写法。
 
 - 即：**undo/redo 在编辑器里被当作一次普通的意图修改**，复用全部脏传播/Preview/Commit 机制，
   不需要任何"撤销专用"的派生层恢复代码（复杂度砍掉一大部分）。
