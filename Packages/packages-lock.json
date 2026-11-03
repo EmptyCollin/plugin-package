@@ -14,6 +14,15 @@
       "source": "embedded",
       "dependencies": {}
     },
+    "com.collin.stealth": {
+      "version": "file:com.collin.stealth",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.collin.core": "0.2.0",
+        "com.unity.inputsystem": "1.20.1"
+      }
+    },
     "com.collin.stretch": {
       "version": "file:com.collin.stretch",
       "depth": 0,

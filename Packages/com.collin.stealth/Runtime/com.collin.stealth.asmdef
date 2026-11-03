@@ -1,0 +1,25 @@
+{
+  "name": "com.collin.stealth",
+  "rootNamespace": "Collin.Stealth",
+  "references": [
+    "com.collin.core",
+    "Unity.InputSystem"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.inputsystem",
+      "expression": "1.0.0",
+      "define": "STEALTH_INPUT_SYSTEM"
+    }
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "validateReferences": true
+}
