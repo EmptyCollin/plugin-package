@@ -40,6 +40,9 @@ public class ShowcaseUI : MonoBehaviour
     {
         var canvas = GetComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        // 没有 GraphicRaycaster，EventSystem 收不到任何 UI 命中——整块展板对点击是聋的。
+        // 场景文件按 D-6 只允许存这一个 GameObject，故射线组件也在此代码补齐。
+        if (GetComponent<GraphicRaycaster>() == null) gameObject.AddComponent<GraphicRaycaster>();
         BuildLayout();
         Reload();
     }
@@ -132,10 +135,26 @@ public class ShowcaseUI : MonoBehaviour
         _videoPlayer = gameObject.AddComponent<VideoPlayer>();
         _videoPlayer.playOnAwake = false;
         _videoPlayer.renderMode = VideoRenderMode.RenderTexture;
-        _videoPlayer.audioOutputMode = VideoAudioOutputMode.Direct;
-        _videoRT = new RenderTexture(960, 360, 0, RenderTextureFormat.ARGB32);
+        // 演示视频为合成素材（静音轨）；AudioOutputMode.Direct 在编辑器下会让异步 prepare 挂起，
+        // 故用 None。若日后换入带真实音轨的录屏，改回 AudioSource 即可。
+        _videoPlayer.audioOutputMode = VideoAudioOutputMode.None;
+        _videoRT = new RenderTexture(960, 540, 0, RenderTextureFormat.ARGB32);
         _videoRT.Create();
         _videoPlayer.targetTexture = _videoRT;
+
+        // 场景无相机会在 Game 视图中央留下 "No cameras rendering" 占位框，压住视频区。
+        // 补一台只负责清屏、不剔除任何物体的相机消掉它（Overlay 画布始终绘于其上）。
+        if (UnityEngine.Camera.main == null)
+        {
+            var camGo = new GameObject("ShowcaseCamera");
+            camGo.transform.SetParent(transform, false);
+            var cam = camGo.AddComponent<UnityEngine.Camera>();
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = Bg;
+            cam.cullingMask = 0;
+            cam.orthographic = true;
+            cam.depth = -1f;
+        }
     }
 
     // ── 数据与刷新 ────────────────────────────────────────────
@@ -205,7 +224,10 @@ public class ShowcaseUI : MonoBehaviour
         else
         {
             HideVideoPlaceholder();
-            _videoPlayer.url = "file://" + _currentVideoPath.Replace('\\', '/');
+            // 用规范 file:/// 三斜杠形式；file:// + "D:/x" 会被当作主机名 D: 解析，prepare 永不完成
+            // 本地文件直接给绝对路径：file:// 前缀会把盘符 "D:" 当主机名（urlparse 已证明），
+            // prepare 永不完成；Unity VideoPlayer 原生支持绝对路径。
+            _videoPlayer.url = _currentVideoPath;
         }
     }
 
@@ -218,8 +240,22 @@ public class ShowcaseUI : MonoBehaviour
 
     private IEnumerator PlayVideo()
     {
+        ShowVideoPlaceholder("视频准备中…");
         _videoPlayer.Prepare();
-        while (!_videoPlayer.isPrepared) yield return null;
+        const float timeout = 15f;
+        float t = 0f;
+        while (!_videoPlayer.isPrepared && t < timeout)
+        {
+            t += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        if (!_videoPlayer.isPrepared)
+        {
+            // 不再无限自旋黑屏：把失败原因显示出来
+            ShowVideoPlaceholder("视频解码失败或超时\n" + _currentVideoPath);
+            yield break;
+        }
+        HideVideoPlaceholder();
         _videoImage.texture = _videoRT;
         _videoPlayer.Play();
         while (_videoPlayer.isPlaying) yield return null;

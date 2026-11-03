@@ -4,6 +4,34 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-03
+### Fixed（用户反馈：展板所有按钮点不动）
+- **Canvas 缺 `GraphicRaycaster`**：展板全部控件由代码构建（DESIGN D-6），但从未挂过射线组件，
+  场景文件里也是 0 个。EventSystem 与输入模块（InputSystemUIInputModule，与工程
+  `activeInputHandler=1` 匹配）均正常，点击在派发第一环即被丢弃 → 整个界面对鼠标是聋的。
+  修复：`Start()` 里补挂 `GraphicRaycaster`。实测修复前 `ray=NONE / buttons=3 live=3`，
+  修复后 `ray=enabled=True`，且用 `EventSystem.RaycastAll` 对 4 个按钮中心逐一检测
+  `self=True clickable=4/4`（命中链贯通）。
+- **重要归因修正**：本条是「展板看不了视频」的**首要**根因——0.4.2 先前修的 `file://` 盘符
+  URL 缺陷真实存在且必要，但即便修好，用户也从未点到过「播放演示」。教训：
+  交互失效先证命中链（EventSystem 是否收到点击），再查末端逻辑。
+- **画面中央 "No cameras rendering" 占位框压住视频区**：展板场景无相机。
+  补一台 `cullingMask=0`、只负责清屏的相机（depth=-1，Overlay 画布仍绘于其上）消除该占位框。
+
+### Fixed（用户反馈：展板看不了视频 + profile 落在 Assets 根）
+- **展板视频 URL 缺陷**：`"file://" + "D:/..."` 会把盘符 `D:` 解析成**主机名**
+  （urllib 静态证明 netloc='D:'），VideoPlayer 找不到该主机 → prepare 永不完成、点播放无反应。
+  改为直接传绝对路径（Unity 原生支持）。
+- **prepare 失败不再静默黑屏**：加 15s 超时 + 「视频准备中…/解码失败」占位提示，
+  原实现 `while(!isPrepared) yield return null` 会无限自旋且界面无任何反馈。
+- **渲染纹理比例**：960×360 → 960×540（与视频一致，消除拉伸变形）。
+- **音频模式**：`Direct` → `None`（合成静音轨在编辑器下会让异步 prepare 挂起）。
+- **演示视频重编码**：High → **Constrained Baseline** + faststart + bt709 色彩标签，
+  消除 Unity 导入的 `Color primaries 0` 与 H.264 时间戳告警。
+- **参数资产落点**：原逻辑兜底写 `Assets` 根（用户 7 次实验产生 7 个孤儿 profile）。
+  改为 prefab 同目录 → 包内 `Sample/Profiles/` → 场景目录，**绝不进 Assets 根**；
+  无法定位时弹窗提示而非静默落 Assets。实测 `inPackages=True`。
+
 ## [0.4.1] - 2026-11-02
 ### Changed
 - 演示视频换为**真实功能录屏**（程序化逐帧渲染，非人工操作）：396 帧@24fps/16.5s，

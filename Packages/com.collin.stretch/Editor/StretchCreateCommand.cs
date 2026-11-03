@@ -70,13 +70,39 @@ namespace Collin.Stretch.EditorTooling
             var profile = ScriptableObject.CreateInstance<StretchProfile>();
             profile.InitFromMesh(mesh, StretchAxis.Y);
 
-            string dir = "Assets";
+            // 落点优先级（AGENTS.md §0：Assets/ 不放插件产物）：
+            // 1) 模型是 prefab 实例 → prefab 同目录；2) 当前场景在包内 → 该包的 Sample/Profiles；
+            // 3) 兜底 → 场景所在目录。绝不写 Assets 根。
+            string dir = null;
             string prefabPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);
             if (!string.IsNullOrEmpty(prefabPath))
             {
                 dir = System.IO.Path.GetDirectoryName(prefabPath).Replace('\\', '/');
             }
-            if (string.IsNullOrEmpty(dir)) dir = "Assets";
+            if (string.IsNullOrEmpty(dir))
+            {
+                var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+                string sp = scene.path.Replace('\\', '/');
+                if (sp.StartsWith("Packages/"))
+                {
+                    int slash = sp.IndexOf('/');
+                    int next = sp.IndexOf('/', slash + 1);
+                    string pkgRoot = next > 0 ? sp.Substring(0, next) : sp;
+                    dir = pkgRoot + "/Sample/Profiles";
+                    System.IO.Directory.CreateDirectory(dir);
+                }
+                else if (!string.IsNullOrEmpty(sp))
+                {
+                    dir = System.IO.Path.GetDirectoryName(sp).Replace('\\', '/');
+                }
+            }
+            if (string.IsNullOrEmpty(dir))
+            {
+                EditorUtility.DisplayDialog("Collin Stretch",
+                    "无法确定参数资产存放位置：模型不是 prefab 实例，且当前场景未保存。\n请先保存场景后重试。", "好");
+                Object.DestroyImmediate(profile);
+                return;
+            }
             string assetPath = AssetDatabase.GenerateUniqueAssetPath(
                 $"{dir}/{go.name}_stretchProfile.asset");
             AssetDatabase.CreateAsset(profile, assetPath);

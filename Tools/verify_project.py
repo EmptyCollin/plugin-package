@@ -340,11 +340,15 @@ def check_console():
             cwd=ROOT, capture_output=True, timeout=45)
         entries = json.loads(proc.stdout.decode("utf-8", "ignore")) \
             .get("data", {}).get("result", {}).get("entries", [])
+        exempted = 0
         for e in entries:
-            if e.get("level") not in ("error", "warning"):
+            # 实测 level 取值为 error/warn/log（是 "warn" 不是 "warning"）。
+            # 曾因只匹配 "warning" 把 warn 条目全部跳过，导致未豁免告警获虚假绿灯。
+            if e.get("level") not in ("error", "warn", "warning"):
                 continue
             msg = (e.get("message") or "").replace("\r", " ").strip()
             if any(p in msg for p in patterns):
+                exempted += 1
                 continue
             offenders.append((e.get("level"), msg[:120]))
     except Exception as exc:
@@ -357,8 +361,16 @@ def check_console():
             "控制台未归零：error=%d warning=%d，未豁免 %d 条（§1.6b 红灯，禁止交锁）。样例: %s"
             % (errors, warns, len(offenders), offenders[0][1]))
     else:
-        add("WARN", "console",
-            "error=%d warning=%d 全部命中豁免清单（§1.8 已批准的环境噪声）" % (errors, warns))
+        # 缓冲区无可归因条目 ≠ 一定豁免命中：计数与缓冲不一致时严从按红灯
+        total = errors + warns
+        if exempted >= total:
+            add("WARN", "console",
+                "error=%d warning=%d 全部命中豁免清单（§1.8 已批准，命中 %d 条）"
+                % (errors, warns, exempted))
+        else:
+            add("FAIL", "console",
+                "控制台计数=%d 但缓冲区仅可归因 %d 条（其余 %d 条无法归因，§1.6b 从严按红灯）"
+                % (total, exempted, total - exempted))
 
 
 def main():

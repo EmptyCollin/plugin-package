@@ -164,3 +164,32 @@
 | 72 | 最终解码起播 | —— | **未在本环境验证**：编辑器后台播放循环不推进帧（FrameCount 恒 2，pause 唤醒无效），异步 prepare 无法完成（无 error 回调）。需用户前台编辑器点「播放演示」目视确认 |
 
 渲染方式：`Camera.Render`+`ReadPixels` 离屏抓帧（冒烟先行验证管线），楼A 生长/桥延长由临时 `StretchInstance` 逐帧驱动（桥实例为内存态，未建资产、场景未保存），ffmpeg 合成。
+
+# v0.4.2 增量（展板视频与落点修复，2026-11-03，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 73 | URL 缺陷根因 | `urllib.parse.urlparse` 静态解析三种写法 | `file://D:/x` → netloc=**'D:'**（盘符被当主机名）；`file:///D:/x` → netloc=''；绝对路径 → 无 scheme 歧义 |
+| 74 | 视频文件可解码 | `ffmpeg -i … -vf select=eq(n\,200) -vframes 1` | 第 200 帧成功抽出（120KB PNG），文件本身无损 |
+| 75 | 色彩/时间戳告警消除 | 重编码 baseline+bt709+faststart 后刷新导入、clear、重开视频 | `Color primaries 0` 不再出现；ffprobe: `profile=Constrained Baseline, color_primaries=bt709` |
+| 76 | 落点修复 | 反射调 `CreateProfile` 于包内场景 | `createdProfile=Packages/com.collin.stretch/Sample/Profiles/…` `inAssetsRoot=False inPackages=True`（验证后删除，桥仍无 profile） |
+| 77 | 门禁 | `console clear` → 重跑 76 + 视频打开 → `console status` | **errors=0**；warnings=1 为 `com.collin.citymap 缺 Showcase.json`（另一会话的包，非本次改动） |
+| 78 | 7 个孤儿 profile 处置 | GUID 全量引用检索 | 全部 `refs=[无]`、未入库；已备份移出至 `.locks/profiles_backup/`（可恢复），Assets 根仅剩 Unity 自带 Readme.asset |
+
+# v0.4.2 增量 B（展板点击失效根因修复，2026-11-03，同验证者）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 79 | 根因定位：射线组件缺失 | Play 模式 `script eval_file` 探针（遍历 Canvas 取 GraphicRaycaster） | 修复前 `canvases=1 [name=Showcase root=True mode=ScreenSpaceOverlay **ray=NONE** active=True] ES=EventSystem esActive=True module=InputSystemUIInputModule buttons=3 live=3`；场景文件 `grep -c GraphicRaycaster = 0`，脚本亦无 AddComponent —— 点击在派发第一环被丢弃 |
+| 80 | 输入后端排除 | `ProjectSettings.activeInputHandler` + EventSystem 模块 | `activeInputHandler: 1`（New Input System）与场景内 `InputSystemUIInputModule` 匹配，排除"新旧输入系统不一致"这一常见误因 |
+| 81 | 修复后组件就位 | 同 79 探针，补挂 GraphicRaycaster 并重进 Play 后复跑 | `ray=enabled=True`、`buttons=4 live=4`（第 4 个按钮出现＝citymap 已补齐 Showcase.json，展板多一条目） |
+| 82 | **命中链贯通（决定性）** | `EventSystem.RaycastAll` 对 4 个按钮世界包围盒中心逐一检测 | `建模工具 self=True / 地图工具 self=True / core self=True / 播放演示 self=True ‖ buttons=4 clickable=4` —— 每个按钮中心均被射线命中，鼠标点击可达 |
+| 83 | 无相机占位框消除 | 代码补 `cullingMask=0` 清屏相机（depth=-1） | 编译通过、Play 无新增 error/warning；画面中央 "No cameras rendering" 黑框由该相机接管清屏 |
+| 84 | 门禁（§1.6b 三段式） | `console clear` → 重跑 81+82 探针 → 退 Play → `console status` → `verify_project.py` | `groundTruth: consoleErrors=0 consoleWarnings=0 compilationFailed=False`；校验器 console 项 `[ ok ]`（citymap 告警已由该包补齐而自然消失，未用豁免） |
+
+**归因修正（重要教训）**：73–78 那批把"展板看不了视频"归因到 `file://` 盘符 URL 缺陷——该缺陷真实存在且修复必要，
+但它不是用户当时看到的现象的**首要**原因：Canvas 缺 GraphicRaycaster 意味着用户**从未成功点击过**「播放演示」。
+交互类失效应先证"事件是否到达"（EventSystem 命中链），再查末端逻辑。
+
+**未能在本环境验证**：视频在 Play 模式实际渲染到画面。原因——编辑/无头模式下 VideoPlayer 异步 prepare 依赖播放循环推帧，
+实测三种 URL 写法 `isPrepared` 恒 False（FrameCount 停走），属引擎限制而非代码缺陷。需用户前台 Play 目视确认。
