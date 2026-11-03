@@ -5,7 +5,35 @@
 ## [Unreleased]
 
 ### Added
-- **Modules/11-BuildingRecord.md**：`BuildingRecord` 接口冻结定稿（32B/栋、小端、region 分块 payload、
+- **M2（Modules/01 数据层：S1a 基底噪声 + S1b 平整约束）已实现并自测通过**（`test run --mode editor` Total 84 / Failed 0，
+  新增 `Tests/Editor/TerrainDataTests.cs` 28 条地形断言）：
+  - `Runtime/Core/CityNoise.cs`：纯 C# 确定性噪声内核（value noise + fbm + domain warp，splitmix64 派生子种子），
+    **不依赖 Unity PerlinNoise**（后者跨平台/版本不保证逐位一致，会击穿"同种子同图"地基）；全纯函数、无静态可变态。
+  - `Runtime/Core/HeightField.cs`：`TerrainField`（Heights/BaseHeights + 量化往返）、`ConstraintStrength`
+    （**Parcel=8 / RoadCrown=4 / WaterBuffer=1** 分级 + 核心贴合度）、`PlaneConstraint`（`InsetMeters`/`ExtendMeters`/
+    `Exact` 硬覆盖，`MaxInsetFor/ComputeCoreHalf` 单一算法真源）、`PlaneFitting.FitFromBase`
+    （**坡向取最小二乘、水平取中位数**以抗离群）。
+  - `Runtime/Core/TerrainBaseStage.cs`：S1a。`TerrainProfile` SO（噪声参数 + 城内平整度旋钮 + 约束求解设置），
+    `ResolveUrbanCenter` 回退图幅中心，压幅公式 `ampFactor*(amp*baseN + detailA*detail)`。
+  - `Runtime/Core/FlattenSolveStage.cs`：S1b。加权融合 `h=(h·Wfree + Σ wᵢ·planeᵢ)/(Wfree + Σ wᵢ)` + 硬覆盖模式，
+    scratch 缓冲改**实例级**（避免跨上下文污染）。
+  - `Runtime/Core/CityTerrain.cs`：场景组件（手动平整区 + 自动地块开关），`EnumerateAutoTiles` 按 `pitch` **留街道间隙**。
+- **实现轮抓到并修复 6 处空洞**（详见 Modules/09 第六轮）：
+  - **H-31**：`urbanCenter` 写死 `(1000,1000)` → 小图幅城心落图外、`urbanFlatness` 旋钮完全失效。改哨兵默认回退图幅中心。
+  - **H-32**：拟合截距是 LSQ 面在**样本均值点**的高程，被当成区域中心高程用 → 目标面整体偏移实测 1.0m。坡向偏移改解析式。
+  - **H-33**：中位数抗离群的设计意图被 LSQ **旁路**（水平仍取均值口径）→ +395m 单点离群致目标高程偏 0.816m。改水平取中位数。
+  - **H-34**：缺 `constraintInner`（核心=整块矩形）→ 相邻地块共享边界同时全权重、两独立平面被平均成 **4.79°→65.48° 陡坎**。
+    增 `InsetMeters`（上限=较短半边 40%）。
+  - **H-35**：自动地块无街道间隙 → 内切后仍 27.92°（两独立平面高差须在有限距离内消化，几何无解）。按 `pitch` 留街隙。
+  - **H-37**：压幅只乘低频层、细节层完全绕过 `urbanFlatness` → `flatness=0` 城内标准差 **0.236m 违反 A-1-1 ≤0.2m**；
+    且被我把断言阈值写成 `0.6f`（凭直觉放宽而非用文档数值）掩盖。**修公式为压整条噪声和后 → 0m**。
+    纪律：**文档给绝对数值，断言就用那个数值**；另补 `flatness=0.5` 中点线性度断言防"中间段不跟手"。
+  - 另记流程坑 **H-36**：`recompile_status=up_to_date` 不等于"新代码已编译"——dll mtime 可能早于源码，测试跑旧程序集
+    表现为"改了码失败数值一字不差重复"。判别法：比 dll/源 mtime 或反射探新成员；改码后必先确认 mtime 再跑测试。
+- 交锁三项门禁（H-37 修复后最终复跑）：`script recompile_status` `failed=False`；`console clear`→重跑全量+校验器→
+  `console status` **`consoleErrors=0/consoleWarnings=0/seeded=True`**；`verify_project.py` 本包检查项全 `[ ok ]`
+  （整体红灯仅因他包 `core/stretch/stealth` 锁心跳超时，非本包改动，已按 §3 如实上报待用户裁定）。
+
   `slotKey` 唯一键与冲突协议、`heightValue` 双义消歧表、`intentVersion` 指纹输入清单、校验与迁移规则、
   旧键名对照表）。新发现并解决 **H-26/H-27/H-28**，新增验收 **A-45~A-51**。
   **字段方案裁定（用户 2026-11-03，总纲 D-30）：`heightValue` 保留双义，不拆 `repeat`+`scale`**；
