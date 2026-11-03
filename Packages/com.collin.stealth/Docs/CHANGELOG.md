@@ -5,13 +5,61 @@
 ## [Unreleased]
 
 ### Added
-- M3：察觉状态机 + 警戒广播（`EC_Stealth_Detected` / `AlarmRaised` 通道资产）+ `IPathBridge` 寻路接缝。
-- M4：Editor 侧 Inspector/Handles/Gizmos（世界系路点手柄 + 「从当前世界位置反推路点」按钮本体）+ 编辑态回溯预览的场景内核验。
-- M5：`PlayerStealthController`（新 Input System 优先、条件编译回退旧后端）+ `StealthPlayer` / `StealthGuard` 预制件 + `Sample/Scenes/StealthSample.unity` 白盒场景 + 实录演示视频 + 展板接入。
+- M5 余项：`StealthPlayer` / `StealthGuard` **预制件资产**（当前示例为场景内直接搭建，功能等价但未沉淀成可拖拽预制件）+ `ShowcaseMedia` 实录演示视频（§6 两段硬性要求）+ 展板接入核验。
 - M6：冻结对外契约 `Docs/Modules/00-Contract.md`（逐签名核验 DTO 全部来自 core），交付给 B 包消费。
+- 待补证据：性能验收（50 NPC ≥ 55 FPS）；编辑态回溯「拖滑块 NPC 连续移动」的截图（ACCEPTANCE 条目 71 标注为部分通过）。
 
 ### Changed
 - 2026-11-03 用户拍板 Q-A1~Q-A5 后调整设计：新增 `com.unity.inputsystem` 依赖；路点改为相对坐标 + 预制件承载；**听觉/声音侦测移出本包范围**（最小可用子集），`StealthMask` 对应位改为预留位不启用；玩家移动控制器由「交给外部工程」改为「包内自带、拆箱即用」。
+
+## [0.4.0] - 2026-11-04
+### Added
+- **M3 哨兵决策与反应层**：
+  - `IPatrolModifier`：叠加层接口（`Tick(dt, baselineWorldPosition, timeIndex)` / `GetOverlay` / `ResetOverlay`）。
+    设计要点——状态机的反应**只能作为基线之上的可关断偏移**，绝不回流进巡逻基线，
+    否则辅助台的 T 周期回溯显示的就是「上一局玩过的痕迹」（DESIGN R-1）。
+  - `GuardBrain`：四档状态机（巡逻→疑惑→警觉→搜索→巡逻）、可疑点记忆、驻留/环绕计时、
+    同伴通报（Alerted 时把半径内同伴拉进疑惑并同步可疑点）、察觉事件经 core 的
+    `StealthDetectedChannel` 广播（载荷含 `timeIndex`，供辅助台钉回时间轴）。
+  - `IPathBridge` + `NullPathBridge`：寻路接缝（DESIGN D-06）。默认不注册 = 纯直线叠加；
+    工程接入导航时由可选子程序集实现并注册，**本包不引用任何导航类型**。
+  - `PatrolAgent` 成为唯一位姿合成点：`ApplyBaselineAt(t, dt)` 先驱动叠加器决策、
+    再合成偏移与注视朝向、最后写 transform；`dt <= 0` 时**完全跳过叠加层**（编辑态预览语义）。
+  - `StealthWorld.ResetAll()` 一并复原哨兵反应状态（档位 + 叠加偏移）。
+- **M4 编辑器工具与可玩成品**：
+  - `PatrolRouteRootEditor`：Scene 视图直接拖路点（世界显示、局部写回，D-09）、
+    Inspector 逐点改停留/段速、追加/删除、从子物体烘焙路点、T 周期与朝向指示线。
+  - `StealthScrubWindow`（Tools ▸ Collin ▸ Stealth ▸ 巡逻回溯窗口）：T 周期滑动条实时推送 NPC 位姿，
+    自动播放 / 回到 t=0 / 恢复 Auto，并列出各单位在该时刻的世界坐标与朝向。
+    **编辑态（非 Play）可用**——这是 M1「位姿为时间纯函数」换来的核心能力。
+  - `StealthGizmos`：巡逻折线（路线根常显）+ 视野扇形（选中时绘制），与判定共用同一数据源。
+  - `PlayerStealthController`（**拆箱即用**，D-13）：WASD/方向键移动、Ctrl 蹲伏（切换或按住两种模式）、
+    第三人称跟随相机（右键环绕、防穿墙收距）、蹲伏自动改胶囊高度并向 L4 上报曝光度。
+    输入后端按 `ENABLE_INPUT_SYSTEM` / `ENABLE_LEGACY_INPUT_MANAGER` 三档自动选择，
+    两路皆不可用时输出一次性明确 warning。
+  - `StealthHud`：IMGUI 显示察觉度条、各哨兵档位与可疑点、操作提示（零依赖、零场景配置）。
+  - `StealthSampleSceneBuilder`（Tools ▸ Collin ▸ Stealth ▸ 生成可玩示例场景）：
+    一键产出 `Sample/Scenes/StealthSample.unity` + 3 个资产（两条路线 + 一份视野参数）；
+    场景含地面、3 个掩体、2 名哨兵、玩家、相机、HUD、时钟，**打开即可 Play**。
+- `Tests/Editor/GuardBrainTests.cs`：**10 条** M3 用例（档位流转、回落链、纯预览不改状态、
+  叠加不污染基线、事件广播、同伴通报、接缝生效、复原联动）。
+
+### Fixed
+- **玩家初始朝向写死 180°**：与场景摆放无关，导致打开示例后画面里看不到掩体与哨兵
+  （第一张 Play 截图实证）。改为取 `transform.eulerAngles.y`。
+- **视线遮挡判据的两难**：终点余量收 0.5m 会让贴身掩体被跳过（隔墙看得见），
+  收 0.1m 又会让玩家自身胶囊被当成遮挡（哨兵永远看不见玩家）。
+  正解 = 全长射线 + 按身份排除：`CanSee` / `CanSeeFrom` 新增 `targetOwner`，
+  `DetectionState` 与 `GuardBrain` 均传入目标 transform。
+- **`GuardBrain.All` 在编辑态恒空**：只靠 `OnEnable` 登记会让 HUD 与 `ResetAll` 静默失效
+  （EditMode 不跑生命周期回调，本包第三次撞同一族坑）。改为剪枝 + 空则按场景重建。
+- **回溯窗口三处失效写法**（自查发现）：`readonly` 字段被赋值、计时基准在 `OnGUI` 内被每次重绘重置
+  （滑块永远不动）、编辑态提前 return（「不 Play 也能看」直接落空）。
+- **共享编辑器纪律**：示例生成工具原用 `NewScene(Single)` + 模态对话框——前者会丢弃其他会话
+  未保存的现场，后者会把指令通道卡死（本轮实测确实卡住一次）。
+  改为 Additive 建内存场景 → 存盘 → 关闭，并把所有 `DisplayDialog` 换成日志。
+- **状态机驻留计时被重复累加**：同一帧内 `_stageTime` 在两个分支各加一次，驻留时长实际减半且互相覆盖。
+- **叠加偏移以当前 transform 为锚**：与巡逻基线构成循环依赖；改为以基线世界位置为锚收敛。
 
 ## [0.3.0] - 2026-11-03
 ### Added

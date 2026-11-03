@@ -71,6 +71,11 @@ namespace Collin.Stealth
             return worldPoints.Count;
         }
 
+        void OnDrawGizmos()
+        {
+            StealthGizmos.DrawRoute(this);
+        }
+
         /// <summary>
         /// 取整条轨迹的世界采样（供 Gizmos 与 B 包分层绘制复用同一求值口径）。
         /// 返回的列表是本组件内部缓冲，**下次调用前有效**。

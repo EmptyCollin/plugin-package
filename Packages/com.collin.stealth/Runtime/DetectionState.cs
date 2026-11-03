@@ -114,7 +114,7 @@ namespace Collin.Stealth
                 }
 
                 var seerId = StealthIds.Of(v.gameObject);
-                if (!v.CanSee(self, QueryOptions.Full, seerId)) continue;
+                if (!v.CanSee(self, QueryOptions.Full, seerId, transform)) continue;
 
                 seen = true;
                 if (!hasSeer || v.GainPerSecond > bestGain)

@@ -527,6 +527,14 @@ namespace Collin.Stealth
                 if (volumes[i] != null) volumes[i].ResetLineOfSightCache();
             }
 
+            // 哨兵反应状态（档位/叠加偏移）一并复原——「t = 初始状态→复原初始状态的最小周期」
+            // 里的「初始状态」必须包含 NPC 决策，否则辅助台复原后 NPC 还拖着上一轮的拉扯偏移。
+            var brains = GuardBrain.All;
+            for (var i = 0; i < brains.Count; i++)
+            {
+                if (brains[i] != null) brains[i].ResetOverlay();
+            }
+
             NotifyChanged();
         }
     }

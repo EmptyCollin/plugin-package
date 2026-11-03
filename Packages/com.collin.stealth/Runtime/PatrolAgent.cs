@@ -5,8 +5,9 @@ namespace Collin.Stealth
 {
     /// <summary>
     /// 巡逻 NPC：引用一个 <see cref="PatrolRouteRoot"/>，每帧按
-    /// <see cref="StealthClock"/> 的时间索引求值位姿并写 transform。
-    /// <para>本组件持有**实例级差异数据**（相位偏移、速度倍数、路径缩放），
+    /// <see cref="StealthClock"/> 的时间索引求值<b>基线位姿</b>，再叠加
+    /// <see cref="IPatrolModifier"/> 的反应偏移后写 transform。
+    /// <para>本组件持有<b>实例级差异数据</b>（相位偏移、速度倍数、朝向跟随速度），
     /// 共享结构一律留在 <see cref="PatrolRoute"/> 资产里（AGENTS.md §0.1 原则 2：
     /// 同一配置资产被 N 个实例复用时，实例间差异禁止存在配置里）。</para>
     /// </summary>
@@ -25,9 +26,10 @@ namespace Collin.Stealth
         [Tooltip("是否由本组件自动把求值结果写到自身 transform（关闭后仅做求值，供预览/工具消费）")]
         [SerializeField] bool _applyToTransform = true;
 
-        [Tooltip("朝向跟随路线朝额的缓动速度（度/秒）。位置保持精确折线，仅朝向缓动（DESIGN D-11）")]
+        [Tooltip("朝向跟随路线朝向的缓动速度（度/秒）。位置保持精确折线，仅朝向缓动（DESIGN D-11）")]
         [SerializeField, Min(1f)] float _yawFollowSpeed = 240f;
 
+        readonly List<IPatrolModifier> _modifiers = new List<IPatrolModifier>(2);
         readonly List<PatrolRoute.TrajectorySample> _sampleBuffer = new List<PatrolRoute.TrajectorySample>();
 
         float _currentYaw;
@@ -144,6 +146,72 @@ namespace Collin.Stealth
             return _sampleBuffer;
         }
 
+        /// <summary>
+        /// 统一的位姿推进入口（本组件唯一的 transform 写入点）。
+        /// <para><c>dt &gt; 0</c>：先让叠加器决策，再把叠加偏移合成进基线并应用；</para>
+        /// <para><c>dt &lt;= 0</c>（编辑态预览 / scrub）：叠加器只刷新感知读数，
+        /// <b>位姿取纯基线、不含任何叠加</b>——预览显示的是巡逻本身，而不是「上一局玩过的痕迹」。</para>
+        /// </summary>
+        public void ApplyBaselineAt(float globalTime, float dt)
+        {
+            var pose = EvaluateWorld(globalTime);
+            LastWorldPose = pose;
+
+            if (dt > 0f && _modifiers != null && _modifiers.Count > 0)
+            {
+                for (var i = 0; i < _modifiers.Count; i++)
+                {
+                    var m = _modifiers[i];
+                    if (m == null) continue;
+                    m.Tick(dt, pose.position, globalTime);
+                }
+
+                // 多个叠加器的偏移求和；注视点取最后一个要求者（本包目前只有一个决策器）。
+                var total = Vector3.zero;
+                Vector3? look = null;
+                for (var i = 0; i < _modifiers.Count; i++)
+                {
+                    var m = _modifiers[i];
+                    if (m == null) continue;
+                    m.GetOverlay(out var off, out var lk);
+                    total += off;
+                    if (lk.HasValue) look = lk;
+                }
+
+                if (total.sqrMagnitude > 1e-8f)
+                {
+                    pose.position += total;
+                    pose.rotation = look.HasValue
+                        ? LookAtRotation(pose.position, look.Value)
+                        : pose.rotation;
+                }
+            }
+
+            if (_applyToTransform) ApplyPose(pose, dt);
+        }
+
+        static Quaternion LookAtRotation(Vector3 from, Vector3 to)
+        {
+            var dir = to - from;
+            dir.y = 0f;
+            if (dir.sqrMagnitude <= 1e-8f) return Quaternion.Euler(0f, 0f, 0f);
+            return Quaternion.Euler(0f, Mathf.Atan2(dir.x, dir.z) * Mathf.Rad2Deg, 0f);
+        }
+
+        /// <summary>注册叠加器（由决策组件在 OnEnable 调用）。幂等。</summary>
+        public void AddModifier(IPatrolModifier modifier)
+        {
+            if (modifier == null || _modifiers.Contains(modifier)) return;
+            _modifiers.Add(modifier);
+        }
+
+        /// <summary>注销叠加器。移除后偏移立即失效（决策组件禁用时不应残留拉扯）。</summary>
+        public void RemoveModifier(IPatrolModifier modifier)
+        {
+            if (modifier == null) return;
+            _modifiers.Remove(modifier);
+        }
+
         void Awake()
         {
             if (_routeRoot == null) _routeRoot = GetComponent<PatrolRouteRoot>();
@@ -153,14 +221,7 @@ namespace Collin.Stealth
         {
             var clock = StealthClock.Instance;
             if (clock == null) return;
-
-            var pose = EvaluateWorld(clock.Current);
-            LastWorldPose = pose;
-
-            if (_applyToTransform)
-            {
-                ApplyPose(pose, Time.deltaTime);
-            }
+            ApplyBaselineAt(clock.Current, Time.deltaTime);
         }
 
         void OnValidate()

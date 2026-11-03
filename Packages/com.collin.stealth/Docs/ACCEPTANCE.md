@@ -135,6 +135,55 @@
   ⇒ 边界断言必然失败，改为 `eye=0` 并补一条眼高对照；②错峰缓存用例在同一帧号反复询问，
   永远进不到复用分支 ⇒ 改为显式传入可控 id（接口把 actorId 设为入参正是为此）并推进帧号。
 
+## M3 + M4 增量（状态机 / 回溯窗口 / 可玩示例，2026-11-04，验证者 qianwen-work-assistant · stealth-m3m4-2026-11-03）
+
+> Runtime 新增：`IPatrolModifier`、`GuardBrain`（四档状态机 + 同伴通报 + 事件广播）、
+> `PlayerStealthController`（拆箱即用）、`StealthHud`、`StealthGizmos`、`IPathBridge` + `NullPathBridge`；
+> Editor 新增：`PatrolRouteRootEditor`（Scene 拖路点 + Inspector 停留/段速）、
+> `StealthScrubWindow`（T 周期回溯窗口）、`StealthSampleSceneBuilder`（一键生成可玩示例）；
+> 测试新增 `GuardBrainTests.cs`（10 条）。
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 日期时间 | 结果与证据 |
+|---|---|---|---|---|
+| 58 | 察觉度越过疑惑阈值 ⇒ 升「疑惑」，并记住最后看见位置 | EditMode `SuspicionCrossesThreshold_EscalatesToSuspicious` | 2026-11-04 00:15 | **通过** |
+| 59 | 越过警觉阈值 ⇒ 升「警觉」，叠加偏移指向可疑点并接管朝向 | EditMode `SuspicionCrossesAlert_EscalatesToAlerted_AndOverlayChases` | 00:15 | **通过** |
+| 60 | 丢失目标后 警觉→(驻留)→搜索→(环绕)→巡逻 完整回落链 | EditMode `LostTarget_HoldsThenSearchesThenReturnsToPatrol` | 00:15 | **通过** |
+| 61 | **纯预览不改档位**（`dt<=0` 只刷新感知读数） | EditMode `PurePreview_DoesNotAdvanceStageMachine` | 00:15 | **通过** |
+| 62 | **叠加层不污染巡逻基线**（地基守卫）：`EvaluateWorld` 恒返回纯基线，只有 transform 被拉扯 | EditMode `OverlayMovesTransform_ButBaselineStaysPure` | 00:15 | **通过** — t=1s 基线 (2,0,0)、t=3.5s 基线 (7,0,0) 均不受叠加影响，而 transform 被拉向可疑点 |
+| 63 | `ResetOverlay` / 跨包 `ResetAll` 连 NPC 反应状态一起复原 | EditMode `ResetOverlay_ClearsStageAndOffset` / `WorldResetAll_AlsoRestoresGuardReactions` | 00:15 | **通过** |
+| 64 | 转入 Alerted 的瞬间经 `StealthDetectedChannel` 广播，载荷含 actorId/targetId/**timeIndex**/stage/suspicion；非跃迁帧不重复广播 | EditMode `Alert_BroadcastsPayload_OnDetectedChannel` | 00:15 | **通过** |
+| 65 | 同伴通报：半径内同伴升疑惑并同步可疑点；半径外不受影响 | EditMode `Alert_PullsNearbyCompanionToSuspicious_NotFarOrAlreadyAlerted` | 00:15 | **通过** |
+| 66 | `IPathBridge` 默认不注册（直线叠加）；注册后叠加目标被吸附改写 | EditMode `PathBridge_AbsentByDefault_PresentWhenRegistered` | 00:15 | **通过** |
+| 67 | **实机 Play 验证「可以玩」**：NPC 真的发现玩家、脱离巡逻线追到出生点，随后脱敏归零 | 打开 `Sample/Scenes/StealthSample.unity` → Play 47.4s → 运行时探针 | 2026-11-04 00:06 | **通过** — 探针：`guards=2`、`Guard_Patrol Stage=Searching pos=(-4.5, 0.0, -15.7)`（玩家出生点 (0, 0.05, -16)，巡逻线只在 y≈±6 方框 ⇒ 该位置只能来自叠加追击）；`susp=0.000 seen=False` 证明衰减链同样在跑；`fps=589` |
+| 68 | HUD 运行时显示察觉度、各哨兵档位与操作提示 | Game 视图屏幕源截图（`.tmp-inspect/play_hud.png`） | 00:12 | **通过** — 截图可见「未被发现 / 察觉度 0%」「Guard_Patrol 搜索 可疑点 (0,-18)」「Guard_Sweeper 巡逻」「WASD 移动 · Ctrl 蹲伏 · 右键拖拽转视角」 |
+| 69 | 示例场景含地面/掩体/双哨兵/玩家/相机/HUD/时钟，可直接 Play | `scene list_open` → `rootCount=13`；截图核验 | 00:06 / 00:12 | **通过** — 两张截图分别证明掩体、红蓝胶囊、哨兵与玩家均在画面内 |
+| 70 | **拆箱即用**（验收 24）：玩家预制件所需组件齐备，WASD 可动、Ctrl 蹲伏 | 示例场景实机 + 探针 `player=... crouch=False` | 00:06 | **部分通过** — 移动/蹲伏代码路径与后端选择已实装并经 Play 验证；蹲伏态切换的截图证据未单独采集 |
+| 71 | 编辑态回溯窗口可用（T 量程、滑块推送、单位位姿表） | `StealthScrubWindow` 编译通过 + `Push()` 走 `ScrubTo` + `SceneView.RepaintAll()`；数据层等价由条目 15/52 佐证 | 00:15 | **部分通过** — 窗口与推送路径已交付并编译干净；「拖滑块时 Scene 视图 NPC 连续移动」的编辑态截图待补 |
+| 72 | **交锁门禁三项** | `script recompile_status`；`console clear` → 重跑 recompile + test run → `console status`；`python Tools/verify_project.py` | 2026-11-04 00:24 | **本包三项全绿** — ①`failed:false, errors:0` ②`console clear` 后重跑 recompile + test run，`groundTruth` = **`consoleErrors:0 / consoleWarnings:0`**（logs=11，`sampledUtc:2026-11-03T16:24:14Z`）③校验器 **结论: 绿灯**（FAIL 0）。本包 **82/82 全绿**（M1 24 + 契约 18 + M2 30 + M3 10）。<br>全量 210 中有 **2 条失败均属他包**：`Collin.CityMap.Tests.SculptBrushTests.Degenerate_Radii_Return_Zero_Not_Nan` 与 `…Sub_Step_Movement_Accumulates_Across_Calls_Not_Dropped`（堆栈仅含 `com.collin.citymap`，是另一会话 00:20 前后新增的笔刷用例）。按 §2 包互斥与 §1.9「只回滚自己引入的错误」，本会话**未修改**该文件，如实上报 |
+
+## M3+M4 实现轮抓到并修复的缺陷
+
+- **玩家初始朝向写死 180°，导致「打开场景看不见关卡内容」**：控制器 `Awake` 里 `_yaw` 固定为 180°，
+  与场景里摆好的朝向无关。第一张 Play 截图里只有玩家孤零零一颗胶囊、掩体与哨兵全部在画面外。
+  修法：`_yaw = transform.eulerAngles.y`（所见即所得——在 Scene 里把玩家转向哪里，出生就朝哪里）。
+  第二张截图即出现掩体 + 双哨兵 + HUD 全部要素。
+- **状态机叠加以当前 transform 为锚会与基线循环依赖**：改为以 `PatrolAgent` 传入的
+  **基线世界位置**为锚计算期望偏移，条目 62 专门守住「叠加永不回流基线」。
+- **视线射线终点余量的两难**：余量收 0.5m 会让贴身掩体被跳过（隔墙看得见）；收 0.1m 又会让
+  玩家自己的胶囊被当成遮挡（哨兵永远看不见玩家）。正解是**全长射线 + 按身份排除目标自身**
+  （`CanSee/CanSeeFrom` 新增 `targetOwner` 参数，`DetectionState` 与 `GuardBrain` 都传入）。
+- **`GuardBrain.All` 在编辑态恒空**：只靠 `OnEnable` 登记会让 HUD 与 `ResetAll` 静默失效
+  （EditMode 不执行生命周期回调，本包第三次撞上同一族坑）。改为「剪枝 + 空则按场景重建」。
+- **回溯窗口的三处失效写法**（自查发现）：`readonly` 字段被赋值（编译错）、
+  计时基准在 `OnGUI` 里被每次重绘重置（滑块永远不动）、编辑态提前 return（「不 Play 也能看」直接落空）。
+- **共享编辑器纪律**：示例生成工具原用 `NewScene(Single)` + 模态对话框——前者会丢弃其他会话未保存的现场，
+  后者会把指令通道卡死（本轮实测确实卡住一次）。改为 Additive 建内存场景 → 存盘 → 关闭，
+  并把所有 `DisplayDialog` 换成日志。
+- **工具事实**：`script eval` 只回 `success`、拿不到返回值；`eval_file` 把内容嵌进方法体
+  （顶层不能声明类/函数，须写纯语句）；`scene open` 只认 `Assets/` 下的路径，
+  包内场景必须走 `EditorSceneManager.OpenScene`；`capture screenshot --view game` 在 Game 视图非前台时
+  **抓不到 IMGUI 覆盖层**，HUD 需改用 `capture game_view --source screen`。
+
 ## 未通过项
 
 | # | 现象 | 复现步骤 | 状态 |

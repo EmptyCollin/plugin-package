@@ -119,19 +119,22 @@ namespace Collin.Stealth
             };
         }
 
-        /// <summary>用本组件<b>当前</b>位姿判可见。</summary>
-        public bool CanSee(Vector3 target, QueryOptions options, int actorId)
-        {
-            return CanSeeFrom(OriginWorld, ForwardWorld, target, options, actorId);
-        }
-
         /// <summary>
         /// 用<b>任意</b>观察原点/朝向判可见 —— 编辑态按 t 时刻 NPC 位姿预演的入口
         /// （<see cref="StealthWorld"/> 拿巡逻求值结果调它）。
         /// </summary>
-        public bool CanSeeFrom(Vector3 origin, Vector3 forward, Vector3 target, QueryOptions options, int actorId)
+        /// <param name="targetOwner">
+        /// 判定点所属物体（可空）。<b>必须传</b>：判定点通常落在目标脚下/身体上，
+        /// 目标自己的碰撞体会在射线末端被命中；不按身份排除就会「哨兵永远看不见玩家」，
+        /// 而靠缩短射线绕过又会让贴身的真实掩体被跳过（两个失真互为代价，只能按身份判）。
+        /// </param>
+        public bool CanSeeFrom(Vector3 origin, Vector3 forward, Vector3 target,
+                               QueryOptions options, int actorId, Transform targetOwner = null)
         {
             if (!_enabled || _profile == null) return false;
+
+            // 同步写入、同步读取（VisionGeometry 内联调用委托），不存在跨调用竞态。
+            _targetOwner = targetOwner;
 
             var p = Params;
             var needLos = (options & QueryOptions.LineOfSight) != 0;
@@ -150,6 +153,18 @@ namespace Collin.Stealth
 
             return VisionGeometry.Evaluate(origin, forward, target, p, options, CachedClear);
         }
+
+        /// <summary>用本组件<b>当前</b>位姿判可见。</summary>
+        public bool CanSee(Vector3 target, QueryOptions options, int actorId, Transform targetOwner = null)
+        {
+            return CanSeeFrom(OriginWorld, ForwardWorld, target, options, actorId, targetOwner);
+        }
+
+        /// <summary>
+        /// 本次查询的目标所属物体（用于排除其自身碰撞体）。
+        /// 纯运行时状态，<b>不得序列化</b>（写进场景文件会留下无意义的持久引用）。
+        /// </summary>
+        Transform _targetOwner;
 
         /// <summary>复用上帧 L3 结论（不发射线）。</summary>
         bool CachedClear(Vector3 origin, Vector3 target) => _lastLosClear;
@@ -191,9 +206,13 @@ namespace Collin.Stealth
             bool clear;
             if (StealthPerformance.TryAcquireRaycast())
             {
+                // 只留极小的终点余量（≤0.1m）：射线必须几乎打满全长，
+                // 否则「玩家紧贴掩体」时掩体会被余量跳过 ⇒ 隔着墙也看得见（玩法直接失真）。
+                // 「目标自己的身体挡住自己」不由余量解决，而由 PhysicallyClear 按身份排除。
+                var reach = length - Mathf.Min(0.1f, length * 0.02f);
                 clear = LineOfSightOverride != null
                     ? LineOfSightOverride(this, origin, target)
-                    : PhysicallyClear(origin, delta / length, length, mask);
+                    : PhysicallyClear(origin, delta / length, reach, mask);
             }
             else
             {
@@ -218,6 +237,9 @@ namespace Collin.Stealth
                 var t = hit.transform;
                 if (t == null) continue;
                 if (t == transform || t.IsChildOf(transform)) continue;  // 自身身体不算遮挡
+                // 目标自己的碰撞体不算遮挡：判定点就打在目标身上，
+                // 不排身份的话「哨兵永远看不见玩家」；缩短射线绕过又会漏掉贴身掩体。
+                if (_targetOwner != null && (t == _targetOwner || t.IsChildOf(_targetOwner))) continue;
                 return false;
             }
             return true;
@@ -244,6 +266,12 @@ namespace Collin.Stealth
         void OnValidate()
         {
             _distanceMultiplier = Mathf.Max(0.01f, _distanceMultiplier);
+        }
+
+        void OnDrawGizmosSelected()
+        {
+            // 选中时画：场景里几十个哨兵全画会糊成一片，选中绘制兼顾直观与性能。
+            StealthGizmos.DrawVision(this);
         }
     }
 }
