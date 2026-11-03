@@ -24,8 +24,10 @@
 
 ## 本次会话执行记录（M0，全部为实测值）
 
-> 会话 `2026-11-03 m0-skeleton`，编辑器实例 **端口 7801**（PID 3512，工程 `D:\unity_projects\plugin-package`，6000.6.7f1）。
-> 注意：AGENTS §1.3 写的端口 7800 与本会话实际端口不符，实例已更换过——`unity status` 是唯一可信来源。
+> 会话 `2026-11-03 m0-skeleton`，`unity status` 当时读到 **端口 7801**（PID 3512，工程 `D:\unity_projects\plugin-package`，6000.6.7f1）。
+> **【下一会话更正】**同一 PID 3512 后续再读为 **7800** ⇒ 端口读数在同一实例上会漂移，
+> 本条仅保留"当时读到 7801"这一观测事实；由此得出的"实例已换 / AGENTS §1.3 过时"推论**不成立、作废**（详见交接单 §4）。
+> 所有实时通道操作以**发指令前的即时查询**为准，且指令失败时先重试再判定故障。
 
 ### §1 结构齐全（实测）
 `python Tools/verify_project.py` → `插件包: 3 个 | FAIL 0`，`[ ok ] pkg-layout: com.collin.citymap 结构齐全`。
