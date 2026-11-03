@@ -39,3 +39,31 @@
 | 16 | 临时验收包与截图残骸已清理，lock 残留经 Client.Resolve() 清除 | `rm -rf Packages/com.collin.demotest Assets/.locks` → refresh → `grep -c demotest packages-lock.json` | 计数 0；编译 `failed=false` |
 
 注：过程中控制台曾出现 demotest mp4 的色彩原色 warning（WindowsMediaFoundation，堆栈不含项目程序集）——该包已删除，按 §1.6b 归零流程随 clear+重验一并消除，未申请豁免。
+
+# v0.2.0 增量（潜行跨包契约层，2026-11-03，验证者 qianwen-work-assistant · stealth-m05-2026-11-03）
+
+> 本增量只**新增** `Runtime/StealthContracts/` 三个文件，未改动既有 4 个源文件的任何一行（§2 并行前提）。
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 日期时间 | 结果与证据 |
+|---|---|---|---|---|
+| 17 | 契约层编译进 core 程序集 | `unity command "script recompile"` → `recompile_status`；查 `Library/ScriptAssemblies/` | 2026-11-03 19:26 | **通过** — `com.collin.core.dll` / `.pdb` 均已产出；错误列表内**无一条**路径含 `com.collin.core` |
+| 18 | 接口签名不出现 feature 包类型（方案 P 的成立前提，DESIGN D-7 红线） | 逐文件静态扫描：`using Collin.Stealth` 与 stealth 类型名 | 2026-11-03 19:10 | **通过** — 扫描结论「跨包污染：无」；共声明 19 个类型，全部为接口 / 值类型 / 枚举 / 通道子类 |
+| 19 | 消费方**只凭 core 符号**即可实现接口并取用 | 消费方视角 EditMode 用例（stealth `Tests/Editor/StealthContractConsumerTests.cs`，4 个 Fake 实现只用 `Collin.Core.Stealth` 类型） | 2026-11-03 20:28 | **通过** — 契约用例 **18 条全绿**（本包合计 42 条）；含 `Services.Register/Get` 往返、路点写回、`default` 安全空值 |
+| 20 | 三个通道**具体子类**可被 Unity 实例化并正确广播（守住 0.1.0 第 8 行的实测约束） | EditMode `DetectedChannel_…` / `TimeIndexChannel_…` / `WorldChangedChannel_…` | 2026-11-03 19:26 | **通过** — `CreateInstance` 非 null；载荷字段（含 `timeIndex`）逐一断言；退订后停播 |
+| 21 | 镜像枚举与提供方枚举**值序一致**（不一致时两侧编译互不知情，会静默错读） | EditMode `CoreMirrorEnums_ValueOrder_MatchesStealthProviderEnums`（仅测试程序集可同时看见两侧类型） | 2026-11-03 19:26 | **通过** — `StealthLoopMode` ↔ `PatrolLoopMode` 逐值对齐；`StealthClockDto.mode` 与 `StealthClockMode` 同值 |
+| 22 | 位姿 `default` 不得被误读成「位于第 0 段」 | EditMode `ConsumerCanAssembleDto_…`（`legIndex=0` 但未置 `valid` ⇒ `HasLeg==false`） | 2026-11-03 19:26 | **通过** — 该缺陷在实现轮自查发现并补 `valid` 位（原契约只看 `legIndex >= 0`） |
+| 23 | 既有能力未被新增文件破坏（回归） | `unity command "test run" --mode editor` 全量 | 2026-11-03 19:26 | **通过** — 全工程 **124/124**；其中 CityMap 84、Stealth 40（v0.2.0 时代的展板/排序/通道用例未受影响） |
+
+## 交锁门禁（2026-11-03 20:28 末次实测，达成）
+
+- `script recompile_status` → `failed:false, errors:0`；`console clear` → 重跑 recompile + test run →
+  `console status` 的 `groundTruth` = `compilationFailed:false, consoleErrors:1, consoleWarnings:0`
+  （该 1 条命中 §1.8 **已批准**豁免清单，堆栈不含项目程序集）；
+  `python Tools/verify_project.py` → **结论: 绿灯**（FAIL 0 / WARN 4：三个包锁 active + 已豁免噪声）。
+- 全量测试 **141/141 通过**（CityMap 99 / Stealth 42）。
+- 过程记录（如实）：19:26 时曾读到 `consoleErrors:15`，全部来自 `com.collin.citymap/Runtime/View/`
+  两个**未被版本库跟踪**的进行中文件（另一会话 19:19 写入；其会话随后自行修好）。
+  按 §2 包互斥与 §1.9「只回滚自己引入的错误」，本会话**未修改**该两文件。
+- 本会话自造的 1 条 error 已修复：契约的「重复注册」用例**故意**触发 core 冲突 error，
+  原先用 `LogAssert.Expect` 声明预期——实测该方法**只让测试不失败、不回退 `consoleErrors` 计数**，
+  仍会破 §1.6b 门禁。正解改为断言期间 `Debug.unityLogger.logEnabled=false` + `finally` 复位。

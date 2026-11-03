@@ -53,9 +53,42 @@
 - **F-7 环境事实**：`test run` 输出是「JSON 后跟制表符表格」，`json.loads` 会因 Extra data 报错，
   须用 `json.JSONDecoder().raw_decode`。
 
+## M0.5 增量（跨包契约层，2026-11-03，同验证者 · session stealth-m05-2026-11-03）
+
+> A 侧新增 `Runtime/StealthWorld.cs`（契约实现）+ `Editor/StealthEditorBootstrap.cs`（编辑态注册钩子）
+> + `Tests/Editor/StealthContractConsumerTests.cs`（消费方视角 18 条用例）。
+> 末次门禁实测（2026-11-03 20:28）：全工程 **141/141 通过**（CityMap 99 / Stealth 42），
+> `console clear` → 重跑 recompile + test run 后 `groundTruth` = `consoleErrors:1 / consoleWarnings:0`
+> （该 1 条命中 §1.8 已批准豁免清单），`python Tools/verify_project.py` **结论: 绿灯**。
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 日期时间 | 结果与证据 |
+|---|---|---|---|---|
+| 27 | A 的能力可经 core 接口取用（`IPatrolWorld` / `IStealthScrubDriver` 已注册） | `Services.TryGet<T>` + 契约用例 | 2026-11-03 19:26 | **通过** — 注册往返用例绿；`IVisionWorld` / `IDetectionWorld` 故意**不注册**（M2/M3 未实现），B 取用时走降级 |
+| 28 | **编辑态（非 Play）能拿到服务**——B 包滑动条的前提 | EditMode 用例 + `EditorBootstrap` 的 `[InitializeOnLoad]` | 2026-11-03 19:26 | **通过** — 与 F-5 同源问题：`RuntimeInitializeOnLoadMethod` 在编辑态不执行，故 A 自带 Editor 侧注册钩子，B 无需引用 A 即可拿到服务 |
+| 29 | 路点可经契约写回（特性 3「按玩家线路反推巡逻路点」的落点） | EditMode `WaypointWriteback_SupportsReverseAdjustmentFlow` | 2026-11-03 19:26 | **通过** — 写回后越界索引/未知单位均返回 false；A 侧走既有 `SetWaypointPosition` 写入面，改完自动作废累计表 |
+| 30 | `ScrubTo(t)` 后 NPC 位姿被**显式推送**（编辑态无帧循环） | 实现走 `PushAllPoses` → `ApplyPose(pose, 0f)` | 2026-11-03 19:26 | 代码路径已实装；**场景内实测待 M4**（验收 22 同源） |
+| 31 | 全量回归：新增契约未破坏 M1 与既有包 | `unity command "test run" --mode editor` | 2026-11-03 20:28 | **通过** — 全工程 **141/141**（CityMap 99 / Stealth 42）；Stealth 由 24 条增至 **42** 条（M1 24 + 契约 18） |
+| 32 | 契约 DTO 不出现 A 包类型（方案 P 前提） | 逐文件静态扫描 | 2026-11-03 19:10 | **通过** — 19 个类型全为接口/值类型/枚举/通道子类 |
+| 33 | 本包源码编译干净 | `recompile_status` 错误列表 | 2026-11-03 19:26 | **通过** — 错误列表内**无一条**路径含 `com.collin.stealth`；`stealth.dll` / `stealth.Editor.dll` / `stealth.Tests.dll` 均已产出 |
+
+### M0.5 期间自查发现并修正（实现轮）
+
+- **契约 `HasLeg` 判据缺陷**：`StealthPoseDto` 原以 `legIndex >= 0` 判有效，而结构体 `default` 的
+  `legIndex` 恰为 0 ⇒ 消费方拿到"无数据"会误读成"位于第 0 段"。修法：增加显式 `valid` 位，
+  判据改 `valid && legIndex >= 0`，并补用例锁住（`ConsumerCanAssembleDto_…`）。
+- **`Object.GetInstanceID()` 在 Unity 6 被当 error 报（CS0619）**：改用
+  `GetEntityId().GetHashCode()` 作 actorId；契约注释同步声明「域重载后会变，消费方不得持久化」。
+  该坑与 stretch 包记录的同源，本包首次撞上。
+- **`System.Object` 与 `UnityEngine.Object` 二义性（CS0104）**：`StealthWorld.cs` 同时 using 两个命名空间，
+  `Object.FindObjectsByType` 须全限定。core v0.1.0 也踩过同名坑（PackageInfo），属可预防的重复错误。
+- **集合别名**：适配层原用成员列表复用返回 `Actors` / 路点，会让消费方持有的旧引用被下次访问改写；
+  已改为每次新建容器。
+
 ## 未通过项
 
 | # | 现象 | 复现步骤 | 状态 |
 |---|---|---|---|
 | U-1 | 工程整体校验器红灯：`lock-stale` 来自 `com.collin.core.lock` 等**他包**超时锁（holder=qianwen-work-assistant 的历史会话残留） | `python Tools/verify_project.py` | 已如实上报，**用户指示不予处理**（2026-11-03：「别管锁，那不是你的事」）。本包相关检查（pkg-layout / runtime-purity / assets-layout / console / dep-direction）全绿 |
 | U-2 | M0 时记录的「本包骨架未取得绿灯证据」 | — | **已由 F-1/F-2 与条目 1-3 闭环，作废** |
+| U-3 | 交锁门禁 §1.6b「控制台归零」一度无法达成：`recompile_status` = `failed:true`，`groundTruth` = `consoleErrors:15 / consoleWarnings:3`（2026-11-03 19:26 读数） | `unity command "script recompile_status"`；`unity command "console status"` | **已作废（20:28 复测转绿）** — 当时 15 条 error 全部来自 `com.collin.citymap/Runtime/View/` 两个**未被版本库跟踪**的进行中文件（另一会话写入），按 §2 包互斥与 §1.9 本会话未代其修复，该会话随后自行修好。末次实测：`failed:false, errors:0`、`consoleErrors:1 / consoleWarnings:0`（命中 §1.8 已批准豁免）、校验器 **结论: 绿灯**、全量 141/141 |
+| U-4 | 本会话自造 1 条 error：契约的「重复注册」用例故意触发 core 冲突报错，原先用 `LogAssert.Expect` 声明预期 | 该用例运行时 `console status` 计数 | **已修复** — 实测 `LogAssert.Expect` 只让测试不失败、**不回退 `consoleErrors` 计数**，仍破 §1.6b 门禁。改为断言期间 `Debug.unityLogger.logEnabled=false` + `finally` 复位（与 citymap 交接单记录的正解一致） |

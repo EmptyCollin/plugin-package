@@ -2,7 +2,7 @@
   "name": "com.collin.core",
   "version": "0.2.0",
   "displayName": "Collin Core",
-  "description": "插件集合的跨包基础设施：事件通道、ScriptableObject 信号、服务注册表，以及展板 Showcase 条目发现与依赖拓扑排序、部分提取的依赖闭包计算。",
+  "description": "插件集合的跨包基础设施：事件通道、ScriptableObject 信号、服务注册表，展板 Showcase 条目发现与依赖拓扑排序、部分提取的依赖闭包计算；并承载潜行玩法与设计辅助台之间的跨包契约层（接口 + 纯数据 DTO + 通道子类，Runtime/StealthContracts）。",
   "unity": "6000.6",
   "dependencies": {}
 }

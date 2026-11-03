@@ -171,14 +171,33 @@ Editor 另提供「从当前世界位置反推路点」按钮（把摆放好的�
 - `EC_Stealth_TimeIndex`（`StealthClock` 广播 t；B 用它对齐自己的 scrub）
 - `EC_Stealth_Scrub`（B → A：`ManualTime` 模式下由 B 驱动 NPC 位置，用于编辑态回溯预览）
 
-### 4.3 Services 接口（A 注册实现，B 按接口取用）
+### 4.3 Services 接口（A 注册实现，B 按接口取用）——**M0.5 实装版**
+契约落在 `com.collin.core` 的 `Runtime/StealthContracts/`，A 侧实现为 `Runtime/StealthWorld.cs`：
 ```csharp
-IPatrolWorld  { float TotalCycle { get; } PatrolPose PoseAt(int actorId, float t); IReadOnlyList<ActorInfo> Actors { get; } }
-IVisionWorld  { IReadOnlyList<VisionInfo> Volumes { get; } bool CanSee(int actorId, Vector3 p, QueryOptions o); }
-IDetectionWorld { float SuspicionOf(int targetId); StealthMask SensitiveMask { get; set; } }
+// 已注册（A 提供）
+IPatrolWorld        { IReadOnlyList<StealthActorInfo> Actors; float MaxCycleTime; StealthClockDto ClockState;
+                      StealthPoseDto PoseAt(int actorId, float t); bool TryPoseAtWorld(...);
+                      void BuildTrajectory(int actorId, float spacing, List<StealthTrajectorySampleDto>);
+                      bool TryGetWaypoints(...); bool TrySetWaypoint(...); bool TrySetRouteTuning(...); }
+IStealthScrubDriver { void ScrubTo(float t); void ResumeAuto(); bool IsManual; event Action Changed; }
+
+// 已定义、暂未注册（M2/M3 实现后由 A 注册；B 现在取用会走降级路径）
+IVisionWorld        { IReadOnlyList<StealthVisionInfo> Volumes; bool CanSee(...); bool CanSeeAt(...); int CountSeers(...); }
+IDetectionWorld     { float SuspicionOf(int targetId); StealthAlertStage StageOf(int targetId); void ResetAll(); }
+
+// 方向相反：实现方 = B（设计辅助台），消费方 = A（判定 L4 时查询安全岛）
+ISafeIslandProvider { int Count; bool TryGetBounds(int i, out Bounds, out string); bool Contains(Vector3); }
 ```
-A 在 `Runtime/StealthWorldBootstrap.cs` 初始化入口注册（core 的 `Services` 域重载后会清空，
-已知语义，A 每次初始化重注册）。
+注册入口两处（缺一即失效）：Play 态走 `StealthWorld.RegisterOnPlay()`（`RuntimeInitializeOnLoadMethod`），
+**编辑态走 `Editor/StealthEditorBootstrap.cs` 的 `[InitializeOnLoad]`**——
+因为生命周期回调在编辑态不执行（实测，见 ACCEPTANCE F-5），若只有前者，B 包的滑动条在编辑态取不到服务。
+
+与草案的三处定稿差异（均为实现轮自查修正）：
+1. `PoseAt` 返回 core 的 `StealthPoseDto` 而非 A 的 `PatrolPose`（草案签名会让 B 必须引用 A，方案 P 当场失效）；
+2. `StealthPoseDto` 增加 `valid` 位：`default` 的 `legIndex` 恰为 0，只判 `legIndex >= 0`
+   会把「无数据」误读成「位于第 0 段」；
+3. `StealthMask` / `QueryOptions` 不进 core，跨包只用 `StealthQueryLayers`（三档），
+   A 内部的遮蔽修正与预留位不外露，避免 B 依赖 A 的内部枚举。
 
 ### 4.4 B→A 的依赖形式（**已定案：方案 P**，2026-11-03 用户拍板 Q-A1）
 AGENTS.md §5 规定「feature 包之间禁止引用（asmdef 层面切断）」，B（feature）不得在 asmdef 层引用 A。
@@ -255,7 +274,7 @@ DTO 归属的边界：接口方法签名里出现的类型必须全部来自 cor
 | | 内容 | 门禁 |
 |---|---|---|
 | M0 | 建包骨架：`package.json`、Runtime/Editor asmdef、Docs 四件套、`Showcase.json`、`Sample/`；取锁；`package resolve` | 校验器包结构检查通过（**已达成**） |
-| M0.5 | 与用户确认 core 改动窗口，向 core 追加 `IPatrolWorld`/`IVisionWorld`/`IDetectionWorld` + DTO（只增不改，R-11） | core 侧编译干净 + 校验器绿灯 |
+| M0.5 | 与用户确认 core 改动窗口，向 core 追加 `IPatrolWorld`/`IVisionWorld`/`IDetectionWorld` + DTO（只增不改，R-11） | **已达成**：core 新增 `Runtime/StealthContracts/` 3 文件；A 侧实现 `StealthWorld`（`IPatrolWorld` + `IStealthScrubDriver`）并经 `Services` 注册；消费方视角 16 条契约用例全绿 |
 | M1 | `PatrolRoute`（局部坐标）+ `PatrolRouteRoot` + `PatrolPose.EvaluatePose` + `StealthClock`；EditMode 测试（验收 1-3） | **已达成**：24 条 EditMode 用例全绿，全工程 108/108 通过；交锁门禁本包三项全绿 |
 | M2 | `VisionProfile` + `VisionVolume` + 四层管线 + `StealthMask` + `DetectionState`（验收 4-6） | 同上 |
 | M3 | 状态机 + 警戒广播 + `IPathBridge`（验收 7） | 同上 |
