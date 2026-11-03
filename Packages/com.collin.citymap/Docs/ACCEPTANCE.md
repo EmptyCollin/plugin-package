@@ -53,6 +53,9 @@
 | 44 | **M4-a** 插件资产不落 `Assets/`（AGENTS §0） | `python Tools/verify_project.py` → `[ ok ] assets-layout`；`ls Assets/Collin` → 不存在；资产已在 `Packages/com.collin.citymap/Sample/Profiles/TerrainProfile.asset`（`MoveAsset` 保留 GUID，场景引用不断） | 同上 | 2026-11-03 | **通过**（H-44 为本会话自造缺陷、由校验器抓到，见 §M4-a-2） |
 | 45 | **M4-a** 面板代建的地形实例脱离面板仍自洽 | 现场读数原为 `无权威上下文且未绑定自建项目 / chunks=0`；补 `SetStandaloneProject(_project)` 后同一路径产出 3969 chunk（见条目 43） | 同上 | 2026-11-03 | **通过**（见 §M4-a-3） |
 | 46 | **M4-a** 工作流重排与三级坡度退让已成文，**未动代码** | `Docs/Modules/12-TerrainWorkflow.md`（§1 三段式映射 / §2 退让须早判 / §3 三档语义 / §4 里程碑重排 / §6 风险） | 同上 | 2026-11-03 | **提案待批准**：`hardRetreatSlope` 默认值与"整块丢弃 vs 只削陡角"两项须用户定，批准前不实现（§4 DESIGN 先于代码） |
+| 47 | **M4-b 用户裁定**：`hardRetreatSlope = 18°`；陡区处置 = **只削陡角、保留缓部分**（非整块丢弃） | 用户 2026-11-03 直接答复（12 §3 的两个待定参数） | 同上 | 2026-11-03 | **已定案**，12 文档已按此定稿（状态从"提案待批准"改为"已批准"） |
+| 48 | **M4-b** 雕刻 delta 层数据结构（01 §2.3）满足契约：稀疏剪枝、Absolute 用 NaN 哨兵、**只进 Heights 绝不进 BaseHeights**、重放顺序确定 | `Tests/Editor/SculptDeltaTests.cs` **16 条**（`test run --filter_type assembly` → 本包 Total **116 / Failed 0**）；关键三条：`Absolute_Target_Zero_Meters_Is_Honored_Not_Dropped`（0m 合法）、`Additive_Applies_To_Working_Heights_Not_Base`（防正反馈漂移）、`Additive_And_Absolute_Withstand_Each_Other_Independently`（含**反序插入结果相同**的 H-45 判据） | qianwen-work-assistant / `2026-11-03 m4-terrain-workflow` | 2026-11-03 | **通过**（见 §M4-b-1；H-45 为本轮自查缺陷） |
+| 49 | **M4-b** 交锁三项门禁 | `script recompile_status` failed=false → `console clear` → 重跑本包全量 + `verify_project.py` → `console status` | 同上 | 2026-11-03 | **编译 `errors=0`**；**`consoleErrors=0/consoleWarnings=0/seeded=True`**；`assets-layout` `[ ok ]`；本包 **116/116**。整体 FAIL 1 = 他包 `com.collin.stealth.lock` 超时 560s（非本会话，§3 不代删；沿用用户既定"现在提交、继续持锁"） |
 
 
 ## 未通过项
@@ -488,6 +491,55 @@ shader=Collin/CityMap/Terrain VertexColor
 结论：与 01 §3.2 重放契约**不冲突**（"雕刻在平整前"本就是契约第 3→4 步），要改的是里程碑次序 + 新增硬退让档。
 提案落盘 `Docs/Modules/12-TerrainWorkflow.md`，内含两个**必须由用户定的参数**：
 `hardRetreatSlope` 默认值、陡区是整块丢弃还是只削陡角。按 §4「DESIGN 先于代码」，批准前不实现。
+
+## 本次会话执行记录（M4-b：参数定案 + 雕刻 delta 层数据结构，2026-11-03）
+
+> 同会话续做。用户答复 12 提案的两个待定参数 → 提案定稿；随后只落**无规则张力的地基**（delta 数据结构）。
+> 本包用例 100 → **116**（`SculptDeltaTests.cs` 16 条）。
+
+### §M4-b-0 参数定案（用户 2026-11-03 直接答复）
+| 参数 | 定值 | 落到哪 |
+|---|---|---|
+| `hardRetreatSlope`（硬退让线） | **18°** | 12 §3 表第三档阈值；后续进 `TerrainProfile` |
+| 陡区处置 | **只削陡角、保留缓的部分**（非整块丢弃） | 12 §3；实现上即"地块多边形按坡度裁剪出可建子区"，而非置整块 `NoBuild` |
+
+### §M4-b-1 SculptDeltaAsset（01 §2.3 人工层）——先立地基，不接管线
+刻意**只交付数据结构 + 重放函数**，不接进 S1a/S1b：接管线要动脏传播语义，而
+"雕刻改高度后路网/地块要不要重排"这条**推翻既有 D-14**（D-14 现为"雕刻仅脏 S6、不触发重生成"），
+属规则级变更（§10 须先看 diff 批准）。地基独立、无张力，可以先绿着立起来。
+
+四条契约各由一条用例钉住：
+| 契约 | 用例 | 为何危险 |
+|---|---|---|
+| **绝不写 BaseHeights** | `Additive_Applies_To_Working_Heights_Not_Base` + `Repeated_Rerun_On_Reset_Base_Is_Stable_No_Drift`（5 轮复位重放恒定 4.5m） | 人工混进基底 ⇒ 下轮约束把自己上轮结果当输入 ⇒ **逐轮漂移**（01 §2.4 正反馈） |
+| **Absolute 用 NaN 哨兵，不用 0** | `Absolute_Target_Zero_Meters_Is_Honored_Not_Dropped` | 0m 是合法高程；拿 0 当"无目标"会把"压到海平面"静默吞掉（与 11 §2 heightValue 双义同坑） |
+| **稀疏剪枝** | `Additive_Back_To_Zero_Prunes_Chunk` / `Residual_Noise_Below_Epsilon_Is_Snapped_To_Zero`（1e-8 残差吸附） | 全零条目不删 → 反复大笔刷把资产撑爆（01 §9） |
+| **重放顺序确定** | `Additive_And_Absolute_Withstand_Each_Other_Independently`（**正序与反序插入都得 7+3=10**） | 见 §M4-b-2 |
+| 越界安全 | `Out_Of_Map_Writes_Are_Rejected_Without_Corrupting` / `Edge_Chunk_Clipped_By_Map_Does_Not_Write_Outside`（100m/30m 非整除档实测） | `values` 按整 chunk 分配大于实际覆盖，靠裁剪兜住；图外写会造"永远读不到的幽灵格" |
+| 累加语义归调用方 | `Apply_Is_Accumulative_By_Design_And_Caller_Owns_Reset` | 复位责任在调用方（同 S1b）。若有人为"看着幂等"改成内部去重，会静默破坏 carve+delta 的叠加次序 |
+
+### §M4-b-2 H-45（自查抓到的设计缺陷，未成为对外缺陷前修掉）
+首版 `ApplyTo` 是**单遍按条目插入顺序**遍历。同一格若既有 Absolute 目标又有 Additive 增量，
+结果就取决于用户先拖笔刷还是先压平：`7+3=10` 或 `先加后赋=7` —— **不定值，且用户摸不到规律**。
+改为**两遍确定序**：先 Absolute 遍（赋值），再 Additive 遍（叠加）。测试同时断言
+"两种插入顺序结果相同"，防止有人改回单遍图省事。
+
+### §M4-b-3 本轮自造编译错误（§1.9：一经发现立即修复，未外泄）
+两处，都是我自己写坏、且**第二次踩同一坑**：
+1. `CS0136`：`PruneIfEmpty` 里 if/else 两个平级 `for (var i …)` + 后置同名循环 ⇒ 作用域冲突。
+   改为单一循环（顺带让两模式判空口径更显式）。
+2. `CS1003`：**C# 字符串字面量里嵌 ASCII 双引号**（`"0 当"无目标"哨兵"`）。
+   同一错误模式本轮第二次出现（第一次是 `Slope_Colors` 断言）。
+   ⇒ 修复时不再"只改报错行"，而是**机械全扫**：逐行取 `//` 之前代码统计 `"` 数量，奇数即字符串被截断。
+   扫描结果 `奇数引号行数 = 0` 后才重编译。纪律：**同类错误第二次出现，就把补丁式修复升级成机械自检**。
+
+### §M4-b-4 交锁三项门禁（M4-b 复跑）
+| 门禁 | 结果 |
+|---|---|
+| §1.6a 编译 | `recompile_status` `failed=False`、`errors=0`；rt+Tests 两侧 dll mtime ≥ 源码（H-36 新鲜度核验） |
+| §1.6b 控制台 | `console clear` → 重跑本包全量 + 校验器 → **`consoleErrors=0/consoleWarnings=0/seeded=True`**；校验器 `console: error=0 warning=0` |
+| §1.6c 校验器 | 本包项全 `[ ok ]`（含 `assets-layout`）；整体 FAIL 1 = 他包 `com.collin.stealth.lock` 超时 560s（非本会话，§3 不代删） |
+| 测试 | 本包 `--filter_type assembly` → **Total 116 / Passed 116 / Failed 0** |
 
 ## 遗留（不属于失败项，按里程碑推进）
 

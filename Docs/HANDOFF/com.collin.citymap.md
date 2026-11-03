@@ -3,7 +3,10 @@
 > 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-03（会话 `2026-11-03 m4-terrain-workflow`）
 > 代码阶段：本会话按 §3 原子取锁开工，按 §1.6 三项门禁交锁。**未 push。**
 
-## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质补齐/资产归位/工作流提案）
+## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质补齐/资产归位 + M4-b 参数定案/delta 地基）
+- **M4-b**：用户定死 `hardRetreatSlope=18°` + 陡区**只削陡角保缓**，12 文档定稿；
+  `SculptDeltaAsset.cs`（delta 数据模型：稀疏+NaN 哨兵+只进 Heights+确定序重放）+ 16 条测试（本包 **116/116**）。
+  **只立地基未接管线**——接管需改脏传播（推翻 D-14），属规则级、待批准。H-45 自查修掉重放顺序不定值。
 - **M4-a（本会话末）**：
   - **材质补齐**（用户反馈①"地表没材质看起伏累"）：根因是 M3 回退链 `URP/Lit→Diffuse` 都不读 `COLOR`，
     坡度顶点色白写。补 `Sample/Shaders/CityTerrainVertexColor.shader`（实测 `isSupported=True`）

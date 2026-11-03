@@ -5,6 +5,22 @@
 ## [Unreleased]
 
 ### Added
+- **M4-b（参数定案 + 雕刻 delta 层数据结构）**：
+  - 用户答复 12 提案两参数 → **`hardRetreatSlope=18°`**、陡区**只削陡角保留缓部分**；12 文档定稿为"已批准"，
+    并补齐"削角保缓"的可实现口径（逐格 NoBuild 由坡度场判、地块保留非 NoBuild 连通子区、
+    S1b 拟合样本域 = 可建子区而非原多边形全境）。
+  - `Runtime/Core/SculptDeltaAsset.cs`：人工雕刻层数据模型（01 §2.3）。稀疏 chunk 存储、
+    `Additive`（增量）/ `Absolute`（目标高程，用 NaN 哨兵非 0）、`ApplyTo` 重放**只进 Heights 绝不进 BaseHeights**
+    （防"把上轮人工结果当输入"的正反馈漂移，01 §2.4）、亚容差残差吸附 + 全零条目剪枝（01 §9 资产膨胀）。
+    **只交付数据结构与重放，不接管线**——接管要动脏传播语义（推翻既有 D-14"雕刻仅脏 S6"），属规则级变更须先经批准（§10）。
+  - **H-45（自查抓到的设计缺陷）**：首版 `ApplyTo` 单遍按插入序遍历 ⇒ 同格混用 Absolute+Additive 时
+    结果取决于用户操作顺序（7 或 10 的不定值）。改两遍确定序（先 Absolute 赋值、后 Additive 叠加），
+    测试断言"正序与反序插入结果相同"。
+  - 新增 `Tests/Editor/SculptDeltaTests.cs` **16 条**（本包 100→**116**，`test run --mode editor` Failed 0）。
+  - 本轮两处自造编译错误（`CS0136` 变量作用域 / `CS1003` 字符串内嵌引号）按 §1.9 一经发现即修；
+    第二处是同一错误模式**本轮第二次** ⇒ 从"改报错行"升级为**机械全扫**（逐行统计代码区引号奇偶）后才重编译。
+  - 门禁：编译 `failed=False`；`console clear`→重跑→`consoleErrors=0/consoleWarnings=0/seeded=True`；本包 **116/116**；
+    整体唯一 FAIL 仍是他包 `com.collin.stealth.lock` 超时（非本会话，§3 不代删，沿用用户既定"现在提交、继续持锁"）。
 - **M4-a（材质补齐 + 资产归位 + 工作流重排提案）**，响应用户实机体验的两条反馈：
   - **修复"地表没有材质，看起伏比较累"**（用户反馈①，根因是 M3 交付缺口）：显示层已写顶点色坡度带，
     但回退链 `URP/Lit → Diffuse` **都不读 `COLOR` 语义** ⇒ 色带白写；01 §3.3 要求的"包内 URP-compatible 材质"漏交付。
