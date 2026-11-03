@@ -5,14 +5,43 @@
 ## [Unreleased]
 
 ### Added
-- M2：`VisionProfile` / `VisionVolume` / 四层察觉管线 / `StealthMask` / `DetectionState`。
-- M3：察觉状态机 + 警戒广播 + `IPathBridge` 寻路接缝。
+- M3：察觉状态机 + 警戒广播（`EC_Stealth_Detected` / `AlarmRaised` 通道资产）+ `IPathBridge` 寻路接缝。
 - M4：Editor 侧 Inspector/Handles/Gizmos（世界系路点手柄 + 「从当前世界位置反推路点」按钮本体）+ 编辑态回溯预览的场景内核验。
 - M5：`PlayerStealthController`（新 Input System 优先、条件编译回退旧后端）+ `StealthPlayer` / `StealthGuard` 预制件 + `Sample/Scenes/StealthSample.unity` 白盒场景 + 实录演示视频 + 展板接入。
 - M6：冻结对外契约 `Docs/Modules/00-Contract.md`（逐签名核验 DTO 全部来自 core），交付给 B 包消费。
 
 ### Changed
 - 2026-11-03 用户拍板 Q-A1~Q-A5 后调整设计：新增 `com.unity.inputsystem` 依赖；路点改为相对坐标 + 预制件承载；**听觉/声音侦测移出本包范围**（最小可用子集），`StealthMask` 对应位改为预留位不启用；玩家移动控制器由「交给外部工程」改为「包内自带、拆箱即用」。
+
+## [0.3.0] - 2026-11-03
+### Added
+- **M2 四层察觉管线**（Runtime 11 文件）：
+  - `VisionProfile`（SO，共享 Model）：水平/垂直视野角（全角）、视距、视线高度、遮挡 LayerMask、
+    察觉上升与回落速率、疑惑/警觉双阈值、光照敏感度、视线检测间隔帧数；
+    配 `Set*` 写入面（§0.1 原则 2 的 Controller 入口），并保证疑惑阈值不会倒挂过警觉阈值。
+  - `VisionGeometry`（静态纯函数）：L1 球检 → L2 水平锥 + 俯仰锥 → L3 视线委托注入；
+    零向量/重合点等退化输入安全。**独立成纯函数的理由与 M1 同源**——辅助台要按 t 时刻的 NPC 位姿
+    在编辑态问「这一点看不看得到」，绑在 transform 上就只剩「当前位置」一种问法。
+  - `VisionVolume`（实例）：启用开关、视距倍率、视线高度/水平角覆盖（均为实例级差异）；
+    L3 内部处理遮挡层过滤 + 自身与子节点排除 + 射线预算 + 错峰缓存；
+    新增 `LineOfSightOverride` 静态注入点，使遮挡翻转与预算分支可在 EditMode 确定性断言。
+  - `QueryOptions` / `StealthMask`：前者是四层可选掩码（值序与 core 的 `StealthQueryLayers` 对齐，有守卫用例）；
+    后者是包内 L4 修正位（`SafeIsland=8` 消费辅助台数据，`4/16/32/64` 预留不启用）。
+  - `AwarenessModel`（纯函数）：察觉度积分、档位导出、L4 曝光倍率合成（蹲伏 ×0.35、光照线性、安全岛归零）。
+  - `DetectionState`（实例）：累积察觉度与档位；`EvaluateOnce(dt<=0)` 为**纯预览语义**——
+    只更新可见性、绝不推进真实累积，故辅助台回溯 scrub 不会污染玩法状态。
+  - `VisionRegistry` / `DetectionRegistry`：读时重建的保守失效注册表。
+  - `StealthPerformance`：射线帧预算 + 按 actorId 取模错峰（帧号由外部显式报告，不自读 `Time.frameCount`）。
+  - `StealthIds`：跨包单位 id 的**唯一算法**入口。
+  - `StealthWorld` 补实现并注册 `IVisionWorld` / `IDetectionWorld`；`StealthClock.Update` 每帧复位射线预算。
+- `Tests/Editor/VisionDetectionTests.cs`：**30 条** EditMode 用例（本包合计 72 条）。
+
+### Fixed
+- **察觉度永不回落**：未被看见时误用 `default` 阈值组（回落速率 0）⇒ 察觉度永久钉住、玩家无法脱身。
+  改为取场上任一启用视野的 Profile 参数（ACCEPTANCE F-7）。
+- **跨包 id 可为负**：`GetEntityId().GetHashCode()` 会为负，撞上契约 `-1`「不限定单位」哨兵，
+  且巡逻侧与视野侧算法分叉会让 `CanSeeAt` **静默退回当前位姿**。统一走 `StealthIds.Of`（内部强制非负）
+  （ACCEPTANCE F-8）。
 
 ## [0.2.0] - 2026-11-03
 ### Added

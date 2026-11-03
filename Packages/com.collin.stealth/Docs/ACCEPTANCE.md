@@ -84,6 +84,57 @@
 - **集合别名**：适配层原用成员列表复用返回 `Actors` / 路点，会让消费方持有的旧引用被下次访问改写；
   已改为每次新建容器。
 
+## M2 增量（四层察觉管线 + 视野/察觉注册，2026-11-03，验证者 qianwen-work-assistant · stealth-m2-2026-11-03）
+
+> Runtime 新增 9 文件：`VisionProfile`、`VisionVolume`、`VisionGeometry`、`QueryOptions`、`StealthMask`、
+> `AwarenessModel`、`DetectionState`、`VisionRegistry`、`DetectionRegistry`、`StealthIds`、`StealthPerformance`；
+> `StealthWorld` 补实现并注册 `IVisionWorld` / `IDetectionWorld`；`StealthClock.Update` 驱动射线预算复位。
+> 测试新增 `VisionDetectionTests.cs`（30 条）。
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 日期时间 | 结果与证据 |
+|---|---|---|---|---|
+| 34 | L1 距离：球检早退，不消耗射线预算；眼高参与真实斜距 | EditMode `DistanceOnly_UsesSphereCheckNotRaycast` | 2026-11-03 21:47 | **通过** — 10m 视距下 9m 可见 / 11m 不可见 / 恰 10m 含入；`UsedThisFrame=0` |
+| 35 | 视距倍率为实例级覆盖，不改共享资产 | EditMode `DistanceCheck_FoldsInstanceDistanceMultiplier` | 21:47 | **通过** — 同一 Profile，倍率 2× 后 15m 点由不可见转可见 |
+| 36 | **验收 7**：锥内可见、越过视角边界即翻转 | EditMode `Cone_BoundaryFlipsWhenTargetRotatesOut` | 21:47 | **通过** — 100° 全角下 40° 可见 / 55° 不可见，且同点在 `DistanceOnly` 下可见（证明是锥在起作用） |
+| 37 | 观察者转向扫过同一目标（旋转生效于判定） | EditMode `Cone_RotatingObserverSweepsSameTarget` | 21:47 | **通过** |
+| 38 | 360° 视为全向；垂直角按俯仰差判定 | EditMode `Cone_ThreeSixtyIsOmnidirectional` / `VerticalCone_ChecksPitchAgainstEyeLine` | 21:47 | **通过** — 仰角 50° 被 60° 垂直角挡掉、俯角 8° 通过 |
+| 39 | **验收 8**：遮挡插入 ⇒ 判不可见，撤除 ⇒ 恢复；缓存可复位 | EditMode `LineOfSight_OcclusionFlipsVerdictAndCacheResets`（经 `LineOfSightOverride` 注入） | 21:47 | **通过** — 三帧内 true→false→true |
+| 40 | 无遮挡层时不发射线、不耗预算 | EditMode `LineOfSight_WithoutOccluderLayerDoesNotConsumeBudget` | 21:47 | **通过** |
+| 41 | **预算耗尽不得翻转结论**（否则辅助台热力图随帧率抖动，把性能问题伪装成玩法问题） | EditMode `LineOfSight_BudgetExhaustedReusesLastVerdictInsteadOfFlipping` | 21:47 | **通过** — 预算=1 时后问者沿用上帧 true |
+| 42 | 错峰：间隔 N 帧时每帧恰好 1/N 的单位实际检查 | EditMode `Staggering_SpreadsChecksAcrossFrames` | 21:47 | **通过** — 间隔 3、3 帧 × 3 单位 ⇒ 恰好 3 次检查 |
+| 43 | 跳过的帧复用视线结论（不重复评估） | EditMode `CheckInterval_CachesVerdictOnSkippedFrames` | 21:47 | **通过** — 帧 0 评估 1 次、帧 1 复用、帧 2 再评估 |
+| 44 | L4 只改累积速率、不改可见性；蹲伏/光照/安全岛的倍率合成 | EditMode `ExposureScale_CrouchLightAndSafeIsland` / `LineOfSight_CoverDoesNotChangeGeometricVerdict` | 21:47 | **通过** — 安全岛 ⇒ 倍率恒 0；蹲伏 ⇒ ×0.35 |
+| 45 | **验收 9**：察觉累积越阈值升档，脱敏后**衰减归零**回 Patrol | EditMode `Suspicion_AccumulatesThenDecaysToZero` | 21:47 | **通过** — 1s→0.5(疑惑)、2s→1.0(警觉)、离场后 0.75→0 |
+| 46 | **纯预览不改真实状态**（`dt<=0` 只更新可见性，编辑态 scrub 不污染累积） | EditMode `PurePreview_NeverMutatesSuspicion` | 21:47 | **通过** — 连续 10 次预览后察觉度仍为 0；真实推进一次即 0.5 |
+| 47 | 安全岛经 core 反向注入生效；未注册时优雅降级不报错 | EditMode `SafeIsland_SuppressesAccumulationViaReverseProvider` | 21:47 | **通过** — 注册后累积为 0；`Services.Clear()` 后正常累积 |
+| 48 | 注册表不泄漏已禁用物体 | EditMode `Registries_DoNotLeakDestroyedObjects` | 21:47 | **通过**（注意 EditMode 不调 `OnDisable`，须手动 `MarkDirty`） |
+| 49 | `IVisionWorld` / `IDetectionWorld` **已注册**，视野快照字段齐全且 id 与哨兵同源 | EditMode `VisionWorld_IsRegisteredAndEnumeratesVolumes` | 21:47 | **通过** — 含 `originWorld.y=眼高`、`actorId==StealthIds.Of(哨兵)` |
+| 50 | 禁用视野仍被枚举、由 `enabled` 标记（区分「关掉」与「不存在」） | EditMode `VisionWorld_DisabledVolumeIsFlaggedNotSilentlyDropped` | 21:47 | **通过** |
+| 51 | core 层级掩码 ⇄ 包内 `QueryOptions` 值序一致；映射后分层结果符合预期 | EditMode `VisionWorld_CoreLayerMaskMapsToInternalOptions` / `AlertStage_MirrorValuesMatchCoreContract` | 21:47 | **通过** |
+| 52 | **`CanSeeAt(t)` 用 t 时刻巡逻位姿，而非当前 transform**（辅助台按时刻预演的地基） | EditMode `VisionWorld_CanSeeAt_UsesPoseAtTimeNotCurrentTransform` | 21:47 | **通过** — t=2.5s 哨兵在 (10,0,0) 朝 +X 时正前方可见、背后不可见；而其 transform 仍在原点，两条对照断言证明路径确有区别 |
+| 53 | `CountSeers` 与逐视野判定口径一致 | EditMode `CountSeers_AgreesWithPerVolumeVerdicts` | 21:47 | **通过**（首轮红，根因见 F-8） |
+| 54 | `SuspicionOf`/`StageOf` 未知 id 返回 0/Patrol 不抛异常；`ResetAll` 清空全部累积 | EditMode `DetectionWorld_ReadsStateAndResetAllClearsEverything` | 21:47 | **通过** |
+| 55 | 阈值写入不可倒挂（疑惑 ≤ 警觉）；`default` 阈值组解释为「该档未启用」 | EditMode `Thresholds_CannotInvertThroughWriter` / `StageOf_ZeroThresholdsMeansStageDisabled` | 21:47 | **通过** |
+| 56 | 射线预算由时钟每帧复位（否则只增不减 ⇒ 判定实质失效） | `StealthClock.Update` 调 `StealthPerformance.BeginFrame(Time.frameCount)`；Play 态实测待 M4 | 21:47 | 代码路径已实装；数据层用显式帧号验证 |
+| 57 | **全量回归 + 交锁门禁** | `script recompile_status`；`console clear` → 重跑 recompile + test run → `console status`；`verify_project.py` | 21:47 | **本包三项全绿** — `failed:false`；`consoleErrors:0 / consoleWarnings:0`；全量 **172/172**（CityMap 100 / Stealth 72）；校验器本包项全 ok。工程整体仍因 citymap 超时锁红灯，见 U-1 |
+
+## M2 实现轮抓到并修复的缺陷
+
+- **F-7 察觉度永不回落（玩法级 bug）**：`DetectionState` 在**未被看见**时用 `default(AwarenessTuning)`，
+  其 `decayPerSecond = 0` ⇒ 察觉度永久钉住、玩家无法脱身。修法：回落与阈值改取「场上任一启用视野」的
+  Profile 参数（`fallbackTuning`）。该 bug 由用例 45 的衰减断言逼出。
+- **F-8 跨包 id 可为负，撞上契约的 -1 哨兵**：`GetEntityId().GetHashCode()` 会返回负数，
+  而契约用 `-1` 表示「不限定单位」、`ShouldCheckThisFrame` 也按 id 取模做错峰。
+  后果是**静默的**：`CountSeers` 按单位过滤会退化成全局计数（用例 53 首轮红即此因）；
+  且巡逻侧（裸哈希）与视野侧（已非负化）算法分叉时，`CanSeeAt` 找不到 agent 会**悄悄退回当前位姿**，
+  使「按 t 时刻判定」失效而不报错。修法：新增 `StealthIds.Of` 唯一入口，内部 `& int.MaxValue` 强制非负，
+  `StealthWorld`/`DetectionState`/`VisionVolume`/`CountSeers` 全部改走该入口（用例 49/52/53 联合守卫）。
+- **`LogAssert.Expect` 不回退控制台计数**（与 M0.5 同源，本轮再次确认）：本包测试全程用
+  `Debug.unityLogger.logEnabled=false` + `finally` 复位策略，未产生任何自造 error。
+- **测试前提写错两处（非实现缺陷）**：①距离用例忘了眼高把原点抬升，平面 10m 的真实斜距是 10.14m
+  ⇒ 边界断言必然失败，改为 `eye=0` 并补一条眼高对照；②错峰缓存用例在同一帧号反复询问，
+  永远进不到复用分支 ⇒ 改为显式传入可控 id（接口把 actorId 设为入参正是为此）并推进帧号。
+
 ## 未通过项
 
 | # | 现象 | 复现步骤 | 状态 |

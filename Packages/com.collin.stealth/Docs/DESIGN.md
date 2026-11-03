@@ -181,7 +181,7 @@ IPatrolWorld        { IReadOnlyList<StealthActorInfo> Actors; float MaxCycleTime
                       bool TryGetWaypoints(...); bool TrySetWaypoint(...); bool TrySetRouteTuning(...); }
 IStealthScrubDriver { void ScrubTo(float t); void ResumeAuto(); bool IsManual; event Action Changed; }
 
-// 已定义、暂未注册（M2/M3 实现后由 A 注册；B 现在取用会走降级路径）
+// M2 已实现并注册（消费方可直接取用，无需降级）
 IVisionWorld        { IReadOnlyList<StealthVisionInfo> Volumes; bool CanSee(...); bool CanSeeAt(...); int CountSeers(...); }
 IDetectionWorld     { float SuspicionOf(int targetId); StealthAlertStage StageOf(int targetId); void ResetAll(); }
 
@@ -276,7 +276,7 @@ DTO 归属的边界：接口方法签名里出现的类型必须全部来自 cor
 | M0 | 建包骨架：`package.json`、Runtime/Editor asmdef、Docs 四件套、`Showcase.json`、`Sample/`；取锁；`package resolve` | 校验器包结构检查通过（**已达成**） |
 | M0.5 | 与用户确认 core 改动窗口，向 core 追加 `IPatrolWorld`/`IVisionWorld`/`IDetectionWorld` + DTO（只增不改，R-11） | **已达成**：core 新增 `Runtime/StealthContracts/` 3 文件；A 侧实现 `StealthWorld`（`IPatrolWorld` + `IStealthScrubDriver`）并经 `Services` 注册；消费方视角 16 条契约用例全绿 |
 | M1 | `PatrolRoute`（局部坐标）+ `PatrolRouteRoot` + `PatrolPose.EvaluatePose` + `StealthClock`；EditMode 测试（验收 1-3） | **已达成**：24 条 EditMode 用例全绿，全工程 108/108 通过；交锁门禁本包三项全绿 |
-| M2 | `VisionProfile` + `VisionVolume` + 四层管线 + `StealthMask` + `DetectionState`（验收 4-6） | 同上 |
+| M2 | `VisionProfile` + `VisionVolume` + 四层管线 + `StealthMask` + `DetectionState`（验收 4-6） | **已达成**：新增 11 个 Runtime 文件 + 30 条 EditMode 用例（本包 72/72、全工程 172/172）；`IVisionWorld`/`IDetectionWorld` 已注册；交锁门禁本包三项全绿 |
 | M3 | 状态机 + 警戒广播 + `IPathBridge`（验收 7） | 同上 |
 | M4 | Editor 侧 Inspector/Handles/Gizmos（世界系手柄 + 反推路点）+ `ManualTime` 编辑态预览（验收 8-9、11） | 同上 |
 | M5 | `PlayerStealthController` + `StealthPlayer`/`StealthGuard` 预制件（D-09/D-13）+ `Sample/Scenes/StealthSample.unity` 白盒场景 + `ShowcaseMedia` 实录视频 + 展板接入（验收 12-14） | 三项门禁全绿 |

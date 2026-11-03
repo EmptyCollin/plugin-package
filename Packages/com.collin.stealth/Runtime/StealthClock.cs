@@ -89,6 +89,12 @@ namespace Collin.Stealth
 
         void Update()
         {
+            // 射线预算必须随帧复位：StealthPerformance 刻意不自己读 Time.frameCount
+            //（编辑态也有编辑器帧在递增，会让「这帧还能不能发射线」变成不可控的隐式状态）。
+            // 时钟是本包唯一的每帧驱动点，所以由它报帧号；否则预算只增不减，
+            // 累积到上限后所有视线检测会永久复用上帧结论 —— 判定实质失效。
+            StealthPerformance.BeginFrame(Time.frameCount);
+
             if (_mode != StealthClockMode.Auto) return;
             _autoTime += Time.deltaTime * _timeScale;
         }
