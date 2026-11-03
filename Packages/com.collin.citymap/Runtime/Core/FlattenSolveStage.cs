@@ -46,6 +46,14 @@ namespace Collin.CityMap
             // ① 重放到工作数组（幂等）
             field.CommitBaseAsWorking();
 
+            // ①b 人工雕刻层（01 §3.2 第 3 步：delta 在平整**之前**，人工优先于自动平整）
+            //     复位会抹掉上一轮的平整结果与 delta，故每轮在此重新叠加 —— 缺了这一步，
+            //     雕刻只活一轮，下一次 S1b 就把它冲平（正反馈的另一面：欠反馈）。
+            //     叠完之后工作数组 = "自然 + 人工、尚未平整"的<b>意图地表</b>，
+            //     ② 的目标平面拟合就读它（M4-c 用户裁定：雕刻必须波及地块坡度/平整目标）。
+            var d = _terrain.Delta;
+            if (d != null) d.ApplyTo(field);
+
             // ② 收集约束
             _constraints.Clear();
             var skipped = CollectConstraints(ctx, field, grid);
@@ -147,7 +155,8 @@ namespace Collin.CityMap
                     if (!PlaneFitting.FitFromBase(field, c, half,
                             profile.MaxParcelSlope, profile.ConstraintInner,
                             profile.ConstraintExtend, 1f,
-                            FlattenKind.Parcel, out var plane) || !TargetPlaneAllowed(plane, profile))
+                            FlattenKind.Parcel, out var plane,
+                            fromIntentSurface: true) || !TargetPlaneAllowed(plane, profile))
                     { localSkipped++; return; }
                     _constraints.Add(plane);
                 });
@@ -178,7 +187,7 @@ namespace Collin.CityMap
                 {
                     if (!PlaneFitting.FitFromBase(field, z.center, halfSize, profile.MaxParcelSlope,
                             profile.ConstraintInner, z.extendMeters, z.weight,
-                            FlattenKind.Plaza, out plane))
+                            FlattenKind.Plaza, out plane, fromIntentSurface: true))
                     { skipped++; continue; }
                     // weight 传 -1 = 保持 FitFromBase 已乘好的强度（此处若再传 z.weight 会把强度抹掉）
                     plane = plane.With(z.extendMeters, -1f, z.rectMode);

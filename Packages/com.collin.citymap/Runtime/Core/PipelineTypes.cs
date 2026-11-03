@@ -92,6 +92,9 @@ namespace Collin.CityMap
         CityCenter    = 1 << 9,   ///<summary>城心锚点（01 §4.4）</summary>
         Occupancy     = 1 << 10,  ///<summary>adopt / 手刷 / 锁区 / 负约束（08 §4）</summary>
         OccupiedReloc = 1 << 11,  ///<summary>已固化建筑挪动（终端位，不向下游传播，08 表末行）</summary>
+        DeltaStroke   = 1 << 12,  ///<summary>山水笔刷雕刻（01 §5）。用户 2026-11-04 裁定 **D-31** 推翻旧「仅脏 S6」：
+                                  /// 雕刻除脏 S6 落位外，<b>必须触发 S1b 重算</b>（周边地块坡度与平整目标
+                                  /// 要跟着新地形走）。仍不脏 Terrain ⇒ 绝不重跑噪声基底（A-2 局部性）。</summary>
     }
 
     /// <summary>
@@ -122,6 +125,7 @@ namespace Collin.CityMap
             IntentKind.RoadNode, IntentKind.RoadEdge, IntentKind.RoadBudget,
             IntentKind.ParcelModel, IntentKind.Field, IntentKind.BuildingRow,
             IntentKind.CityCenter, IntentKind.Occupancy, IntentKind.OccupiedReloc,
+            IntentKind.DeltaStroke,
         };
 
         private static readonly DirtyBits[] _bits =
@@ -138,6 +142,12 @@ namespace Collin.CityMap
             DirtyBits.Center,                   // CityCenter
             DirtyBits.Occupancy,                // Occupancy
             DirtyBits.OccupiedReloc,            // OccupiedReloc：终端位，Expand 不传播，仅由 S0/S3/S6 的 DependsOn 认领
+            // DeltaStroke（用户 2026-11-04 裁定，登记为 DESIGN **D-31**）：脏 Flatten + Building。
+            //   · Flatten ⇒ S1b 重算（周边地块的坡度判定与平整目标必须跟着雕出来的新地形走）
+            //   · Building ⇒ S6 落位重排
+            //   · **刻意不含 Terrain** ⇒ 绝不重跑噪声基底（A-2 局部性、D-10 逐格种子稳定性）
+            //   · 不含 Parcel/Road ⇒ 不重切地块、不重排路网（那是 S4/S3 的意图，雕刻不改它们）
+            DirtyBits.Flatten | DirtyBits.Building,
         };
 
         /// <summary>

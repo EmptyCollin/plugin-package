@@ -56,6 +56,10 @@
 | 47 | **M4-b 用户裁定**：`hardRetreatSlope = 18°`；陡区处置 = **只削陡角、保留缓部分**（非整块丢弃） | 用户 2026-11-03 直接答复（12 §3 的两个待定参数） | 同上 | 2026-11-03 | **已定案**，12 文档已按此定稿（状态从"提案待批准"改为"已批准"） |
 | 48 | **M4-b** 雕刻 delta 层数据结构（01 §2.3）满足契约：稀疏剪枝、Absolute 用 NaN 哨兵、**只进 Heights 绝不进 BaseHeights**、重放顺序确定 | `Tests/Editor/SculptDeltaTests.cs` **16 条**（`test run --filter_type assembly` → 本包 Total **116 / Failed 0**）；关键三条：`Absolute_Target_Zero_Meters_Is_Honored_Not_Dropped`（0m 合法）、`Additive_Applies_To_Working_Heights_Not_Base`（防正反馈漂移）、`Additive_And_Absolute_Withstand_Each_Other_Independently`（含**反序插入结果相同**的 H-45 判据） | qianwen-work-assistant / `2026-11-03 m4-terrain-workflow` | 2026-11-03 | **通过**（见 §M4-b-1；H-45 为本轮自查缺陷） |
 | 49 | **M4-b** 交锁三项门禁 | `script recompile_status` failed=false → `console clear` → 重跑本包全量 + `verify_project.py` → `console status` | 同上 | 2026-11-03 | **编译 `errors=0`**；**`consoleErrors=0/consoleWarnings=0/seeded=True`**；`assets-layout` `[ ok ]`；本包 **116/116**。整体 FAIL 1 = 他包 `com.collin.stealth.lock` 超时 560s（非本会话，§3 不代删；沿用用户既定"现在提交、继续持锁"） |
+| 50 | **M4-c 用户裁定（D-31）**：雕刻笔刷脏集合由「仅 S6」改为「**S1b + S6**」，仍不脏 S1a | 登记 `DESIGN` §7 **D-31**（坡度三档退让另登 **D-32**）；§3.2 脏传播表雕刻行同步改写 | qianwen-work-assistant / `2026-11-03 m4-terrain-workflow` | 2026-11-04 | **已定案并接线**（见 §M4-c-1） |
+| 51 | **M4-c** 雕刻真的波及地块目标平面（不是"叠一下又被压平抹掉"）；且无雕刻时与 M2 结论**逐位一致** | `TerrainDataTests` 新增 **3 条**（本包 116→**119**，Failed 0）：`Delta_Survives_S1b_Rerun_Without_Double_Apply`（幂等双向 + 基底逐位洁净）、`Carving_Inside_Manual_Zone_Raises_Its_Target_Plane`（判别式）、`Without_Delta_Pipeline_Result_Is_Bitwise_Unchanged`（容差 **0f**） | 同上 | 2026-11-04 | **通过**。实测 `[M4c] 未雕刻 0.106 → 雕刻后 20.124（自然 0.023，抬 20m）`（见 §M4-c-1） |
+| 52 | **M4-c** H-46：我把自己写错的规则编号引用**提交进了仓库**（c69fbe4），本轮自查发现并全量纠正 | 错引 `D-14`（实为"显示网格分辨率解耦"）指代"雕刻仅脏 S6"；后者住在 §3.2 表且**无编号**。纠正 = 登记 D-31/D-32 + 改 4 处代码/测试注释 + 3 处文档；复核 `grep D-14` 仅剩 5 处合法引用 | 同上 | 2026-11-04 | **已纠正**（见 §M4-c-2） |
+| 53 | **M4-c** 交锁三项门禁 | `script recompile_status` → `console clear` → 重跑本包全量 + `verify_project.py` → `console status` | 同上 | 2026-11-04 | **本包 119/119**；**`consoleErrors=0/consoleWarnings=0/seeded=True`**；`verify_project.py` **`FAIL 0`、结论: 绿灯**（他包 stealth 锁此时已被其会话续心跳，不再超时）。见 §M4-c-3 |
 
 
 ## 未通过项
@@ -505,8 +509,10 @@ shader=Collin/CityMap/Terrain VertexColor
 
 ### §M4-b-1 SculptDeltaAsset（01 §2.3 人工层）——先立地基，不接管线
 刻意**只交付数据结构 + 重放函数**，不接进 S1a/S1b：接管线要动脏传播语义，而
-"雕刻改高度后路网/地块要不要重排"这条**推翻既有 D-14**（D-14 现为"雕刻仅脏 S6、不触发重生成"），
+"雕刻改高度后地块要不要重算"这条当时住在 `DESIGN` §3.2 脏传播表、**无编号**（原规则「雕刻仅脏 S6」；
+注意 `D-14` 是"显示网格分辨率解耦"，与本条无关——本段先前误引为 D-14，已于 M4-c 纠正），
 属规则级变更（§10 须先看 diff 批准）。地基独立、无张力，可以先绿着立起来。
+→ **后续**：M4-c 已获批（登记为 **D-31**）并完成接线，取证见 §M4-c。
 
 四条契约各由一条用例钉住：
 | 契约 | 用例 | 为何危险 |
@@ -541,13 +547,71 @@ shader=Collin/CityMap/Terrain VertexColor
 | §1.6c 校验器 | 本包项全 `[ ok ]`（含 `assets-layout`）；整体 FAIL 1 = 他包 `com.collin.stealth.lock` 超时 560s（非本会话，§3 不代删） |
 | 测试 | 本包 `--filter_type assembly` → **Total 116 / Passed 116 / Failed 0** |
 
+## 本次会话执行记录（M4-c：雕刻接入管线 / D-31 落地，2026-11-04）
+
+> 同会话续做（跨日至 11-04）。用户答复"雕刻是否触发 S1b 重算" → 批准推翻旧「仅脏 S6」。
+> 本包用例 116 → **119**（`TerrainDataTests` 新增 3 条接线回归）。
+
+### §M4-c-1 接线决策与取数口径（本轮最关键的一处判断）
+批准后先查一件事：**S1b 的约束目标平面从哪个数组拟合**。实测在
+`HeightField.cs:314` —— `FitFromBase` 走 `field.GetBaseHeight()` = **BaseHeights**。
+而 delta 依契约只进 `Heights`。**若照字面接线（S1a 末尾把 delta 并进 BaseHeights 之外什么都不改），
+雕刻对拟合完全不可见，用户要的"雕出新地形、周边地块自动重算"会落空**；
+更糟的是它不会报错、只会悄悄把雕出来的山在下一次压平时抹掉。
+
+采用的口径（`CommitBaseAsWorking()` 之后、融合之前）：
+```
+复位 Heights = BaseHeights  →  delta.ApplyTo(Heights)  →  拟合读 Heights（= 意图地表）  →  融合写 Heights
+```
+- 拟合此刻读到的 Heights = **自然 + 人工、尚未平整**，正是"意图地表"；
+- **不违反 §2.4 防漂移不变量**：漂移指"把上一轮的**平整结果**当输入"，而复位刚把它抹掉。
+  该不变量改由"必须先复位再传 `fromIntentSurface:true`"这条前置条件守护，已写进 `FitFromBase` 注释；
+- S1a 保持"只产基底"，`BaseHeights` 全程不被人工层污染（这条由 `Delta_Survives_...` 的逐位断言守住）。
+
+### §M4-c-2 判别式取证（不是"变一点就算过"）
+```
+[M4c] 未雕刻 0.106 → 雕刻后 20.124（自然 0.023，抬 20m）
+```
+在 60m×60m 人工平整区内整区抬 20m：若拟合仍读基底，压平会把这 20m 拉回未雕刻时的目标平面 ⇒ 差值≈0。
+实得差值 **20.018m**（≈抬升量）⇒ 目标平面确实跟着雕刻走了。
+同时 M2 两条既有用例数值与上轮**一字不差**（`A1_3 4.79°→1.41°`、`urbanFlatness 0→0.813m`）⇒ 无回归。
+
+三条新用例各自钉一件事：
+| 用例 | 钉住的失败模式 |
+|---|---|
+| `Delta_Survives_S1b_Rerun_Without_Double_Apply` | 双向：复位把 delta 冲掉（雕刻只活一轮）/ 不复位导致叠两遍；外加**基底逐位洁净**（`0f` 容差） |
+| `Carving_Inside_Manual_Zone_Raises_Its_Target_Plane` | 雕刻被自己的压平抹掉（即 §M4-c-1 那个静默陷阱） |
+| `Without_Delta_Pipeline_Result_Is_Bitwise_Unchanged` | 新取数口径污染旧行为（A-1-2 幂等回归，容差 **0f**） |
+
+### §M4-c-3 H-46：我把写错的规则编号引用**提交进了仓库**
+上一轮（M4-b，提交 `c69fbe4`）我在代码注释与文档里 4 次写"推翻 D-14"。本轮接线前核对编号时发现：
+`DESIGN` 的 **D-14 是"显示网格分辨率与逻辑格解耦"**，与雕刻毫无关系；
+"雕刻仅脏 S6"住在 §3.2 脏传播表里、**从来没有编号**。
+⇒ 我等于用不存在的规则名给一次规则级变更背书，后来者按 D-14 去查会查到 mesh 分辨率，**误导是双向的**。
+
+处置：① 把用户两项裁定正式登记为 **D-31**（雕刻脏集合改 S1b+S6）与 **D-32**（坡度三级退让），
+§3.2 表雕刻行同步改写；② 全量纠正错引（4 处代码/测试注释 + ACCEPTANCE/CHANGELOG/HANDOFF 各 1 处）；
+③ 复核 `grep D-14` 仅剩 5 处，逐一确认为"分辨率解耦"的合法引用（含 00 §2.2、FoundationTests 的 A-0-7 用例）。
+**纪律**：引用规则编号前必须先 `grep` 那个编号本体确认它说的是什么；
+编号写错比不写编号更糟——它看起来像有出处。（同类：H-43 凭直觉写判据、H-40 给缺陷写断言开脱，
+本会话已是第三次"证据链自己造假"型错误，且这次真的进了仓库。）
+
+### §M4-c-4 交锁三项门禁（本增量复跑，2026-11-04）
+| 门禁 | 结果 |
+|---|---|
+| §1.6a 编译 | `recompile_status` `failed=False`、`errors=0`；rt+Editor+Tests 三侧 dll mtime ≥ 源码 |
+| §1.6b 控制台 | `console clear` → 重跑本包全量 + 校验器 → **`consoleErrors=0/consoleWarnings=0/seeded=True`**；校验器 `console: error=0 warning=0` |
+| §1.6c 校验器 | **`插件包: 4 个`、`FAIL 0`、`WARN 2`（两条 lock-active）→ 结论: 绿灯**（他包 stealth 锁此时已被其会话续心跳，本轮无需外部裁定） |
+| 测试 | 本包 `--filter_type assembly` → **Total 119 / Passed 119 / Failed 0** |
+
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~46）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~53）。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。
 - 未实测且当前无法验证的：所有需要河/路/场域/建筑真实数据的断言（A-2~A-8、A-26~A-44、A-48 的端到端形态）。
-  **地形侧已在 M2/M3 打通**（S1a/S1b + 显示 mesh 均实机可见）；尚缺的是 01 依赖其他模块的条目：
-  A-1-2（重生成下 delta 保持，需 M6 雕刻工具）、A-1-4（道路各向异性，需 M5 路网）、
-  A-1-5/A-1-6（笔划与 undo 合并，需 M6 工具）、A-1-8 的"拖动场域不触发 S1a"端到端形态（需 M7 场域）。
+  **地形侧已在 M2/M3/M4 打通**（S1a/S1b + 显示 mesh + 雕刻数据层与重放均实机可见/已断言）；尚缺的条目：
+  A-1-2（重生成下 delta 逐点保持——delta 层与重放已就位，**缺笔刷工具与雕刻资产持久化闭环**）、
+  A-1-4（道路各向异性，需 M5 路网）、A-1-5/A-1-6（笔划固定步长与 undo 合并，需 M6 工具）、
+  A-1-8 的"拖动场域不触发 S1a"端到端形态（需 M7 场域）。
 - `Sample` 小城与演示视频：M10。
 - 本文档为覆写式，非追加日志（AGENTS §4）。

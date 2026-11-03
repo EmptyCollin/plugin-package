@@ -5,6 +5,26 @@
 ## [Unreleased]
 
 ### Added
+- **M4-c（雕刻接入管线，DESIGN D-31 落地）**（本包 `test run --mode editor --filter_type assembly` Total **119** / Failed 0，
+  较 M4-b 增 3 条接线回归断言）：
+  - 用户裁定登记为 `DESIGN` §7 **D-31**（雕刻脏集合由「仅 S6」改为 **S1b + S6**，仍不脏 S1a）
+    与 **D-32**（坡度三级退让：≤`maxParcelSlope` 轻整理 / 其间压平 / ≥`hardRetreatSlope` 18° 不压、削陡角留缓、
+    陡格置 `NoBuild` 让路网绕行，且**必须早判**）；§3.2 脏传播表雕刻行同步改写。
+  - **接线前查出的静默陷阱**：`FitFromBase` 读的是 `BaseHeights`（`HeightField.cs:314`），而 delta 按契约只进 `Heights`
+    ⇒ 照字面接线会让雕刻**对目标平面完全不可见**，且不报错、只在下一次压平时把山悄悄抹掉。
+    采用口径：S1b 起点 `CommitBaseAsWorking()` → `delta.ApplyTo()` → **拟合读此刻的"意图地表"**（自然+人工、尚未平整）
+    → 融合写 `Heights`。不违反 §2.4 防漂移不变量（复位已抹掉上一轮平整结果），前置条件写进 `FitFromBase` 注释。
+  - `IntentKind.DeltaStroke` + `PipelineTypes` 双表同步（`Flatten | Building`，刻意不含 Terrain/Parcel/Road）；
+    `CityTerrain.Delta` / `SetDelta` / `MarkDeltaChanged(center, radius)`——**脏区域用笔刷实际位置**，
+    不用实例 transform（实例常在原点 ⇒ 脏盒永远落原点 ⇒「雕了别处、画面不动」，与 H-42 同族）。
+  - **H-46（自造，且是本轮唯一进了仓库的错误）**：M4-b 提交 `c69fbe4` 里我 4 次引用"推翻 D-14"为规则级变更背书，
+    而 **D-14 实为"显示网格分辨率解耦"**，"雕刻仅脏 S6"住在 §3.2 表且**从无编号**。
+    后来者按 D-14 查会查到 mesh 分辨率，误导是双向的。处置：登记 D-31/D-32 + 全量纠正错引 + 复核剩余引用合法。
+    纪律：**引用规则编号前先 grep 该编号本体确认它说的是什么**；编号写错比不写编号更糟，因为它看起来像有出处。
+  - 判别式取证：`[M4c] 未雕刻 0.106 → 雕刻后 20.124（自然 0.023，抬 20m）`——60m 人工区内整区抬 20m，
+    目标平面跟着起来；M2 两条既有断言数值与上轮一字不差（无回归）。
+  - 门禁：编译 `failed=False`；`console clear`→重跑→`consoleErrors=0/consoleWarnings=0/seeded=True`；
+    `verify_project.py` **`FAIL 0`、结论: 绿灯**（他包 stealth 锁已被其会话续心跳，本轮无需外部裁定）。
 - **M4-b（参数定案 + 雕刻 delta 层数据结构）**：
   - 用户答复 12 提案两参数 → **`hardRetreatSlope=18°`**、陡区**只削陡角保留缓部分**；12 文档定稿为"已批准"，
     并补齐"削角保缓"的可实现口径（逐格 NoBuild 由坡度场判、地块保留非 NoBuild 连通子区、
@@ -12,7 +32,8 @@
   - `Runtime/Core/SculptDeltaAsset.cs`：人工雕刻层数据模型（01 §2.3）。稀疏 chunk 存储、
     `Additive`（增量）/ `Absolute`（目标高程，用 NaN 哨兵非 0）、`ApplyTo` 重放**只进 Heights 绝不进 BaseHeights**
     （防"把上轮人工结果当输入"的正反馈漂移，01 §2.4）、亚容差残差吸附 + 全零条目剪枝（01 §9 资产膨胀）。
-    **只交付数据结构与重放，不接管线**——接管要动脏传播语义（推翻既有 D-14"雕刻仅脏 S6"），属规则级变更须先经批准（§10）。
+    **只交付数据结构与重放，不接管线**——接管要动 `DESIGN` §3.2 脏传播表的「雕刻仅脏 S6」原规则
+    （该条当时无编号；后经用户裁定登记为 **D-31** 并在 M4-c 完成接线），属规则级变更须先经批准（§10）。
   - **H-45（自查抓到的设计缺陷）**：首版 `ApplyTo` 单遍按插入序遍历 ⇒ 同格混用 Absolute+Additive 时
     结果取决于用户操作顺序（7 或 10 的不定值）。改两遍确定序（先 Absolute 赋值、后 Additive 叠加），
     测试断言"正序与反序插入结果相同"。

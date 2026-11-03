@@ -9,9 +9,9 @@ namespace Collin.CityMap
     /// <summary>
     /// 人工雕刻层（01 §2.3，重放次序第 3 层）。<b>存增量不存绝对高度</b>（D-01-1）：
     /// 改噪声参数后人工意图以"相对改动量"存活；"压平到指定值"用 <see cref="DeltaMode.Absolute"/>
-    /// 重放即赋值目标高程。<b>本类只做数据 + 重放</b>，不含笔刷几何、不引用 UnityEditor；
-    /// 接进管线（S1a 末尾 / S1b 起点重放、steepMask 早判）是后续增量，且其中"雕刻→上游重算"
-    /// 的脏传播语义涉及推翻既有 D-14（"雕刻仅脏 S6"），属规则级变更、须先经用户批准（§10）。
+    /// 重放即赋值目标高程。<b>本类只做数据 + 重放</b>，不含笔刷几何、不引用 UnityEditor。
+    /// 管线接线已在 M4-c 完成（DESIGN **D-31** 批准"雕刻须触发 S1b 重算"）：
+    /// S1b 起点复位后由 <c>FlattenSolveStage</c> 调 <see cref="ApplyTo"/> 叠加，故本类自身不碰任何阶段。
     /// </summary>
     [CreateAssetMenu(menuName = "Collin/CityMap/Sculpt Delta", fileName = "SculptDelta")]
     public sealed class SculptDeltaAsset : ScriptableObject

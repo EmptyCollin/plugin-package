@@ -607,6 +607,103 @@ namespace Collin.CityMap.Tests
             Assert.AreNotEqual(f1.Heights.Length, f2.Heights.Length, "两档格数必须不同，否则断言无意义");
         }
 
+        // ─────────── 雕刻层接入管线（M4-c / DESIGN D-31 用户裁定） ───────────
+
+        /// <summary>
+        /// 幂等的<b>双向</b>判据。接 delta 之后 S1b 有两个相反的失败方向：
+        /// ① 复位把 delta 一起冲掉 ⇒ 雕刻只活一轮；② 不复位直接叠 ⇒ 每跑一次加一遍（叠成 40、60…）。
+        /// 只断言"稳定"会放过"稳定地丢失"，所以必须先确认雕刻<b>真的在里面</b>（值 = 基底+20），
+        /// 再断言重跑不变。
+        /// </summary>
+        [Test]
+        public void Delta_Survives_S1b_Rerun_Without_Double_Apply()
+        {
+            var h = Harness(2100, out var p, worldSize: 600f, flatness: 1f);
+            var g = p.Grid;
+            var d = Track(ScriptableObject.CreateInstance<SculptDeltaAsset>());
+            p.Terrain.SetDelta(d);
+
+            var cx = g.Columns / 2; var cz = g.Rows / 2;
+            for (var z = cz - 8; z <= cz + 8; z++)
+            for (var x = cx - 8; x <= cx + 8; x++)
+                d.AddDelta(g, x, z, 20f);
+
+            var idx = cz * g.Columns + cx;
+            var baseAt = h.Field.BaseHeights[idx];
+            var beforeBase = (float[])h.Field.BaseHeights.Clone();
+
+            var s1b = new FlattenSolveStage(p.Profile, p.Terrain);
+            Assert.IsTrue(s1b.Run(h.Ctx, RunMode.Commit).Success);
+            var first = h.Field.Heights[idx];
+            Assert.AreEqual(baseAt + 20f, first, 1e-4f,
+                $"雕刻必须出现在最终高度且只叠一次（实得 {first:0.###}，期望 {baseAt + 20f:0.###}）");
+
+            Assert.IsTrue(s1b.Run(h.Ctx, RunMode.Commit).Success);
+            Assert.AreEqual(first, h.Field.Heights[idx], 1e-4f,
+                "S1b 重跑既不得忘掉雕刻、也不得把它叠两遍（复位后重放是唯一正确形态）");
+
+            for (var i = 0; i < beforeBase.Length; i++)
+                Assert.AreEqual(beforeBase[i], h.Field.BaseHeights[i], 0f,
+                    $"第 {i} 格基底被人工层污染（01 §2.4 正反馈漂移的根因）");
+            h.Dispose();
+        }
+
+        /// <summary>
+        /// 用户裁定的核心语义：<b>雕刻必须波及地块的坡度判定与平整目标平面</b>。
+        /// 做成判别式而非"变一点就算过"：若拟合仍读 BaseHeights，压平会把这 20m 拉回未雕刻时的目标平面
+        /// ⇒ 差值接近 0，本用例当场红。
+        /// </summary>
+        [Test]
+        public void Carving_Inside_Manual_Zone_Raises_Its_Target_Plane()
+        {
+            var h = Harness(2200, out var p, worldSize: 600f, flatness: 1f);
+            var g = p.Grid;
+            p.Terrain.AddZone(new Vector2(g.WorldSize * 0.5f, g.WorldSize * 0.5f),
+                              new Vector2(60f, 60f));            // absoluteHeight=0 ⇒ 从地表拟合平面
+            RunS1a(h, p);
+
+            var idx = (g.Rows / 2) * g.Columns + g.Columns / 2;
+            new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit);
+            var plain = h.Field.Heights[idx];
+            var natural = h.Field.BaseHeights[idx];
+
+            var d = Track(ScriptableObject.CreateInstance<SculptDeltaAsset>());
+            p.Terrain.SetDelta(d);
+            for (var z = g.Rows / 2 - 15; z <= g.Rows / 2 + 15; z++)      // 31² 格盖满整个 60m 区
+            for (var x = g.Columns / 2 - 15; x <= g.Columns / 2 + 15; x++)
+                d.AddDelta(g, x, z, 20f);
+
+            Assert.IsTrue(new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit).Success);
+            var carved = h.Field.Heights[idx];
+
+            Debug.Log($"[M4c] 未雕刻 {plain:0.###} → 雕刻后 {carved:0.###}（自然 {natural:0.###}，抬 20m）");
+            Assert.Greater(carved - plain, 12f,
+                $"整区抬 20m 后地块目标平面必须跟着起来（{plain:0.##} → {carved:0.##}）：" +
+                "差值过小说明拟合仍读基底、雕刻被压平抹掉");
+            Assert.AreEqual(natural + 20f, carved, 8f,
+                $"压平后应≈自然+20（实得 {carved:0.##}）：允许过渡带混合误差，不允许回到未雕刻值");
+            h.Dispose();
+        }
+
+        /// <summary>无雕刻时新取数口径必须与 M2 结论<b>逐位</b>一致（不回归 A-1-2）。</summary>
+        [Test]
+        public void Without_Delta_Pipeline_Result_Is_Bitwise_Unchanged()
+        {
+            var a = Harness(2300, out var pa, worldSize: 600f, flatness: 1f);
+            pa.Terrain.SetAutoFlatten(true, 3);
+            RunS1a(a, pa);
+            new FlattenSolveStage(pa.Profile, pa.Terrain).Run(a.Ctx, RunMode.Commit);
+            var first = (float[])a.Field.Heights.Clone();
+
+            // 显式设 null delta 不该改变任何事（与从不设 delta 走同一分支）
+            pa.Terrain.SetDelta(null);
+            Assert.IsTrue(new FlattenSolveStage(pa.Profile, pa.Terrain).Run(a.Ctx, RunMode.Commit).Success);
+            for (var i = 0; i < first.Length; i++)
+                Assert.AreEqual(first[i], a.Field.Heights[i], 0f,
+                    $"无雕刻时第 {i} 格漂移 ⇒ delta 接线污染了旧行为（A-1-2 幂等回归）");
+            a.Dispose();
+        }
+
         // ───────────────────────── 测试工具 ─────────────────────────
         //
         // 生命周期约定：本类所有 Object（ScriptableObject / GameObject）一律经 Track() 登记，

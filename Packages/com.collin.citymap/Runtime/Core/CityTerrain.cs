@@ -29,6 +29,10 @@ namespace Collin.CityMap
         [Header("实例态：人工平整区（意图层，存区域不存平面）")]
         [SerializeField] List<ManualFlattenZone> manualZones = new List<ManualFlattenZone>();
 
+        [Header("实例态：山水雕刻人工层（01 §2.2/§2.3，实例差异不写 Model）")]
+        [Tooltip("SculptDeltaAsset：笔刷增量与绝对压平目标；null = 无人工改动")]
+        [SerializeField] SculptDeltaAsset delta;
+
         [Header("身份")]
         [SerializeField] string stableId;
         [SerializeField] IntentChangeLedger ledger = new IntentChangeLedger();
@@ -39,6 +43,7 @@ namespace Collin.CityMap
         int lastConstraints, lastCells, lastRejectedConstraints;
 
         public TerrainProfile Profile => profile;
+        public SculptDeltaAsset Delta => delta;
         public bool AutoFlattenAtCenter => autoFlattenAtCenter;
         public int AutoTileCount => Mathf.Clamp(autoTileCount, 1, 12);
         public IReadOnlyList<ManualFlattenZone> ManualZones => manualZones;
@@ -130,6 +135,32 @@ namespace Collin.CityMap
             EnsureStableId();
             ledger ??= new IntentChangeLedger();
             ledger.Bump(kind, GetAffectedBounds());
+        }
+
+        /// <summary>
+        /// 山水笔刷落笔提交点（工具在**落笔时调一次**，不是每 tick，01 §5.2）。
+        /// <para>脏区域必须用<b>笔刷实际位置</b>而非实例 transform：
+        /// 实例通常放在原点，用 `transform.position` 会让脏盒永远落在原点 ⇒
+        /// 增量重建找错块，表现为"雕了别处、画面不动"（与 H-42 同族：算错影响范围）。</para>
+        /// <para>影响面按用户裁定 = Flatten + Building（01 §5，DESIGN **D-31** 推翻旧「仅脏 S6」）：
+        /// S1b 重算受波及地块的目标平面，S6 重排落位；<b>不含 Terrain</b> ⇒ 不重跑噪声基底（A-2）。</para>
+        /// </summary>
+        public void MarkDeltaChanged(Vector2 centerWorld, float brushRadius)
+        {
+            EnsureStableId();
+            ledger ??= new IntentChangeLedger();
+            var r = Mathf.Max(MinAffectedRadius, brushRadius * 2f);   // 笔刷外扩一档，覆盖过渡带波及
+            ledger.Bump(IntentKind.DeltaStroke,
+                new Bounds(new Vector3(centerWorld.x, 0f, centerWorld.y),
+                           new Vector3(r * 2f, 1f, r * 2f)));
+        }
+
+        /// <summary>换 delta 资产：实例引用变了，按当前生效笔刷区域重新提交一次。</summary>
+        public void SetDelta(SculptDeltaAsset d)
+        {
+            if (ReferenceEquals(d, delta)) return;
+            delta = d;
+            MarkDeltaChanged(transform.position, MinAffectedRadius);
         }
 
         /// <summary>

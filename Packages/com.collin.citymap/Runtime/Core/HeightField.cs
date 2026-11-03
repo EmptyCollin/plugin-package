@@ -293,7 +293,8 @@ namespace Collin.CityMap
         /// </summary>
         public static bool FitFromBase(TerrainField field, Vector2 center, Vector2 halfSize,
                                        float maxSlopeDeg, float insetMeters, float extendMeters,
-                                       float weight, FlattenKind kind, out PlaneConstraint plane)
+                                       float weight, FlattenKind kind, out PlaneConstraint plane,
+                                       bool fromIntentSurface = false)
         {
             plane = default;
             var g = field.Grid;
@@ -311,7 +312,17 @@ namespace Collin.CityMap
                 if (Mathf.Abs(cc.x - center.x) > halfSize.x + g.CellSize * 0.5f) continue;
                 if (Mathf.Abs(cc.y - center.y) > halfSize.y + g.CellSize * 0.5f) continue;
                 xs.Add(cc.x); zs.Add(cc.y);
-                hs.Add(field.GetBaseHeight(cc.x, cc.y));
+                // 取数口径（M4-c）：
+                //   默认 = BaseHeights（纯自然基底，不含人工层）；
+                //   fromIntentSurface = true → Heights，即 S1b 在"复位 + 叠加 delta"之后的**意图地表**
+                //     = 自然 + 人工、**尚未平整**。用户裁定"雕刻必须波及地块坡度与平整目标"，
+                //     读 BaseHeights 会让雕出来的山体对拟合完全不可见（目标平面永远是没雕之前的）。
+                //   ⚠ 这不违反 §2.4 的防漂移不变量：漂移指的是"把**上一轮的平整结果**当输入"，
+                //     而调用方进来前刚做过 CommitBaseAsWorking() + delta 叠加，此刻 Heights 里没有平整结果。
+                //     正因如此，**本参数只允许在"复位并叠 delta 之后"传 true**——
+                //     若在别处（如融合完）调用仍传 true，就会把平整结果喂回拟合，漂移会立刻重现。
+                hs.Add(fromIntentSurface ? field.GetHeight(cc.x, cc.y)
+                                         : field.GetBaseHeight(cc.x, cc.y));
             }
 
             var n = hs.Count;

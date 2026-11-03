@@ -3,10 +3,19 @@
 > 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-03（会话 `2026-11-03 m4-terrain-workflow`）
 > 代码阶段：本会话按 §3 原子取锁开工，按 §1.6 三项门禁交锁。**未 push。**
 
-## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质补齐/资产归位 + M4-b 参数定案/delta 地基）
+## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质 + M4-b delta 地基 + M4-c 雕刻接入管线）
+- **M4-c（DESIGN D-31 落地，2026-11-04）**：雕刻 delta 接进 S1b（`复位 → delta.ApplyTo → 拟合读意图地表 → 融合`），
+  `IntentKind.DeltaStroke` 双表同步（脏 `Flatten|Building`，**不含 Terrain** ⇒ 不重跑噪声）；
+  `CityTerrain.MarkDeltaChanged(笔刷位置, 半径)`（脏区域用笔刷实际位置，不用实例 transform）。
+  **接线前查出静默陷阱**：`FitFromBase` 读 `BaseHeights`（`HeightField.cs:314`）而 delta 只进 `Heights`
+  ⇒ 照字面接会让雕刻对目标平面不可见、且不报错。判别式取证：`未雕刻 0.106 → 雕刻后 20.124`（抬 20m）。
+  本包 **119/119**，M2 断言数值一字不差无回归；门禁**三项全绿、校验器 FAIL 0**。
+  **H-46（本轮自查纠正）**：M4-b 提交 `c69fbe4` 里 4 次引用"推翻 D-14"给规则变更背书，
+  而 D-14 实为"显示网格分辨率解耦"、被改的规则原本**无编号** ⇒ 登记 D-31/D-32 并全量改引。
+  纪律：**写任何引用前先 grep 那个源头**（本会话第三次"证据链自造"型错误）。
 - **M4-b**：用户定死 `hardRetreatSlope=18°` + 陡区**只削陡角保缓**，12 文档定稿；
   `SculptDeltaAsset.cs`（delta 数据模型：稀疏+NaN 哨兵+只进 Heights+确定序重放）+ 16 条测试（本包 **116/116**）。
-  **只立地基未接管线**——接管需改脏传播（推翻 D-14），属规则级、待批准。H-45 自查修掉重放顺序不定值。
+  H-45 自查修掉重放顺序不定值。**管线接线已在 M4-c 完成**（D-31）。
 - **M4-a（本会话末）**：
   - **材质补齐**（用户反馈①"地表没材质看起伏累"）：根因是 M3 回退链 `URP/Lit→Diffuse` 都不读 `COLOR`，
     坡度顶点色白写。补 `Sample/Shaders/CityTerrainVertexColor.shader`（实测 `isSupported=True`）
@@ -78,20 +87,29 @@
   数据地基（值指纹逐字段覆盖、`SetXxx` 通道归属、S1a/S1b 已注册）已断言；但滑条拖动 → 重算 → 画面这条手感
   **EditMode 断言不了**（反射调 `OnGUI` 抛「只能在 OnGUI 内调用」，项目既有实测）⇒ 须用户在
   `Tools/Collin/CityMap/City Window` 实机确认 A-1-3/A-0-3 的 Preview→Commit 两档。
-- 雕刻 delta（`SculptDeltaAsset`）、河流下切层未做；接入时按 01 §3.2 次序插在基底与约束之间，显示层随之扩展重建触发面。
-  **本会话已把工作流重排成文**（`Docs/Modules/12-TerrainWorkflow.md`），这两项归入其中的 M4。
+- **雕刻：数据层 + 管线接线已做（M4-b/M4-c），但"笔刷工具本体"未做**：
+  `SculptDeltaAsset`（稀疏/NaN 哨兵/确定序重放）与"S1b 拟合读意图地表"的接线都已完成并断言（本包 119/119），
+  但目前 delta **只能由代码写**（`AddDelta`/`SetAbsolute`），没有 `TerrainSculptTool`（EditorTool，抬/压/平滑/固定步长积分），
+  也**没做 delta 资产的撤销登记**（`Undo.RecordObject(deltaAsset)` + `SetDirty`，01 §5.2）——现在雕刻不会进 undo 栈。
+  河流下切层（S2/carve，01 §3.2 第 2 层）完全未做。
+- **D-32 坡度三级退让只登记、未实现**：`hardRetreatSlope=18°` 与"早判 steepMask 置 NoBuild"目前**只写进 DESIGN D-32 与 12 文档**，
+  代码里 `TerrainProfile` 还没有该参数、也没有 `steepMask` 计算（12 §2：必须在 S1a+delta 之后、S3 路网之前判，放 S1b 则路网已定、退让无效）。
+  S3/S4 尚不存在（M5/M6），所以"让路网绕行"这一半现在无处可接，实现 D-32 的掩码写入应等 S3 落地时一并做。
 - 无 PlayMode 测试；真实 `Ctrl+Z` 端到端链路（A-17 完整形态）待接。
 - `Sample` 小城与演示视频：M10。
 
-## 4. 下一步（依 12 提案，待用户批准后执行）
-1. **先要用户拍板 `12-TerrainWorkflow.md` §3 的两个待定参数**：
-   ① `hardRetreatSlope` 默认值（15°/18°/20°）；② 陡到留野的地块是整块丢弃还是只削陡角。
-   定了才能写代码（§4「DESIGN 先于代码」）。批准同时把里程碑重排回写 `DESIGN.md`。
-2. **M4 山水创作工具全套**（01 §5 + 02）：雕刻笔刷（抬/压/平滑，固定步长积分 A-1-5）+ delta 层持久化 + 河流下切笔刷；
-   并实现"退让早判"——S1a/carve/sculpt 之后**立刻**逐格算 `steepMask` 置 `NoBuild`，S3/S4 读之绕行（**不能放 S1b**，否则路网已定、退让无效）。
-3. **实机验收 M3/M3-b/M4-a**（成本极低，建议用户现在做）：`Tools/Collin/CityMap/City Window` → 绑/建 CityProject →
-   「创建地形实例（含显示层）」→ 现在应能看到**带坡度色带的起伏地表**（材质已补）；拖「城内平整度」确认即时变化。
-4. 代码注释引用编号（`// 09 H-40`、`// 12 §2`、`// 01 §3.3`），ACCEPTANCE 续接编号 **43+**（43 已被 M4-a 用到）。
+## 4. 下一步（两参数已定案、delta 已接线，剩下是"让用户能用手雕"）
+1. **雕刻笔刷工具本体 `TerrainSculptTool`（EditorTool，01 §5）**：抬/压/平滑/压平到指定值，
+   **固定步长积分**（`strength·笔速·固定步数`，与帧率无关 → A-1-5 跨机器一致）、`maxCellsPerStroke` 截断（01 §5.4），
+   落笔调一次 `CityTerrain.MarkDeltaChanged(笔刷位置, 半径)`。
+   **必须同时做 delta 的撤销登记**（`Undo.RecordObject(deltaAsset)` + `EditorUtility.SetDirty`，01 §5.2）：
+   现在雕刻不进 undo 栈，Ctrl+Z 会把整城回退而吃掉笔划。A-1-6（一次笔划 = 1 条 undo）也在此验。
+2. **S2 河流下切**（Modules/02）：接 01 §3.2 第 2 层（在 delta 之前），显示层 carve 叠加随之可见。
+3. **D-32 的 `steepMask` 早判**：S1a+delta 之后立刻逐格 `GetSlopeDeg ≥ 18°` 置 `NoBuild`；
+   "让路网绕行"那半要等 S3 落地才有消费者（S3/S4 尚不存在），故**先只写掩码 + 面板显示"因坡放弃 N 格"**，不空转做重排。
+4. **实机验收 M3/M3-b/M4-a/M4-c**：`Tools/Collin/CityMap/City Window` → 绑/建 CityProject →
+   「创建地形实例（含显示层）」→ 应看到**带坡度色带的起伏地表**（材质已补）；拖「城内平整度」确认即时变化。
+5. ACCEPTANCE 续接编号 **54+**（M4-c 已用到 53）；代码注释继续引用编号（`// 09 H-46`、`// DESIGN D-31`）。
 
 ## 5. 勿碰项
 - 不改 AGENTS.md / §8 钉死版本 / `Packages/manifest.json` / `ProjectSettings/**`。
