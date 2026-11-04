@@ -261,6 +261,12 @@ namespace Collin.CityMap.EditorTooling
             DrawProjectField();
             EditorGUILayout.Space(4f);
             DrawTerrainProfile();
+            if (_mode == ToolMode.TerrainSculpt)
+            {
+                // 笔刷参数只在雕刻模式出现：常驻会挤占面板，且其它模式下改了也没作用
+                EditorGUILayout.Space(4f);
+                DrawSculptPanel();
+            }
             EditorGUILayout.Space(4f);
             DrawStageTree();
             EditorGUILayout.Space(4f);
@@ -293,6 +299,39 @@ namespace Collin.CityMap.EditorTooling
                 default: return m.ToString();
             }
         }
+
+        /// <summary>
+        /// 雕刻笔刷参数区（Modules/01 §5.1）。**只改静态参数，不触发重生成**——
+        /// 真正落笔在 SceneView（SculptBrushTool），这里只是"调手感"的旋钮。
+        /// <para>动作只列**已接线**的四个：反色/清除/定高到指定值需要先有数值框输入源，
+        /// 列出来会让用户选到没作用的选项（比"不可见"更糟）。</para>
+        /// </summary>
+        private void DrawSculptPanel()
+        {
+            EditorGUILayout.LabelField("雕刻笔刷（SceneView 内拖动落笔）", EditorStyles.boldLabel);
+
+            SculptBrushTool.RadiusMeters = EditorGUILayout.Slider("笔刷半径(m)",
+                SculptBrushTool.RadiusMeters, 2f, 200f);
+            SculptBrushTool.Strength = EditorGUILayout.Slider("强度",
+                SculptBrushTool.Strength, 0.05f, 5f);
+
+            // 仅呈现可用动作；选中未接线项会被工具拒绝并提示，这里直接不给选项
+            var idx = Mathf.Clamp(IndexOf(SculptBrushTool.Action), 0, _sculptActions.Length - 1);
+            var next = EditorGUILayout.Popup("动作", idx, _sculptActionsLabels);
+            if (next != idx) SculptBrushTool.Action = ActionAt(next);
+
+            EditorGUILayout.HelpBox(
+                "一笔划 = 一个撤销记录；抬升/下压量由**拖动距离**决定（与帧率无关），" +
+                "平滑/定高需已生成地形。落笔后地表按脏区增量刷新。",
+                MessageType.Info);
+        }
+
+        static readonly string[] _sculptActionsLabels = { "抬升", "下压", "平滑", "定高到起笔点" };
+        static readonly SculptAction[] _sculptActions =
+            { SculptAction.Raise, SculptAction.Lower, SculptAction.Smooth, SculptAction.FlattenToCenter };
+
+        static int IndexOf(SculptAction a) => Array.IndexOf(_sculptActions, a);
+        static SculptAction ActionAt(int i) => _sculptActions[i];
 
         private void DrawProjectField()
         {
