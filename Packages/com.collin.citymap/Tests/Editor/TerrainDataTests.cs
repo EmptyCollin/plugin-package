@@ -699,6 +699,49 @@ namespace Collin.CityMap.Tests
         }
 
         /// <summary>
+        /// H-50 回归：雕刻工具接管态是<b>纯交互态</b>，切换它绝不能 bump 任何意图通道。
+        /// <para>存在理由：真源从「Editor 面板静态字段」挪到「场景实例序列化字段」后，
+        /// 若顺手按 SetFlattenEnabled 的写法去 Bump(ParcelModel)，每次切工具都会白跑一遍
+        /// S1b+S6（几十万格求解），手感直接卡死。本用例把这个成本红线钉在测试里，
+        /// 而不是只写在注释里等下个人踩。</para>
+        /// <para>同时验证默认值为 false：新实例不该一创建就抢走场景视图鼠标
+        /// （否则用户新建东西却发现左键不能框选了）。</para>
+        /// </summary>
+        [Test]
+        public void Sculpt_Tool_Active_Is_Pure_Tool_State_No_Intent_Bump()
+        {
+            var h = Harness(2405, out var p, worldSize: 600f, flatness: 0.25f);
+
+            Assert.IsFalse(p.Terrain.SculptToolActive,
+                "新实例默认不得接管鼠标，否则用户新建完就框选不了");
+
+            var manual0 = p.Terrain.ManualVersion;
+            var parcel0 = p.Terrain.Ledger.SequenceOf(IntentKind.ParcelModel);
+            var delta0 = p.Terrain.Ledger.SequenceOf(IntentKind.DeltaStroke);
+
+            p.Terrain.SetSculptToolActive(true);
+            Assert.IsTrue(p.Terrain.SculptToolActive);
+            p.Terrain.SetSculptToolActive(true);      // 重复设同值也必须无害
+            p.Terrain.SetSculptToolActive(false);
+
+            Assert.AreEqual(manual0, p.Terrain.ManualVersion,
+                "工具态不是意图，ManualVersion 绝不能前进");
+            Assert.AreEqual(parcel0, p.Terrain.Ledger.SequenceOf(IntentKind.ParcelModel),
+                "切工具不得脏 ParcelModel（否则每次切换白跑一遍 S1b 求解）");
+            Assert.AreEqual(delta0, p.Terrain.Ledger.SequenceOf(IntentKind.DeltaStroke),
+                "切工具不得脏 DeltaStroke（那不是落笔）");
+
+            // 对照：真正的意图写入口必须 bump，否则上面三条断言是"恒真"的空测试
+            p.Terrain.SetFlattenEnabled(false);
+            Assert.Greater(p.Terrain.Ledger.SequenceOf(IntentKind.ParcelModel), parcel0,
+                "对照组：SetFlattenEnabled 必须脏 ParcelModel（闸门切换要即时重算）");
+
+            Debug.Log($"[M4i] 工具态切换：ManualVersion {manual0}→{p.Terrain.ManualVersion}、" +
+                      $"ParcelModel {parcel0}→{p.Terrain.Ledger.SequenceOf(IntentKind.ParcelModel)}（含闸门对照 +1）");
+            h.Dispose();
+        }
+
+        /// <summary>
         /// 用户裁定的核心语义：<b>雕刻必须波及地块的坡度判定与平整目标平面</b>。
         /// 做成判别式而非"变一点就算过"：若拟合仍读 BaseHeights，压平会把这 20m 拉回未雕刻时的目标平面
         /// ⇒ 差值接近 0，本用例当场红。

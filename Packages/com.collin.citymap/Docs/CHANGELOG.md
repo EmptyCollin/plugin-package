@@ -4,6 +4,37 @@
 
 ## [Unreleased]
 
+### Fixed
+- **M4-i（笔刷不可用的四处断链，用户反馈①②根因修复）**（本包 **130/130** Failed 0，校验器 **`FAIL 0`、结论: 绿灯**，
+  `consoleErrors=0 / consoleWarnings=0 / seeded=True`，`RECOMPILE failed=False errors=0`）：
+  - **H-50 门禁真源错位（反馈①②同源）**：笔刷接管判据原先读 `CityWindow.CurrentMode`，那是
+    `EditorWindow` **静态**字段——域重载（改代码 / 重开场景 / 进 Play）后归零，而 Unity 用布局恢复
+    窗口实例时不回填静态字段。探针实测 `_instance = NULL(面板未开)` 而 `CurrentMode = Inspect`，
+    但用户面板明明处于雕刻模式 ⇒ 笔刷一进来就 `return`，鼠标事件原样放行给默认工具
+    （实测 `activeToolType = UnityEditor.MoveTool`，空白处左键即框选）。
+    正解（**DESIGN D-34**，用户裁定）：新增 `CityTerrain.SculptToolActive` 序列化字段作真源，
+    笔刷只读它；面板 `_mode` 每帧由真源回推，`OnEnable` 补 `_instance = this` 重绑。
+    写它**不 bump 意图通道**，由 `Sculpt_Tool_Active_Is_Pure_Tool_State_No_Intent_Bump` 钉住。
+  - **H-51 雕刻层从来不存在**：实测磁盘上 `SculptDeltaAsset` 数量 = **0**、实例 `Delta = NULL`
+    ⇒ `BeginStroke` 判空即 `_blocked`，而提示只 `Debug.Log` 到控制台，用户看到的现象是"拖了没反应"。
+    正解：`CreateTerrainInstance` 与进入 ② 雕山水时自动建并绑 `Sample/Sculpt/SculptDelta.asset`；
+    阻断原因改由 `SculptBrushTool.BlockReason` 呈现为**面板黄字**。
+  - **H-52 副本资产反复滋生的机制**：`AssetDatabase.FindAssets("t:TerrainProfile")` 对**内嵌包资产恒返回 0**
+    （探针实证：资产存在且有路径，仍返回 0），旧代码以"找不到"当"不存在" ⇒ 每次创建实例都走新建分支，
+    `GenerateUniqueAssetPath` 追加 ` 1/2/3` ⇒ 上一轮删掉的 6 个副本长回来了（日志 seq 18696 实证）。
+    正解（**DESIGN D-35**）：固定路径 + `LoadAssetAtPath`，创建不加唯一后缀。
+  - **H-53 光圈高度取不到**：预览环取样只读 `CityRuntime.ActiveContext`（仅面板驱动分支有值），
+    自建路径 / 域重载后为 null ⇒ 环退化画在 y=0 又被 ±18m 起伏埋掉。正解：新增
+    `CityTerrainView.BoundField` 只读暴露其真正用于生成 mesh 的场，笔刷与之同源（光圈贴的就是你看到的那张皮）。
+  - **附带修复（H-54）包内资产导入记录损坏**：`Sample/Profiles/TerrainProfile.asset` 的
+    `GetMainAssetTypeAtPath` 返回 NULL 而**同内容复制文件同样 NULL**，Unity 自身 `CreateAsset` 产物可加载
+    ⇒ 判定为该 GUID 的 Library 导入记录坏（非文件内容坏；`ImportAsset(ForceUpdate)` 因内容哈希未变而无效）。
+    处置：`CreateAsset` 覆盖同路径重建，实测 **GUID 不变**（引用不失效）、类型恢复可加载。
+  - **性能细节**：笔刷格网解析改为按激活实例身份惰性重解析（原为每事件全表扫描，H-10 反模式）。
+  - **工作区合规（经用户裁定）**：`Assets/Scenes/TerrainTest.unity` → `Sample/Scenes/`（`MoveAsset`，
+    GUID 不变、零外部引用、复验可正常打开），校验器 `assets-layout` 由 FAIL 转 **ok**；
+    根目录 5 个上一会话残留 `.tmp-*.json` 经用户裁定删除。
+
 ### Added
 - **M4-h（显式三步步骤条 + 体验副本清理）**（本包 **129/129** Failed 0，校验器 **`FAIL 0`、结论: 绿灯**，
   `consoleErrors=0 / consoleWarnings=0 / seeded=True`，`RECOMPILE failed=False errors=0`）：

@@ -944,3 +944,66 @@ S1a 噪声（默认 18m/520m + 细节层）产出的是**真实顶点高度**；
 | M4-g（闸门+贴地环） | **129** | 0 | **`FAIL 0`、绿灯** | `error=0 warning=0 seeded=True` |
 
 累计空洞 **H-1~H-49（49 处）**；阻断级仍 7 处。
+
+## 36. 第十轮（M4-i）：用户要求"先定根因"，于是用反射探针代替猜测
+
+用户上一轮拿到 M4-g/M4-h 后实机反馈：**没法雕山水，左键拖拽变成了框选指令；还是没有笔刷范围的参考光圈**，
+并明确要求「别急着动手改，先定根因」。这句话改变了本轮的工作方式：**先取证，再动代码**。
+
+取证手段是 `script eval_file` 反射探针（四轮迭代，脚本落 `.tmp-inspect/`，用完即删）。
+关键读数（全部实测，非推断）：
+
+| 探针读数 | 排除了什么 | 确认了什么 |
+|---|---|---|
+| `duringSceneGui 钩子数=3`，含 `SculptBrushTool.OnSceneGUI` | 排除"回调没注册/包没加载" | 回调在跑，是**第一行就 return** |
+| `_instance = NULL(面板未开)` + `CurrentMode = Inspect` | 排除"用户没切模式"（截图明摆在雕刻模式） | `EditorWindow` **静态字段被域重载清零**、布局恢复不回填 |
+| `Tools.activeToolType = UnityEditor.MoveTool` | 排除"另有工具抢事件" | 笔刷没 `evt.Use()` ⇒ 鼠标**原样落给默认工具** = 框选 |
+| `CityTerrain.Delta = NULL` + 磁盘 `SculptDeltaAsset` 数 = **0** | — | 雕刻层**从来没被任何代码创建过** |
+| `FindAssets(t:TerrainProfile) = 0`，而资产**存在且有路径** | — | 内嵌包不入索引 ⇒ 副本滋生的机制 |
+| `svRect` 正常、相机 `fwd=(-0.007,-0.345,0.939)`、画面中心 `havePoint=true` | 排除"取不到地面点" | 光圈不显示**不是几何问题**，是代码没执行到绘制 |
+
+**一个反馈解释两个现象**：H-50 同时导致①②，所以不需要两个修法。这正是"先定根因"的价值——
+若按现象分头修（调光圈粗细、加笔刷强度），两个都修不好。
+
+## 37. H-50~H-56：本轮登记的七处空洞
+
+- **H-50（阻断级）门禁真源错位**：见 §36。修法是 **D-34**——接管态进 `CityTerrain` 序列化字段。
+  与 M4-h 的关系很讽刺：上一轮我刚把**高亮**做成由真源回推（`SyncStepFromState`），
+  却把**门禁**留在编辑器内存里。**回推修的是显示一致性，没修可用性**。
+  纪律：**凡"跨域重载后还能不能用"的问题，先问这个状态存在哪一侧**；存在 `EditorWindow` 静态字段里的一律按会丢处理。
+- **H-51（阻断级）雕刻层从来不存在**：`delta` 字段自 M4-b 设计出来就没人创建过，`BeginStroke` 判空即阻断，
+  而提示只 `Debug.Log` ⇒ 用户视角与"功能坏了"完全无法区分。修法是自动建绑 + `BlockReason` 走面板黄字。
+  纪律：**"不可用"必须可见**；静默阻断（哪怕写了日志）等于把归因成本全推给用户。
+- **H-52 副本资产滋生机制**：`FindAssets` 对内嵌包恒 0 + `GenerateUniqueAssetPath` = 每次点"创建"长一个副本。
+  上一轮我删掉 6 个副本并以为"清理完成"，**没查它为什么会长出来** ⇒ 本轮实测 14:12 日志里又出现一个。
+  纪律：**清理产物而不除成因，等于没清理**（与 §31"删除后果不能靠 clear 抹掉"同族）。
+- **H-53 光圈取样只覆盖一条分支**：`ActiveContext` 仅面板驱动时有值，自建路径/域重载后为 null ⇒ 环退化 y=0。
+  修法是 `CityTerrainView.BoundField`——**光圈必须贴它自己画出来的那张皮**，而不是另找一个数据源猜。
+- **H-54 包内资产导入记录损坏**（控制台 `No script asset for TerrainProfile` 的真因）：
+  对照实验链——原文件 `GetMainAssetTypeAtPath=NULL` → **同内容复制文件（新 GUID）也 NULL** →
+  `CreateAsset` 产物可加载 → `ImportAsset(ForceUpdate)` 无效。
+  结论：坏在 Library 侧该 GUID 记录，不在 YAML 内容。`CreateAsset` 覆盖同路径重建，**实测 GUID 不变**。
+  另记一条易误诊点：内嵌包资产的 `m_Script: {fileID: 0}` + `m_EditorClassIdentifier` 是**正常写法**，
+  据此判"引用断了"会误诊（真判据是 `GetMainAssetTypeAtPath`）。
+- **H-55（自查，探针侧）**：我第一版探针把 `CityRuntime` 写成 `Collin.CityMap.EditorTooling.CityRuntime`
+  （实际在 `Collin.CityMap`，且 `Type.GetType("X, 程序集名")` 在 eval 上下文不可靠），
+  得到 `CityRuntime NULL` 并差点据此判定 H-53 根因。**探针报错要先怀疑探针自己**，
+  否则会把工具缺陷当工程结论写进文档。
+- **H-56（自查，本会话自造红灯）**：我取锁时把 `heartbeat_at` 写成 ISO 字符串，
+  而 `verify_project.py:267` 期望 epoch 数值 ⇒ 校验器抛 `ValueError` **整体崩溃 = 全项目红灯**。
+  按 §1.9 立即修复（改自己锁文件格式，不动校验器——规则工具变更须另走 §10 审批）。
+
+## 38. 本轮门禁
+
+| 增量 | 用例 | 失败 | 校验器 | 控制台 |
+|---|---|---|---|---|
+| M4-i（H-50~H-54 修复） | **130** | 0 | **`FAIL 0`、绿灯** | `error=0 warning=0 seeded=True`（静默 60s 基线即 0/0，无噪声需归因） |
+
+期间校验器一度报 **2 项 FAIL**，两处都已闭环：
+1. `lock-stale`——**本会话自造**：跑长验证时没按 §3 每 60s 续心跳（504s 前）。续心跳后转 `lock-active` WARN。
+   与 H-56（锁 `heartbeat_at` 写成 ISO 字符串导致校验器**整体崩溃**）是同一处纪律的两面：**锁是活契约，不是写完就忘的文件**。
+2. `assets-layout: Assets/Scenes/TerrainTest.unity`——**非本会话产物**（场景 mtime `22:12:16` 早于本会话首个动作 22:25）。
+   按 §1.7 先如实上报、经用户裁定"移进包内"，`MoveAsset` 后 **GUID 不变、零外部引用、复验可打开**，转 ok。
+   另按用户裁定删除根目录 5 个上一会话残留 `.tmp-*.json`。
+
+累计空洞 **H-1~H-56（56 处）**；阻断级 **9 处**（新增 H-50/H-51）。

@@ -98,6 +98,15 @@ namespace Collin.CityMap
         public int ChunkObjectCount => _chunks.Count;
         public CityGrid? BoundGrid => _hasGrid ? _grid : (CityGrid?)null;
 
+        /// <summary>
+        /// 本 View 当前用于生成 mesh 的高度场（只读）。
+        /// <para>存在理由：编辑器侧工具（山水笔刷的光圈、平滑取样）需要"贴在你看到的那张皮上"。
+        /// 若工具自己去读 <c>CityRuntime.ActiveContext</c>，就只覆盖了面板驱动分支，
+        /// 自建路径（Play / 面板未 Bind）下会拿到 null —— 光圈退化成画在 y=0 又被起伏埋掉（H-53）。
+        /// 数据源真源在本 View 的 <see cref="ResolveData"/>，故由它对外只读暴露，工具不再自猜。</para>
+        /// </summary>
+        public TerrainField BoundField => _field;
+
         public float EffectiveChunkSize => _hasGrid
             ? TerrainView.EffectiveChunkSize(chunkSizeMeters, _grid.DisplayStep) : 0f;
 

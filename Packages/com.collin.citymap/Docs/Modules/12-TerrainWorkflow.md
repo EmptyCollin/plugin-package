@@ -55,6 +55,26 @@
 高亮不由面板自记，而由真源 `FlattenEnabled` + 当前模式回推（`SyncStepFromState`），
 杜绝"面板显示第③步、闸门实际还关着"的两套状态打架。**观感与手感待用户实机确认**（Editor GUI 不可 EditMode 断言）。
 
+### 1.1 步骤条交付后仍不可用的真因（M4-i，2026-11-04 探针取证）
+
+用户实机反馈：**左键拖拽变成框选、且看不到笔刷光圈**。反射探针取证后确认——**不是渲染问题，是同一条断链**：
+
+| 证据（探针实测） | 结论 |
+|---|---|
+| `_instance = NULL(面板未开)`、`CurrentMode = Inspect`，而用户截图面板正在雕刻模式 | 门禁读的 `CityWindow.CurrentMode` 是 `EditorWindow` **静态**字段，域重载后归零且不被窗口布局恢复 |
+| `Tools.activeToolType = UnityEditor.MoveTool` | 笔刷未 `evt.Use()` ⇒ 鼠标原样落给默认工具 = 框选（反馈②） |
+| `duringSceneGui` 钩子数 = 3，**含** `SculptBrushTool.OnSceneGUI` | 回调注册没问题 ⇒ 是回调第一行就 `return`，光圈代码从未执行（反馈①） |
+| `CityTerrain.Delta = NULL`、`FindAssets(t:SculptDeltaAsset) = 0` | 雕刻层**从来没有被创建过**，即便修好门禁，落笔仍会被 `_blocked`（且提示只在控制台） |
+| `FindAssets(t:TerrainProfile) = 0` 而该资产**确实存在且有路径** | 内嵌包不入 AssetDatabase 索引 ⇒ 旧代码以"找不到"当"不存在" ⇒ 每次创建实例都新建副本（副本滋生机制，H-52） |
+
+**修复（D-34 / D-35）**：接管权改为 `CityTerrain.SculptToolActive` 序列化字段（跨域重载存活），
+笔刷只遍历注册表读它；雕刻层在创建实例与进入 ② 步时自动建并绑；包内资产一律固定路径 + `LoadAssetAtPath`；
+光圈高度改从 `CityTerrainView.BoundField` 取（与画面同一张场，不再依赖只有面板驱动分支才有的 `ActiveContext`）。
+
+> 教训（与 H-48 同族）：**"面板显示什么"不等于"数据里是什么"**。M4-h 我把高亮做成由真源回推，
+> 却把**门禁**留在编辑器内存里——回推修的是显示一致性，没修可用性。凡是"跨域重载后还能不能用"
+> 的问题，先问这个状态存在哪一侧：存在 `EditorWindow` 静态字段里的，一律按会丢处理。
+
 ## 2. 关键发现：坡度退让判定时机**不能放在 S1b**（否则路网已定，退让无意义）
 
 按 `ExecutionOrder`：`S3_Road` 早于 `S4_Parcel` 早于 `S1b_Flatten`。

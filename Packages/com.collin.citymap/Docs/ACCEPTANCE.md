@@ -75,6 +75,12 @@
 | 66 | **M4-g 交锁三项门禁 + 违规资产处置** | 清台 → 本包 `--filter_type assembly` 全量 → `verify_project.py` → `console status`；`assets-layout` 抓到 `Assets/Scenes/testscene.unity`（非本会话产物）经用户裁定删除 | 同上 | 2026-11-04 | **129/129**；`RECOMPILE failed=False errors=0`；`GATE consoleErrors=0 consoleWarnings=0 seeded=True`；校验器 **`FAIL 0`、结论: 绿灯** |
 | 67 | **M4-h 显式三步步骤条（12 §1 三段式的 UI 面，用户选"升级成显式步骤条"）** | `CityWindow.DrawWorkflowStepBar()`：① 地图参数 / ② 雕山水 / ③ 平整出地表 三个按钮，点一步＝把该相位该有的状态设好（② 关 `FlattenEnabled`+进雕刻模式，③ 开闸门+回检视）。**相位非门禁**（00 A-24）：其它工具与参数仍随时可用；高亮由真源 `FlattenEnabled`+当前模式回推（`SyncStepFromState`），杜绝"面板显示第③步、闸门实际还关着"的两套状态。编译 `errors=0` | qianwen-work-assistant（会话 `2026-11-04 m4-brush-fix`） | 2026-11-04 | **通过（代码/编译/无回归）；观感与手感待用户实机确认**（Editor GUI 不可 EditMode 断言，不虚报） |
 | 68 | **M4-h 违规/副本资产清理**：`Sample/Profiles/TerrainProfile 1/2/3.asset`（用户体验点"新建"产生的副本，GUID 均无任何场景/资产引用、未入库）经**用户裁定删除**，走 `AssetDatabase.DeleteAsset`；真源 `TerrainProfile.asset` 保留 | 删前核验三项：`EditorBuildSettings` 计数 0、`grep guid` 无引用者、`git status` 为 `??` 未跟踪；删后 `assets-layout` 由 FAIL 恢复 **ok** | 同上 | 2026-11-04 | **通过**；校验器整体转 **`FAIL 0`、绿灯** |
+| 69 | **M4-i 根因取证（用户要求"先定根因再改"）**：四项全部实测取证，不靠推测 | `script eval_file` 反射探针（`.tmp-inspect/`，用完即删）：① `_instance=NULL(面板未开)` 且 `CurrentMode=Inspect`，与用户截图（面板在雕刻模式）矛盾 ⇒ 静态字段被域重载清零；② `Tools.activeToolType=UnityEditor.MoveTool` ⇒ 左键落给默认工具（框选）；③ `CityTerrain.Delta=NULL` + `FindAssets(t:SculptDeltaAsset)=0` ⇒ 雕刻层从来不存在；④ `duringSceneGui 钩子数=3` 含 `SculptBrushTool.OnSceneGUI` ⇒ 回调注册正常，排除"没挂上" | qianwen-work-assistant（会话 `2026-11-04 m4-brush-rootcause`） | 2026-11-04 | **根因确认**：反馈①②同源（H-50 门禁真源错位），非幅度/非渲染问题 |
+| 70 | **M4-i H-50 修复：工具接管态真源进场景实例（D-34）** | `CityTerrain.SculptToolActive`（序列化，默认 false）+ `SetSculptToolActive`（**不 Bump**）；笔刷 `ToolActive(out terrain)` 只读注册表实例；`CityWindow.OnEnable` 重绑 `_instance`；`SyncStepFromState` 由真源回推 `_mode`（**仅当真源存在才纠正**，无实例时不强弹，否则用户连"缺实例"提示都看不到）。端到端探针：未开启 `ToolActive=False` → 开启 `ToolActive=True 解析实例=__e2e_terrain` | 同上 | 2026-11-04 | **通过**；`Sculpt_Tool_Active_Is_Pure_Tool_State_No_Intent_Bump`（含 SetFlattenEnabled 对照 +1，防空断言）；本包 **130/130** |
+| 71 | **M4-i H-51/H-52/H-53 修复**：雕刻层自动就位、包内资产固定路径、光圈取数与画面同源 | `EnsureDeltaLayer()`（创建实例与进②步时调用）；`FindOrCreateProfile` 改固定路径（探针实证 `FindAssets` 对内嵌包恒 0）；`CityTerrainView.BoundField` 只读暴露，笔刷 `CurrentField()` 优先读它。端到端：`EnsureDeltaLayer 后 Delta=SculptDeltaAsset path=…/SculptDelta.asset 可再次加载=True`；`BlockReason` 由面板黄字呈现（不再只打控制台） | 同上 | 2026-11-04 | **通过（代码/编译/端到端探针）**；**光圈可见性与拖笔手感仍待用户实机确认**（SceneView 渲染不可 EditMode 断言，不虚报） |
+| 72 | **M4-i H-54 附带发现：包内资产导入记录损坏**（控制台 warning `No script asset for TerrainProfile` 的真因） | 对照实验：`GetMainAssetTypeAtPath(原文件)=NULL`；**同内容复制文件（新 GUID）同样 NULL**；Unity 自身 `CreateAsset` 产物 `可加载=True`；`ImportAsset(ForceUpdate)` 无效（内容哈希未变复用旧 artifact）⇒ 判定为 Library 侧该 GUID 记录坏，非 YAML 内容坏（两者逐字节一致）。处置：`CreateAsset` 覆盖同路径重建，实测 **GUID 不变**（`49770fd0…→同值`，既有引用不失效）、类型恢复 `TerrainProfile` | 同上 | 2026-11-04 | **已修复**；`LoadAssetAtPath(原路径)=True`，副本 `TerrainProfile 1.asset` 一并删除 |
+| 73 | **M4-i 交锁门禁** | 清台 → 静默 60s 取基线（`error=0 warning=0`，无噪声需归因）→ 重跑本会话全部验证动作（recompile → 本包 test run → `verify_project.py`）→ `console status` | 同上 | 2026-11-04 | `RECOMPILE failed=False errors=0`；`Tests.dll` mtime ≥ 测试源 mtime（H-36 第二检）；**130/130**；`consoleErrors=0 consoleWarnings=0 seeded=True`；校验器 **`FAIL 0`、结论: 绿灯** |
+| 74 | **M4-i 校验器红灯成因与处置（非本会话产物）**：`assets-layout: Assets/Scenes/TerrainTest.unity` | 取证三项：该场景 mtime `22:12:16` **早于本会话首个动作（22:25 之后）**；`EditorBuildSettings.scenes` 仅含 SampleScene（不命中本场景）；全工程 `.asset/.unity/.prefab/.json` 文本扫描**外部引用计数 = 0** | 同上 | 2026-11-04 | **经用户裁定"移进包内 Sample/"**：`AssetDatabase.MoveAsset` → `Packages/com.collin.citymap/Sample/Scenes/TerrainTest.unity`，返回空串（成功）、**GUID 不变**（`d159991b…` → 同值）、旧路径 `AssetPathToGUID=""` 且磁盘旧文件已消失；`OpenScene` 复验 `有效=True 根物体=2 脏=False`。另按用户裁定删除根目录 5 个上一会话残留 `.tmp-*.json`（mtime 11:14–11:46，逐个核过内容为 `test run` 输出） |
 
 ## 未通过项
 
@@ -770,7 +776,7 @@ S1b 重算，否则从关到开画面仍是旧的未平整态）；S1b 在 `Comm
 
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~68）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~74）。
 - **M4-e/M4-f 的实机闭环待用户验证**（§M4-e-3）：场景内创建地形实例后拖笔，看是否即时起伏、
   一笔一撤销是否成立、超格数提示是否出现。这是"雕刻笔刷"从"代码正确"到"手感成立"的最后一跳。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。

@@ -24,28 +24,60 @@ namespace Collin.CityMap.EditorTooling
         internal static SculptAction Action = SculptAction.Raise;
 
         static readonly SculptStroke _stroke = new SculptStroke();
+        /// <summary>本帧解析到的地形实例（含其接管开关）；null = 场景里没有可用实例。</summary>
         static CityTerrain _terrain;
         static CityGrid _grid;
         static bool _hasGrid;
+        /// <summary>本帧解析到的显示层，用于取贴地高度（H-53）。</summary>
+        static CityTerrainView _view;
+        /// <summary>上次解析所对应的激活实例；变了才重解析（避免每事件全表扫描）。</summary>
+        static CityTerrain _resolvedFor;
 
         static bool _stroking;
         static bool _blocked;
         static Vector2 _lastCenter;
         static float _carry;
 
+        /// <summary>阻断原因（面板可见）：H-51 实测「提示只打在控制台 Log，用户看不到 ⇒ 表现为拖了没反应」。</summary>
+        internal static string BlockReason;
+
         static SculptBrushTool()
         {
             SceneView.duringSceneGui += OnSceneGUI;
         }
 
+        /// <summary>
+        /// 笔刷是否接管场景视图。<b>真源 = 场景实例上的 <see cref="CityTerrain.SculptToolActive"/></b>（H-50）。
+        /// <para>绝不能再读 <c>CityWindow.CurrentMode</c>：那是 EditorWindow 的<b>静态</b>字段，
+        /// 域重载（改代码 / 重开场景 / 进 Play）后归零、且窗口实例由布局恢复时不会回填它 ⇒
+        /// 面板显示在雕刻模式、这里却读到 Inspect，鼠标事件原样放行给默认工具，
+        /// 用户看到的就是「左键变框选 + 光圈消失」。序列化字段能跨域重载存活，这才是真源。</para>
+        /// </summary>
+        static bool ToolActive(out CityTerrain t)
+        {
+            t = null;
+            foreach (var o in IntentRegistry.All)
+            {
+                var ct = o as CityTerrain;
+                if (ct != null && ct.enabled && ct.SculptToolActive) { t = ct; return true; }
+            }
+            return false;
+        }
+
         static void OnSceneGUI(SceneView sv)
         {
-            if (CityWindow.CurrentMode != CityWindow.ToolMode.TerrainSculpt) return;
+            if (!ToolActive(out _terrain)) return;
 
             var evt = Event.current;
 
-            // 每帧重解析格网：重生成/换档位后 CityGrid 尺寸会变，缓存旧值会算错笔刷覆盖格
-            if (!_hasGrid) TryResolveGrid();
+            // 只在「激活实例变了」或「还没解析到格网」时重解析：
+            // OnSceneGUI 每个事件都会跑（Layout/Repaint/Mouse…），每事件全表扫描是 H-10 反模式。
+            // 数据出现后 _hasGrid 由 false→true，靠这个条件自然补上；_view 的场每帧现读，无需重解析。
+            if (!ReferenceEquals(_resolvedFor, _terrain) || !_hasGrid)
+            {
+                TryResolveGrid();
+                _resolvedFor = _terrain;
+            }
 
             Vector3 ground;
             var havePoint = TryGroundPoint(evt.mousePosition, out ground);
@@ -59,7 +91,7 @@ namespace Collin.CityMap.EditorTooling
             // 用户完全看不出笔刷有多大（用户反馈①）。采样当前高度场逐段描边，真正贴着地形走。
             if (havePoint && evt.type == EventType.Repaint)
             {
-                TryCurrentField(out var pvField);
+                var pvField = CurrentField();
                 void Ring(float r, Color col)
                 {
                     if (r <= 0f) return;
@@ -80,7 +112,15 @@ namespace Collin.CityMap.EditorTooling
                 Ring(RadiusMeters * CoreRatio, new Color(0.3f, 0.8f, 1f, 0.5f));   // 核心半径提示
             }
 
-            if (!_hasGrid || _terrain == null || _terrain.Delta == null) return;
+            if (!_hasGrid || _terrain == null) return;
+            if (_terrain.Delta == null)
+            {
+                // H-51：缺雕刻层时把原因写进面板可见字段，不再只打控制台 Log
+                BlockReason = "该地形实例还没有雕刻层：点面板「② 雕山水」会自动创建并绑定。";
+                if (evt.type == EventType.MouseDown && evt.button == 0) { _blocked = true; evt.Use(); }
+                return;
+            }
+            BlockReason = null;
 
             switch (evt.type)
             {
@@ -117,35 +157,47 @@ namespace Collin.CityMap.EditorTooling
             return true;
         }
 
+        /// <summary>
+        /// 解析格网与显示层。<b>不在此重设 _terrain</b>：接管实例由 <see cref="ToolActive"/> 选定
+        /// （只有把开关打开的那个实例才是操作对象），这里若再扫一遍注册表，会取到"第一个"实例
+        /// 而非"被激活"的那个 —— 多城场景下就是雕 A 城改 B 城。
+        /// </summary>
         static void TryResolveGrid()
         {
             _hasGrid = false;
-            _terrain = FindTerrain();
+            _view = null;
             if (_terrain == null) return;
-            foreach (var v in Object.FindObjectsByType<CityTerrainView>(FindObjectsInactive.Exclude))
-            {
-                var g = v.BoundGrid;
-                if (g.HasValue) { _grid = g.Value; _hasGrid = true; return; }
-            }
-            // CityGrid 是**值类型**：走 ctx.Grid（Project.GetGrid()），参数不合法时返回空网格，
+
+            // 显示层与意图组件同物体（CreateTerrainInstance 一起挂的），直接 GetComponent，
+            // 不用 FindObjectsByType 全场景扫（H-10 反模式）。
+            _view = _terrain.GetComponent<CityTerrainView>();
+            var g = _view != null ? _view.BoundGrid : (CityGrid?)null;
+            if (g.HasValue) { _grid = g.Value; _hasGrid = true; return; }
+
+            // 兜底：面板驱动路径的权威上下文。CityGrid 是**值类型**，参数不合法时返回空网格，
             // 故有效性判据是 CellCount>0，而不是引用类型的 null 判断。
             var ctx = CityRuntime.ActiveContext;
             if (ctx != null)
             {
-                var g = ctx.Grid;
-                if (g.CellCount > 0 && g.CellSize > 1e-5f) { _grid = g; _hasGrid = true; }
+                var cg = ctx.Grid;
+                if (cg.CellCount > 0 && cg.CellSize > 1e-5f) { _grid = cg; _hasGrid = true; }
             }
         }
 
-        // 走意图注册表而非每帧全场景扫描（H-10 反模式），与面板 FindTerrainInstance 同口径
-        static CityTerrain FindTerrain()
+        /// <summary>
+        /// 当前高度场（贴地光圈与平滑/定高的取样源）。
+        /// <para>H-53：优先取显示层的场 —— 它在<b>面板驱动</b>与<b>自建路径</b>（Play / 无面板）
+        /// 两条分支里都会被解析出来，而 <c>CityRuntime.ActiveContext</c> 只在面板驱动时有值。
+        /// 原先只读 ActiveContext，域重载后面板还没跑过 Commit ⇒ 场为 null ⇒ 光圈高度退化成 0，
+        /// 环又被 ±18m 的起伏埋掉（反馈①的另一半根因）。
+        /// 与画面同源还保证「光圈贴的是你看到的那张皮」。</para>
+        /// </summary>
+        static TerrainField CurrentField()
         {
-            foreach (var t in IntentRegistry.All)
-            {
-                var ct = t as CityTerrain;
-                if (ct != null && ct.enabled) return ct;
-            }
-            return null;
+            var f = _view != null ? _view.BoundField : null;
+            if (f != null) return f;
+            var ctx = CityRuntime.ActiveContext;
+            return ctx != null ? ctx.GetSlot<TerrainField>(StageId.S1a_TerrainBase) : null;
         }
 
         static void BeginStroke(Vector3 ground)
@@ -154,13 +206,14 @@ namespace Collin.CityMap.EditorTooling
             if (_terrain == null || _terrain.Delta == null || !_hasGrid)
             {
                 _blocked = true;
-                Hud("需场景内 CityTerrain + 雕刻层 + 已生成地形（先「创建地形实例」或重新生成）");
+                BlockReason = "无法落笔：需" + (_terrain == null ? "激活的地形实例" : _terrain.Delta == null
+                    ? "雕刻层（点「② 雕山水」自动创建）" : "已生成的地形（先「重新生成」）");
                 return;
             }
             if (!ActionSupported(Action))
             {
                 _blocked = true;
-                Hud("该动作（" + Action + "）本轮未接线：抬升/下压/平滑/定高到起笔点可用");
+                BlockReason = "该动作（" + Action + "）本轮未接线：抬升/下压/平滑/定高到起笔点可用";
                 return;
             }
 
@@ -188,11 +241,15 @@ namespace Collin.CityMap.EditorTooling
             if (!_hasGrid || _terrain == null || _terrain.Delta == null) return;
 
             TerrainField field = null;
-            if (NeedsField(Action) && !TryCurrentField(out field))
+            if (NeedsField(Action))
             {
-                _blocked = true;
-                Hud("平滑/定高需当前地形场数据——先重新生成一次");
-                return;
+                field = CurrentField();
+                if (field == null)
+                {
+                    _blocked = true;
+                    BlockReason = "平滑/定高需当前地形场数据——先「重新生成」一次";
+                    return;
+                }
             }
 
             var cell = _grid.CellSize;
@@ -263,7 +320,7 @@ namespace Collin.CityMap.EditorTooling
             // 用笔刷中心而非 transform.position 提交脏区（H-42 同族：算错影响范围→雕了别处画面不动）
             _terrain.MarkDeltaChanged(_lastCenter, RadiusMeters);
             if (_stroke.Truncated)
-                Hud("笔刷过大：单笔已截断于 " + _stroke.CellCount + " 格，建议缩小半径或分次雕刻");
+                BlockReason = "笔刷过大：单笔已截断于 " + _stroke.CellCount + " 格，建议缩小半径或分次雕刻";
             SceneView.RepaintAll();
         }
 
@@ -273,15 +330,5 @@ namespace Collin.CityMap.EditorTooling
 
         static bool NeedsField(SculptAction a)
             => a == SculptAction.Smooth || a == SculptAction.FlattenToCenter;
-
-        static bool TryCurrentField(out TerrainField field)
-        {
-            field = CityRuntime.ActiveContext != null
-                    ? CityRuntime.ActiveContext.GetSlot<TerrainField>(StageId.S1a_TerrainBase)
-                    : null;
-            return field != null;
-        }
-
-        static void Hud(string msg) => Debug.Log("[SculptBrush] " + msg);
     }
 }

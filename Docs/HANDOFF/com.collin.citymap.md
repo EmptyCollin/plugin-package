@@ -1,9 +1,29 @@
 # 交接单 — com.collin.citymap
 
-> 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-04（会话 `2026-11-04 m4-brush-fix`）
+> 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-04（会话 `2026-11-04 m4-brush-rootcause`）
 > 代码阶段：本会话按 §3 原子取锁开工，按 §1.6 三项门禁交锁。**未 push。**
 
-## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质 + M4-b delta 地基 + M4-c 雕刻接入 + M4-d/e/f 笔刷工具 + M4-g 平整阶段闸门 + M4-h 三步步骤条）
+## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a~h + M4-i 笔刷不可用四处断链修复）
+- **M4-i（用户要求"先定根因再改"，2026-11-04，本包 130/130）**：反馈①「无光圈」与②「左键变框选」**同源于 H-50**，
+  全部由反射探针实测取证（非推测），四项修复：
+  - **H-50 门禁真源错位**：笔刷判据读 `CityWindow.CurrentMode`（`EditorWindow` **静态**字段，域重载归零且不被
+    窗口布局恢复）。探针实证 `_instance=NULL` 但用户面板正在雕刻模式 ⇒ 回调首行即 return，
+    鼠标落给 `UnityEditor.MoveTool`（框选）。正解 **D-34**：`CityTerrain.SculptToolActive` 序列化字段作真源，
+    笔刷只读它；`OnEnable` 重绑 `_instance`；写它**不 Bump**（新用例 `Sculpt_Tool_Active_Is_Pure_Tool_State_No_Intent_Bump`
+    含 SetFlattenEnabled 对照，防空断言）。
+  - **H-51 雕刻层从来不存在**：`Delta=NULL`、磁盘 `SculptDeltaAsset` 数 = 0 ⇒ 落笔必 `_blocked`，
+    且提示只 `Debug.Log`。正解：`EnsureDeltaLayer()` 在创建实例与进 ② 步时自动建并绑；阻断原因改走
+    `SculptBrushTool.BlockReason` ⇒ **面板黄字**。
+  - **H-52 副本滋生机制**：`FindAssets` 对**内嵌包资产恒返回 0**（资产存在且有路径），旧代码据此判"不存在"
+    + `GenerateUniqueAssetPath` ⇒ 每次创建实例都长出一个 `TerrainProfile 1/2/3`（上轮删的 6 个由此长回）。
+    正解 **D-35**：固定路径 + `LoadAssetAtPath`，创建不加唯一后缀。
+  - **H-53 光圈取不到高度**：取样只读 `CityRuntime.ActiveContext`（仅面板驱动分支有值）。正解：
+    `CityTerrainView.BoundField` 只读暴露其生成 mesh 用的同一张场。
+  - **H-54（附带发现）**：包内 `TerrainProfile.asset` 的 Library 导入记录坏（`GetMainAssetTypeAtPath=NULL`；
+    同内容复制文件同样 NULL、`CreateAsset` 产物可加载、`ImportAsset(ForceUpdate)` 因内容哈希未变而无效）。
+    已用 `CreateAsset` 覆盖同路径重建，**实测 GUID 不变**（引用不失效）；副本 `TerrainProfile 1.asset` 删除。
+  - 另：笔刷格网解析改**按激活实例身份惰性重解析**（原每 GUI 事件全表扫描 = H-10 反模式）。
+  - **仍未闭环**：光圈可见性与拖笔手感属 SceneView 渲染，EditMode 无从断言 ⇒ **待用户实机确认，不虚报**。
 - **M4-h（显式三步步骤条 + 体验副本清理，2026-11-04，本包 129/129、校验器 `FAIL 0` 绿灯）**：
   `CityWindow.DrawWorkflowStepBar()` 把 12 §1 三段式做成可点步骤条（①参数 ②雕山水 ③平整出地表），
   点相位＝切 `FlattenEnabled` + 切模式；**相位非门禁**（00 A-24），高亮由真源回推（`SyncStepFromState`）
@@ -84,6 +104,26 @@
   **`consoleErrors=0/consoleWarnings=0/seeded=True`**；`verify_project.py` **`FAIL 0`、结论: 绿灯**（本会话内首次整体转绿）。
 
 ## 2. 实测得到的环境事实（新会话直接照做）
+- **`script eval_file` 探针取证套路（M4-i 整轮靠它定位根因，四条硬约束）**：
+  ① **不接受 `using` 指令**（代码被包进方法体，`using System;` 直接 `CS0210`）⇒ 一律全限定名；
+  ② `Type.GetType("X, 程序集名")` 在 eval 上下文**不可靠**（实测返回 NULL 导致后续断言全失真）
+     ⇒ 遍历 `AppDomain.CurrentDomain.GetAssemblies()` 取类型；
+  ③ 遍历 `IntentRegistry.All` 会撞上**已销毁对象**（实测 `ConstraintAsset has been destroyed` 抛异常
+     使整个探针中断、**前面几节结论一起丢失**）⇒ 每节独立 `try/catch` + **即时 `Debug.Log`**，别攒到末尾；
+  ④ 读回输出：`console get` 的 stdout 是 UTF-8，Windows Python 默认 GBK 会 `UnicodeDecodeError`
+     ⇒ `capture_output` 取 bytes 后 `.decode("utf-8","replace")`，且用 `json.JSONDecoder().raw_decode`
+     （尾部还跟一列参数，直接 `json.loads` 报 `Extra data`）。
+- **锁文件 `heartbeat_at` 必须是 epoch 数值**：写成 ISO 字符串会让 `Tools/verify_project.py`
+  在 `check_locks` 抛 `ValueError`（`could not convert string to float`）⇒ **校验器整体崩溃 = 全项目红灯**。
+  取锁用 `time.time()`，不要用 `datetime.isoformat()`（本会话自造，已改）。
+- **`ImportAsset(ForceUpdate)` 修不了"导入记录坏"**：内容哈希未变时 Unity 直接复用旧 artifact。
+  有效手段是 `CreateAsset` 覆盖同路径——实测 **GUID 不变**，既有引用不失效。
+- **内嵌包资产不入 `AssetDatabase` 索引**：`FindAssets("t:X")` 对 `Packages/com.collin.*` 恒返回 0，
+  但 `LoadAssetAtPath` / `IsValidFolder` / `AssetPathToGUID` 全部正常 ⇒ 判存在只能用固定路径加载（D-35）。
+- **`m_Script: {fileID: 0}` + `m_EditorClassIdentifier: 包名:命名空间:类名` 是 Unity 6 内嵌包资产的正常写法**，
+  不是坏引用；据此判"资产坏了"会误诊（真判据是 `GetMainAssetTypeAtPath` 是否为 NULL）。
+- **端口与 PID 每次编辑器重启都会变**（实测 7800/23176 → 7801/10460）：会话开工先 `unity status`，
+  别沿用上一轮的端口假设。
 - **`test run --filter_type assembly --filter com.collin.citymap.Tests`** 是多会话共用编辑器时**唯一干净的取证方式**：
   全量跑会把**他包故意触发的 error**（实测 stealth 的 `Services_DuplicateRegistration_...` 会 `LogError`）计入共享控制台 ⇒ 破坏 §1.6b。
   不改他人测试，按程序集取本包归零证据。
@@ -108,10 +148,20 @@
 
 ## 3. 未完成
 - **显示层只做地形 mesh**。道路条带 mesh、建筑 prefab 实例、SceneView overlay（城心圆环、约束带可视化、光标读数）未做（01 §3.3/§4.4）。
-- **雕刻笔刷链已全部就位（M4-d/e/f/g），但"实机手感"待用户验证**（这是当前最大的未闭环项，数据侧已断言不等于手感成立）：
-  切「雕刻」模式后 ①**贴地预览环是否真的看得见**（M4-g 刚从 y=0 改贴地，SceneView 渲染 EditMode 无从断言）
-  ②关「③ 自动平整」后拖笔是否即时起山、Ctrl+Z 是否整笔回退、delta 是否跨域重载留存。
-  验证路径：面板「③ 自动平整」**关掉** → 切「雕刻」→ 拖笔（不关平整则城内 8× 强约束会把抬升压回，见 D-33）。
+- **雕刻笔刷链：断链已在 M4-i 修复（门禁真源 + 雕刻层就位 + 光圈取数），但"实机手感"仍待用户验证**
+  （这是当前最大的未闭环项，数据侧与端到端探针已断言 ≠ 手感成立）：
+  ①进入 ② 雕山水后**贴地预览环是否真的看得见**（SceneView 渲染 EditMode 无从断言）
+  ②拖笔是否即时起山、左键是否**不再变框选**、Ctrl+Z 是否整笔回退、delta 是否跨域重载留存
+  ③面板是否还长出 `TerrainProfile 1/2/3` 副本（H-52 修法已生效于探针，需用户操作复核）。
+  验证路径：面板点 **② 雕山水**（自动关闸门 + 写接管权 + 建绑雕刻层）→ 直接拖笔 → 完事点 **③ 平整出地表**。
+- **校验器已转 `FAIL 0` 绿灯**。原先唯一剩项 `assets-layout: Assets/Scenes/TerrainTest.unity`（非本会话产物，
+  场景 mtime `22:12:16` 早于本会话首个动作 22:25）**经用户裁定移进包内**：
+  `Packages/com.collin.citymap/Sample/Scenes/TerrainTest.unity`，`MoveAsset` 返回空串、**GUID 不变**
+  （`d159991b…`）、零外部引用、`OpenScene` 复验可正常打开。根目录 5 个上一会话残留 `.tmp-*.json` 亦经裁定删除。
+- **⚠️ 实机验证的前置条件（务必先告知用户）**：该场景现在**只剩 Main Camera + Directional Light**
+  ——`CityTerrain` 实例已被用户删除（探针实测 `内存 CityTerrain 数 = 0`）。
+  直接点「② 雕山水」会因找不到实例而不写接管权（面板此时不强弹模式，见 SyncStepFromState 的例外分支），
+  **必须先点「创建地形实例（含显示层）」**，再点 ②。本轮修复已让该按钮自动建并绑雕刻层（H-51）。
 - **河流下切层（S2/carve，01 §3.2 第 2 层）完全未做**：delta 与平整已接，河道 carve 还没有。
 - **D-32 坡度三级退让只登记、未实现**：`hardRetreatSlope=18°` 与"早判 steepMask 置 NoBuild"写进 DESIGN D-32/12 文档，
   但 `TerrainProfile` 还没有该参数、代码里没有 `steepMask` 计算。

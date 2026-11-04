@@ -38,6 +38,19 @@ namespace Collin.CityMap
                  + "开＝在已定稿的意图地表之上跑自动平整整理。雕刻期建议关。")]
         [SerializeField] bool flattenEnabled = true;
 
+        /// <summary>
+        /// 山水雕刻工具是否接管场景视图（H-50 根因修复）。
+        /// <para>存在理由：这个开关原先只存在 Editor 面板的<b>静态字段</b>里，而静态字段随域重载
+        /// 归零（改代码 / 重开场景 / 进 Play 都会触发），Unity 恢复窗口实例时不会恢复它 ⇒
+        /// 面板显示仍在雕刻模式、笔刷却判定「不是雕刻模式」直接放行鼠标，
+        /// 表现为「左键变框选 + 光圈消失」（用户反馈①②同源）。
+        /// 真源必须落在<b>场景实例的序列化字段</b>上（§0.1 原则2：实例状态进组件，不进编辑器侧内存）。</para>
+        /// <para>放 Runtime 而非 Editor：笔刷工具与面板都只是它的读写方，数据侧持有才能跨域重载存活。</para>
+        /// </summary>
+        [Header("工具态：场景视图接管权（H-50）")]
+        [Tooltip("开＝场景视图左键由山水笔刷接管（拖动落笔）；关＝左键还给编辑器默认工具。")]
+        [SerializeField] bool sculptToolActive = false;
+
         [Header("身份")]
         [SerializeField] string stableId;
         [SerializeField] IntentChangeLedger ledger = new IntentChangeLedger();
@@ -51,6 +64,8 @@ namespace Collin.CityMap
         public SculptDeltaAsset Delta => delta;
         public bool AutoFlattenAtCenter => autoFlattenAtCenter;
         public bool FlattenEnabled => flattenEnabled;
+        /// <summary>山水笔刷是否接管场景视图鼠标（H-50 真源，见字段注释）。纯工具态：改它不 bump 任何意图通道。</summary>
+        public bool SculptToolActive => sculptToolActive;
         public int AutoTileCount => Mathf.Clamp(autoTileCount, 1, 12);
         public IReadOnlyList<ManualFlattenZone> ManualZones => manualZones;
         public string StableId => stableId;
@@ -81,6 +96,12 @@ namespace Collin.CityMap
             flattenEnabled = on;
             Bump(IntentKind.ParcelModel);
         }
+
+        /// <summary>
+        /// 读写雕刻工具接管态（H-50）。<b>不走 Bump</b>：这是纯交互态，不影响任何派生层，
+        /// 若误 bump 会让每次切工具都白跑一遍 S1b+S6（所见即所得≠每次都全重算）。
+        /// </summary>
+        public void SetSculptToolActive(bool on) => sculptToolActive = on;
 
         public void SetAutoFlatten(bool on, int tiles)
         {

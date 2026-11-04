@@ -64,6 +64,11 @@ namespace Collin.CityMap.EditorTooling
 
         private void OnEnable()
         {
+            // H-50：静态引用随域重载归零，而 Unity 会用布局恢复窗口实例。
+            // 不在此重绑，CurrentMode 会永远读到 Inspect（面板明明显示着雕刻模式）。
+            // 主门禁已改为读实例真源（CityTerrain.SculptToolActive），这里只是让面板自身
+            // 的静态桥（ActiveProject / ActiveRunner / CurrentMode）重新可用。
+            _instance = this;
             _runner = new PipelineRunner();
             EditorApplication.update += OnEditorUpdate;
         }
@@ -320,10 +325,41 @@ namespace Collin.CityMap.EditorTooling
         /// <summary>高亮由真源回推：在雕刻模式就是第②步；离开雕刻模式后按闸门状态归位。</summary>
         private void SyncStepFromState()
         {
+            // H-50：真源是场景实例上的 SculptToolActive（能跨域重载存活）。
+            // 面板的 _mode 每帧由它回推，域重载后 _mode 复位成 Inspect 也会被立刻纠正——
+            // 否则就会出现「面板显示雕刻模式、笔刷却按 Inspect 放行鼠标」。
+            // 注意**只在真源存在时才纠正**：场景里一个 CityTerrain 都没有时没有真源可依据，
+            // 强行弹回 Inspect 会让用户连"缺实例"的面板提示都看不到（等于把 UI 锁死）。
+            var sculptOn = FindSculptActiveTerrain();
+            if (sculptOn != null) _mode = ToolMode.TerrainSculpt;
+            else if (_mode == ToolMode.TerrainSculpt && HasAnyTerrainInstance()) _mode = ToolMode.Inspect;
+
             if (_mode == ToolMode.TerrainSculpt) { _step = WorkflowStep.Sculpt; return; }
             if (_step != WorkflowStep.Sculpt) return;
             _step = _terrain != null && _terrain.FlattenEnabled
                 ? WorkflowStep.Flatten : WorkflowStep.Params;
+        }
+
+        /// <summary>场景里是否有把笔刷接管开关打开的地形实例（笔刷门禁的真源）。</summary>
+        internal static CityTerrain FindSculptActiveTerrain()
+        {
+            foreach (var t in IntentRegistry.All)
+            {
+                var ct = t as CityTerrain;
+                if (ct != null && ct.enabled && ct.SculptToolActive) return ct;
+            }
+            return null;
+        }
+
+        /// <summary>场景里是否存在任何可用地形实例（= 有没有真源可依据）。</summary>
+        static bool HasAnyTerrainInstance()
+        {
+            foreach (var t in IntentRegistry.All)
+            {
+                var ct = t as CityTerrain;
+                if (ct != null && ct.enabled) return true;
+            }
+            return false;
         }
 
         private void StepButton(WorkflowStep s, string label, string tip)
@@ -345,18 +381,82 @@ namespace Collin.CityMap.EditorTooling
                     _mode = ToolMode.TerrainSculpt;
                     // 判空用 != null 而非 `?.`：Unity 对已销毁对象的 == 有重载语义，
                     // 对 MonoBehaviour 用 null 条件运算符会绕过这层保护。
-                    if (_terrain != null) _terrain.SetFlattenEnabled(false);
+                    if (_terrain != null)
+                    {
+                        _terrain.SetFlattenEnabled(false);
+                        // H-50：接管权写进实例真源（跨域重载存活），不再只改面板静态字段。
+                        _terrain.SetSculptToolActive(true);
+                        EnsureDeltaLayer();          // H-51：没有雕刻层就自动建并绑，否则落笔必被 blocked
+                        MarkTerrainSceneDirty();
+                    }
                     break;
                 case WorkflowStep.Flatten:
                     _mode = ToolMode.Inspect;
-                    if (_terrain != null) _terrain.SetFlattenEnabled(true);
+                    if (_terrain != null)
+                    {
+                        _terrain.SetFlattenEnabled(true);
+                        _terrain.SetSculptToolActive(false);
+                        MarkTerrainSceneDirty();
+                    }
                     break;
                 default:
                     _mode = ToolMode.Inspect;
+                    if (_terrain != null)
+                    {
+                        _terrain.SetSculptToolActive(false);
+                        MarkTerrainSceneDirty();
+                    }
                     break;
             }
             Repaint();
         }
+
+        /// <summary>
+        /// 工具态写进实例后标脏场景。
+        /// <para>域重载本身会保留内存里的序列化值，但**重开场景 / 重开工程**只有落盘才留得住；
+        /// 不标脏就会出现「上次明明在雕刻模式，重开场景又变回框选」。</para>
+        /// </summary>
+        private void MarkTerrainSceneDirty()
+        {
+            if (_terrain == null) return;
+            Undo.RecordObject(_terrain, "切换雕刻工具");
+            EditorUtility.SetDirty(_terrain);
+        }
+
+        /// <summary>
+        /// 确保地形实例绑有一个雕刻层资产（H-51）。
+        /// <para>存在理由：`delta` 字段从来没人创建过（实测磁盘上 SculptDeltaAsset 数量 = 0），
+        /// 于是 BeginStroke 判到 Delta==null 直接 blocked，而提示只打在控制台 Log 里 ——
+        /// 用户看到的现象就是「拖了完全没反应」。</para>
+        /// <para>放包内 Sample/：AGENTS §0「插件内容须进包」，且内嵌包不在 AssetDatabase
+        /// 索引里，故这里用固定路径 + LoadAssetAtPath（见 FindInPackage 的说明）。</para>
+        /// </summary>
+        private void EnsureDeltaLayer()
+        {
+            if (_terrain == null) return;
+            if (_terrain.Delta != null) return;
+
+            const string path = DeltaFolder + "/SculptDelta.asset";
+            var asset = AssetDatabase.LoadAssetAtPath<SculptDeltaAsset>(path);
+            if (asset == null)
+            {
+                if (!AssetDatabase.IsValidFolder("Packages/com.collin.citymap/Sample"))
+                {
+                    _lastRunLine = "创建雕刻层失败：包内 Sample 目录缺失";
+                    return;
+                }
+                if (!AssetDatabase.IsValidFolder(DeltaFolder))
+                    AssetDatabase.CreateFolder("Packages/com.collin.citymap/Sample", "Sculpt");
+                asset = CreateInstance<SculptDeltaAsset>();
+                AssetDatabase.CreateAsset(asset, path);
+                AssetDatabase.SaveAssets();
+            }
+            _terrain.SetDelta(asset);
+            EditorUtility.SetDirty(_terrain);
+            _lastRunLine = "已自动创建并绑定雕刻层：" + path;
+        }
+
+        const string DeltaFolder = "Packages/com.collin.citymap/Sample/Sculpt";
 
         private void DrawModeSelector()
         {
@@ -364,7 +464,18 @@ namespace Collin.CityMap.EditorTooling
             {
                 var on = _mode == m;
                 var next = GUILayout.Toggle(on, Label(m), EditorStyles.toolbarButton);
-                if (next && !on) _mode = m;      // 单选：切换即互斥（00 §5.3）
+                if (next && !on)
+                {
+                    _mode = m;      // 单选：切换即互斥（00 §5.3）
+                    // H-50：工具栏切到「雕刻」同样要写实例真源，否则笔刷仍不接管。
+                    if (_terrain == null) _terrain = FindTerrainInstance();
+                    if (_terrain != null)
+                    {
+                        _terrain.SetSculptToolActive(m == ToolMode.TerrainSculpt);
+                        if (m == ToolMode.TerrainSculpt) EnsureDeltaLayer();
+                        MarkTerrainSceneDirty();
+                    }
+                }
             }
         }
 
@@ -401,6 +512,11 @@ namespace Collin.CityMap.EditorTooling
             var idx = Mathf.Clamp(IndexOf(SculptBrushTool.Action), 0, _sculptActions.Length - 1);
             var next = EditorGUILayout.Popup("动作", idx, _sculptActionsLabels);
             if (next != idx) SculptBrushTool.Action = ActionAt(next);
+
+            // H-51：阻断原因必须出现在面板上。原先只 Debug.Log 到控制台，
+            // 用户看不到 ⇒ 现象就是「左键拖了完全没反应」，与真 bug 无法区分。
+            if (!string.IsNullOrEmpty(SculptBrushTool.BlockReason))
+                EditorGUILayout.HelpBox(SculptBrushTool.BlockReason, MessageType.Warning);
 
             EditorGUILayout.HelpBox(
                 "一笔划 = 一个撤销记录；抬升/下压量由**拖动距离**决定（与帧率无关），" +
@@ -546,6 +662,9 @@ namespace Collin.CityMap.EditorTooling
             if (view != null && _project != null) view.SetStandaloneProject(_project);
             _stageKey = 0;
             SyncStages();
+            // H-51：创建实例即绑雕刻层。原状是 delta 永远为 null（磁盘上 SculptDeltaAsset 数量实测 0），
+            // 落笔必被 BeginStroke 阻断，而提示只打在控制台 ⇒ 用户看到"拖了没反应"。
+            EnsureDeltaLayer();
             Selection.activeGameObject = go;
             EditorGUIUtility.PingObject(go);
             Undo.RegisterCreatedObjectUndo(go, "创建地形实例");
@@ -571,23 +690,19 @@ namespace Collin.CityMap.EditorTooling
         /// </summary>
         private const string ProfileFolder = "Packages/com.collin.citymap/Sample/Profiles";
 
-        /// <summary>找包内 Profile 资产；没有则在包内 Sample/Profiles 建一个。</summary>
+        /// <summary>
+        /// 找包内 Profile 资产；没有则在包内 Sample/Profiles 建一个。
+        /// <para>H-52（实测根因）：原实现用 <c>AssetDatabase.FindAssets("t:TerrainProfile")</c> 找资产，
+        /// 但 <c>Packages/</c> 下的内嵌包<b>不在 AssetDatabase 索引里</b> ⇒ FindAssets 恒返回 0
+        /// （探针实测：资产确实存在且有路径，FindAssets 仍为 0）。
+        /// 于是每次点「创建地形实例」都走"新建"分支，而 <c>GenerateUniqueAssetPath</c>
+        /// 会在同目录追加 " 1 / 2 / 3" ⇒ 副本资产反复滋生（用户上一轮删掉的 6 个副本就是这么长回来的）。
+        /// 正解：内嵌包资产一律用<b>固定路径 + LoadAssetAtPath</b>，创建时也不加唯一后缀。</para>
+        /// </summary>
         private TerrainProfile FindOrCreateProfile()
         {
-            var guids = AssetDatabase.FindAssets("t:TerrainProfile");
-            if (guids != null && guids.Length > 0)
-            {
-                // 优先返回包内的：避免用户临时资产覆盖包内默认演示配置（也防止 assets-layout 再红）
-                foreach (var g in guids)
-                {
-                    var p = AssetDatabase.GUIDToAssetPath(g);
-                    if (p != null && p.StartsWith(ProfileFolder))
-                        return AssetDatabase.LoadAssetAtPath<TerrainProfile>(p);
-                }
-                var first = AssetDatabase.GUIDToAssetPath(guids[0]);
-                Debug.Log($"{PackageIdentity.LogPrefix} 使用已存在的 TerrainProfile：{first}");
-                return AssetDatabase.LoadAssetAtPath<TerrainProfile>(first);
-            }
+            var existing = LoadFromPackage<TerrainProfile>(ProfileFolder + "/TerrainProfile.asset");
+            if (existing != null) return existing;
 
             if (!AssetDatabase.IsValidFolder("Packages/com.collin.citymap/Sample"))
             {
@@ -598,7 +713,8 @@ namespace Collin.CityMap.EditorTooling
             if (!AssetDatabase.IsValidFolder(ProfileFolder))
                 AssetDatabase.CreateFolder("Packages/com.collin.citymap/Sample", "Profiles");
 
-            var path = AssetDatabase.GenerateUniqueAssetPath($"{ProfileFolder}/TerrainProfile.asset");
+            // 固定名，不用 GenerateUniqueAssetPath：后者是副本滋生的直接来源（H-52）
+            var path = ProfileFolder + "/TerrainProfile.asset";
             var asset = CreateInstance<TerrainProfile>();
             AssetDatabase.CreateAsset(asset, path);
             AssetDatabase.SaveAssets();
@@ -606,6 +722,10 @@ namespace Collin.CityMap.EditorTooling
             Debug.Log($"{PackageIdentity.LogPrefix} 已创建 TerrainProfile：{path}");
             return asset;
         }
+
+        /// <summary>内嵌包资产读取：走磁盘固定路径，不依赖 FindAssets 索引（H-52）。</summary>
+        private static T LoadFromPackage<T>(string assetPath) where T : UnityEngine.Object
+            => AssetDatabase.LoadAssetAtPath<T>(assetPath);
 
         /// <summary>
         /// 阶段树 = 信息而非门禁（08 §3.3）：显示各阶段的脏位命中与耗时，绝不禁用工具。
