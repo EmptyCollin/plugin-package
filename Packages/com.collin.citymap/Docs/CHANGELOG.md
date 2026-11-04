@@ -5,6 +5,20 @@
 ## [Unreleased]
 
 ### Added
+- **M4-d（笔刷数学内核，A-1-5 可执行化）**（本包 `test run --mode editor --filter_type assembly` Total **128** / Failed 0，
+  较 M4-c 增 9 条断言）：
+  - 新增 `Runtime/Core/SculptBrush.cs`：`SculptBrush`（纯函数数学）+ `SculptStroke`（笔划状态机），
+    **放 Runtime 而非 EditorTool** —— 否则"60Hz 与 144Hz 机器产生相同 delta"只能人肉试，
+    而帧率相关 bug 正是"我这台没问题"的典型。
+  - 三条硬约定：固定步长积分（**绝不乘 deltaTime**）、位移取**世界量**非屏幕量（DPI/缩放会改手感强度）、
+    不足一步的位移**跨调用留存**（丢了余量 ⇒ 慢速精细雕刻完全不出效果）。
+  - **实现侧修掉一处真实缺陷**：`core>radius` 非法配置时"核心内全强"分支吞掉半径截止，
+    会画出比笔刷还大的影响区 ⇒ `core` 钳进 `[0, radius]`。
+  - 首跑 2 条失败均已归因、未用放宽阈值蒙混：一条**我的断言期望写反**（`dist<core` 本应全强），
+    一条**测试口径脆弱**（`0.01f` 二进制不精确致累加落在 1.99999m，改用 `0.25f` 做严格断言 + 慢速场景只断"> 0"）。
+  - **如实上报的前提缺失**：`S3_Road`/`S4_Parcel` 目前**只有枚举与脏位、无实现体**，
+    故用户裁定的"steepMask 在 S3/S4 内现算"**暂无落点**；本轮改做不依赖它的场景笔刷交互壳，
+    steepMask 顺延至路网阶段落地时实施（不擅自新建未被选择的阶段）。
 - **M4-c（雕刻接入管线，DESIGN D-31 落地）**（本包 `test run --mode editor --filter_type assembly` Total **119** / Failed 0，
   较 M4-b 增 3 条接线回归断言）：
   - 用户裁定登记为 `DESIGN` §7 **D-31**（雕刻脏集合由「仅 S6」改为 **S1b + S6**，仍不脏 S1a）

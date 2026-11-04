@@ -60,7 +60,11 @@
 | 51 | **M4-c** 雕刻真的波及地块目标平面（不是"叠一下又被压平抹掉"）；且无雕刻时与 M2 结论**逐位一致** | `TerrainDataTests` 新增 **3 条**（本包 116→**119**，Failed 0）：`Delta_Survives_S1b_Rerun_Without_Double_Apply`（幂等双向 + 基底逐位洁净）、`Carving_Inside_Manual_Zone_Raises_Its_Target_Plane`（判别式）、`Without_Delta_Pipeline_Result_Is_Bitwise_Unchanged`（容差 **0f**） | 同上 | 2026-11-04 | **通过**。实测 `[M4c] 未雕刻 0.106 → 雕刻后 20.124（自然 0.023，抬 20m）`（见 §M4-c-1） |
 | 52 | **M4-c** H-46：我把自己写错的规则编号引用**提交进了仓库**（c69fbe4），本轮自查发现并全量纠正 | 错引 `D-14`（实为"显示网格分辨率解耦"）指代"雕刻仅脏 S6"；后者住在 §3.2 表且**无编号**。纠正 = 登记 D-31/D-32 + 改 4 处代码/测试注释 + 3 处文档；复核 `grep D-14` 仅剩 5 处合法引用 | 同上 | 2026-11-04 | **已纠正**（见 §M4-c-2） |
 | 53 | **M4-c** 交锁三项门禁 | `script recompile_status` → `console clear` → 重跑本包全量 + `verify_project.py` → `console status` | 同上 | 2026-11-04 | **本包 119/119**；**`consoleErrors=0/consoleWarnings=0/seeded=True`**；`verify_project.py` **`FAIL 0`、结论: 绿灯**（他包 stealth 锁此时已被其会话续心跳，不再超时）。见 §M4-c-3 |
-
+| 54 | **M4-d** 笔划强度与帧率无关（**A-1-5 的可执行形态**） | `SculptBrushTests.Same_World_Distance_Produces_Same_Delta_Regardless_Of_Frame_Rate`：同一段 13.7m 位移按 30/60/144Hz 切帧积分，累计增量必须一致（含"积分确实产生量"的自校验断言，防恒真）；`Sub_Step_Movement_Accumulates_...` 验余量跨调用留存 | qianwen-work-assistant / `2026-11-04 m4-sculpt-brush` | 2026-11-04 | **通过**（见 §M4-d-1） |
+| 55 | **M4-d** 衰减核语义正确：核心内全强、 EaseOut 单调、退化输入不崩不 NaN | `Falloff_Is_Full_In_Core_...`（含逐点单调扫描）、`Degenerate_Radii_Return_Zero_Not_Nan`；实现侧新增 **core 钳进 [0,radius]**（原实现 `core>radius` 时"核心内全强"分支会吞掉半径截止，画出比笔刷更大的影响区） | 同上 | 2026-11-04 | **通过**。两条首跑失败均已归因（见 §M4-d-2） |
+| 56 | **M4-d** 一笔划影响格数**截断而非静默**（01 §5.4）、重复格不双计、新笔划不残留上笔截断 | `SculptStroke` 三条状态机断言（上限 100 喂 500 点 → 恰 100 + `Truncated=true`；`Begin` 重置；同格 50 次 → `CellCount==1`） | 同上 | 2026-11-04 | **通过** |
+| 57 | **M4-d** 交锁三项门禁 | 清台 → 静默 → 本包全量 → `verify_project.py` → `console status` | 同上 | 2026-11-04 | 本包 **128/128**；`console` 检查 **`error=0 warning=0`**；校验器 **`FAIL 0`、结论: 绿灯**（含 `pkg-layout`/`runtime-purity`/`assets-layout` 全 ok）。见 §M4-d-3 |
+| 58 | **前提核实（如实上报）**：`S3_Road`/`S4_Parcel` **尚无实现体**，故用户裁定的"steepMask 在 S3/S4 内现算"**当前无落点** | `ls Runtime/Core` 仅 `AssembleStage`/`TerrainBaseStage`/`FlattenSolveStage`；`StageId` 与 `DirtyBits.Of` 里 S3/S4 有枚举位但无对应类 | 同上 | 2026-11-04 | **已上报用户**：steepMask 顺延至路网阶段落地时实施；本轮改做不依赖它的场景笔刷交互壳（A-1-5/A-1-6 半边已在 M4-d 立住） |
 
 ## 未通过项
 
@@ -604,14 +608,47 @@ shader=Collin/CityMap/Terrain VertexColor
 | §1.6c 校验器 | **`插件包: 4 个`、`FAIL 0`、`WARN 2`（两条 lock-active）→ 结论: 绿灯**（他包 stealth 锁此时已被其会话续心跳，本轮无需外部裁定） |
 | 测试 | 本包 `--filter_type assembly` → **Total 119 / Passed 119 / Failed 0** |
 
+### §M4-d 笔刷数学内核（Runtime 纯函数，2026-11-04）
+
+**为何把笔刷数学放 Runtime 而不是 EditorTool**：A-1-5 要"同一笔划在 60Hz 与 144Hz 机器上产生相同 delta"。
+若积分写在 `OnSceneGUI` 里，这个性质只能靠人肉试手感——而**帧率相关 bug 恰好是"我这台机器没问题"的典型**，
+人肉必漏。故 `SculptBrush`（数学）+ `SculptStroke`（状态机）均为无 UnityEditor 依赖的纯代码，可 EditMode 直测。
+
+三条硬约定与其成因：
+1. **固定步长积分**（D-01-3）：增量 = `笔刷世界位移 × 强度 × 衰减`，**绝不乘 `deltaTime`**。
+2. **位移取世界量而非屏幕量**：屏幕 DPI/缩放会改变"同样手速产生的强度"，跨机器不一致。
+3. **余量跨调用留存**（`AccumulateSteps` 的 `carry` 传引用）：丢弃不足一步的位移，
+   **慢速精细雕刻会完全不出效果**（手挪得慢就永远凑不满 0.5m）——这是"细节笔刷没反应"的典型成因，肉眼极难归因。
+
+**首跑 2 条失败，归因不同（未用放宽阈值蒙过去）**：
+- `Degenerate_Radii...`：**我的断言期望写反**——`FalloffAt(3f, 5f, 5f)` 中 `dist=3 < core=5` 本应全强 1，我写了 0。
+  实现正确，改断言。同时暴露实现的一处真实缺陷：`core>radius` 非法配置时"核心内全强"分支**吞掉半径截止**，
+  会画出比笔刷还大的影响区 ⇒ 实现补 **`core` 钳进 `[0, radius]`**。
+- `Sub_Step_Movement...`：期望 4 步实得 3，根因是 `0.01f` 二进制不精确、200 次累加落在 1.99999m 而非 2m，
+  少凑一步。属**测试口径脆弱**，不是实现问题 ⇒ 改用二进制精确的 `0.25f` 做严格断言
+  （200×0.25m=50m → 恰 100 步且 `carry==0`），慢速场景只断"显著 > 0"（浮点固有噪声不该钉死精确值）。
+
+**交锁门禁（本增量复跑，2026-11-04）**：本包 `--filter_type assembly` → **Total 128 / Passed 128 / Failed 0**；
+`recompile_status failed=False / errors=0`，rt+Tests dll mtime ≥ 源码；校验器 `console: error=0 warning=0`、
+`pkg-layout`/`runtime-purity`/`assets-layout` 全 ok → **`FAIL 0`、结论: 绿灯**（那条 Unity Connect 噪声命中
+`Tools/console_allowlist.json` 已批准子串，被正确豁免）。
+
+**前提核实（如实上报，非失败项）**：用户裁定的"steepMask 在 S3/S4 内现算"**当前无落点**——
+`Runtime/Core/` 只有 `AssembleStage`/`TerrainBaseStage`/`FlattenSolveStage` 三个实现体，
+`S3_Road`/`S4_Parcel` 仅存在于 `StageId` 枚举与 `DirtyBits.Of` 映射中。
+故 steepMask 顺延至路网阶段落地时实施；本轮改做**不依赖 S3/S4 的场景笔刷交互壳**，
+避免为了"看起来完成了退让"而擅自新建你没选的阶段。
+
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~53）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~58）。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。
 - 未实测且当前无法验证的：所有需要河/路/场域/建筑真实数据的断言（A-2~A-8、A-26~A-44、A-48 的端到端形态）。
   **地形侧已在 M2/M3/M4 打通**（S1a/S1b + 显示 mesh + 雕刻数据层与重放均实机可见/已断言）；尚缺的条目：
   A-1-2（重生成下 delta 逐点保持——delta 层与重放已就位，**缺笔刷工具与雕刻资产持久化闭环**）、
-  A-1-4（道路各向异性，需 M5 路网）、A-1-5/A-1-6（笔划固定步长与 undo 合并，需 M6 工具）、
-  A-1-8 的"拖动场域不触发 S1a"端到端形态（需 M7 场域）。
+  A-1-4（道路各向异性，需 M5 路网）、
+  A-1-5（帧率无关）**数学半边已由 M4-d 断言**（纯函数侧 30/60/144Hz 一致 + 余量留存），
+  **端到端形态仍缺**（需场景交互壳实际驱动笔划）；A-1-6（一笔一 undo）同理，状态机半边已断言、
+  `Undo.RecordObject` 半边待交互壳；A-1-8 的"拖动场域不触发 S1a"端到端形态（需 M7 场域）。
 - `Sample` 小城与演示视频：M10。
 - 本文档为覆写式，非追加日志（AGENTS §4）。
