@@ -13,10 +13,10 @@ MonoBehaviour:
   m_Name: CrossSweep
   m_EditorClassIdentifier: com.collin.stealth::Collin.Stealth.PatrolRoute
   _waypoints:
-  - position: {x: -9, y: 0, z: 2}
-    stopDuration: 1.5
+  - position: {x: -10, y: 0, z: 2}
+    stopDuration: 1
     moveSpeed: 0
-  - position: {x: 0, y: 0, z: 8}
+  - position: {x: 0, y: 0, z: 12}
     stopDuration: 0.5
     moveSpeed: 0
   - position: {x: 9, y: 0, z: 2}

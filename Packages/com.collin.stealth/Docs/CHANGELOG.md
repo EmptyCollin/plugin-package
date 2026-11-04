@@ -4,8 +4,35 @@
 
 ## [Unreleased]
 
-> **版本号故意仍为 0.4.0**：§6 演示视频未录制，该包演示按 §6 判不合格，提版本会谎报交付边界。
-> 以下改动已入库，待视频补齐后一并收版。
+## [0.5.0] - 2026-11-04
+
+> **收版依据**：§6 两段式演示视频已由用户手动实录并入库
+> （`ShowcaseMedia/stealth_demo.mp4`，44.7 s，压至 1616×880 / 保留音轨），
+> `Showcase.json.video` 已填充。此前刻意停在 0.4.0 的唯一原因（演示视频缺失）已消除。
+
+### Added（收版项：演示视频 + 展板接入）
+- `ShowcaseMedia/stealth_demo.mp4`：用户实录的完整版演示，覆盖 §6 规定的两段且顺序正确
+  ——①怎么用（编辑器全景 + Inspector 里的 Agent/Vision/Brain/投影参数面板）
+  ②用了之后的效果（地面警戒投影随哨兵档位变色、潜行绕行、抵达撤离圈弹结算卡片）。
+  源片由用户录制，内容按要求**不做抽帧验证**；转码只降分辨率与码率、保留音轨与完整时长。
+- `Showcase.json`：`video` 由空串填为 `ShowcaseMedia/stealth_demo.mp4`；`summary` 同步补入
+  近身察觉、地面投影同源、导航绕行、场地硬边界、双撤离点与胜负结算界面（原摘要落后两轮交付）。
+- **展板接入无需改展板场景文件**：`Assets/Showcase/ShowcaseUI.cs` 经
+  `ShowcaseRuntime.Load()` 运行时枚举 `Packages/com.collin.*/Showcase.json`，
+  视频路径由 `ShowcaseRuntime.ResolveVideoPath()` 按「工程根 + Packages + packageId + 相对路径」解析
+  ——填 `video` 字段即完成接入（AGENTS §6：禁止为单个插件改展板场景文件）。
+
+### Removed
+- **清掉工程内所有手录原始视频**（用户指示：无用的空间浪费）：
+  `Packages/com.collin.stretch/屏幕录制 2026-11-03 173638.mp4`（107.9 MB，**已入库** ⇒ 走 `git rm`）
+  与 `屏幕录制 2026-11-04 220853.mp4`（49.2 MB，未入库 ⇒ 直接删），共释放 **约 157 MB**。
+  删前已核验：两个文件的资源 GUID 在全工程 `.asset/.unity/.prefab/.cs/.json` 中**零引用**，
+  且 stretch 包当时无锁；`Packages/com.collin.*` 下不再有任何「屏幕录制」文件。
+  附带收益：控制台那条 `Color primaries 0 ... WindowsMediaFoundation` warning
+  正是 VideoPlayer 解码 stretch 包内源片产生的，源片清除后该告警随之消失。
+
+### Chores
+- 按 AGENTS §3 为 stretch 包临时取锁（`repo-cleanup-2026-11-04`）执行清理，完成后释放。
 
 ### Fixed（成品质量修正，session stealth-ux-2026-11-04）
 - **玩家出生半截埋地**（用户实机反馈）：根因在 `PlayerStealthController.ApplyCapsuleShape()`——
@@ -75,8 +102,8 @@
 - 实测：两个预制件已落盘（9393 B / 7766 B），GUID 级引用比对全通过，
   验证日志 `actors新增=1 cycle=28.00s 结论=通过`；门禁三项全绿（编译 0 错、
   归零后 `consoleErrors:0 / consoleWarnings:0`、全量 210/210、校验器绿灯）。
-- **M5 余项（未做）**：`ShowcaseMedia` 两段式实录视频 + 展板接入核验。
-  录屏管道已确认可用（ffmpeg 具 `gdigrab`、Unity 主窗口可按标题定位），但尚未拍摄。
+- **M5 余项（已于本轮 0.5.0 完成）**：`ShowcaseMedia/stealth_demo.mp4` 两段式实录视频 + 展板接入。
+  由用户手动实录（自动录屏此前四次确认不可行），本包工具负责转码入库与 `Showcase.json.video` 填充。
 - M6：冻结对外契约 `Docs/Modules/00-Contract.md`（逐签名核验 DTO 全部来自 core），交付给 B 包消费。
 - 待补证据：性能验收（50 NPC ≥ 55 FPS）；编辑态回溯「拖滑块 NPC 连续移动」的截图（条目 71 部分通过）。
 
@@ -96,10 +123,14 @@
 - 编辑器处于 Play 模式时执行 `test run`：TestRunner 因无法建/还原场景刷出一批
   `This cannot be used during play mode` error，**且 `Summary.Total` 返回 0**——不是「工程里没有测试」。
   跑门禁前先 `editor status` 确认 `playMode: stopped`。
-- `script eval_file` 在 **Play 模式下可能整体静默失败**（无 error 也无输出，本轮两次复现）：
-  Play 态取证要退回"日志插桩 + 事后读控制台"，不要依赖探针。
+- ~~`script eval_file` 在 **Play 模式下可能整体静默失败**~~ ⇒ **本轮（stealth-ux）证伪**：
+  Play 态探针可正常执行。当时失败的两个真因是①顶层语句里混写类声明（`CS1001`）、
+  ②用了不存在的 `FindAllObjectsByType`。正解：纯语句体 + `FindAnyObjectByType` + `Debug.Log` 再读控制台。
+- **真正的限制是「窗口失焦时 Play 循环不推进」**（实测 `frameCount`/`Time.time`/时钟值三值冻结）；
+  `set_auto_tick` 不驱动播放循环，`focus` 能恢复但每次 CLI 调用都会抢回焦点
+  ⇒ 依赖时间累积的取证必须「探针 + focus + 立即截图」连做。
 
-> 以下同样记在 Unreleased：§6 演示视频未录，不收版本号（与文首说明一致）。
+> 以下条目同样归入 **[0.5.0]**（本轮视频已入库，不再挂 Unreleased）。
 
 ### Added（导航网格 + 地面投影专用着色器，session stealth-nav-2026-11-04）
 - **可选子程序集 `com.collin.stealth.Navigation`**：基于**内置 `com.unity.modules.ai` 的 legacy NavMesh**
