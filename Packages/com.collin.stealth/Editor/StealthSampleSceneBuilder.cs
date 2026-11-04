@@ -10,10 +10,16 @@ namespace Collin.Stealth.EditorTooling
     /// <summary>
     /// 一键生成可玩白盒示例（AGENTS.md §0：演示归包内 Sample/）。
     /// 菜单：Tools ▸ Collin ▸ Stealth ▸ 生成可玩示例场景
-    /// <para>产物：地面 + 掩体 + 2 名巡逻哨兵（路线/视野/决策三件套）+
-    /// 玩家（WASD+蹲伏）+ 第三人称相机 + 光源 + HUD。
-    /// 资产落在 <c>Packages/com.collin.stealth/Sample/</c> 下，场景可直接 Play。</para>
-    /// <para>幂等：重复执行会先删除旧产物再重建，保证「生成 → 玩」这条路径随时可复现。</para>
+    /// <para>产物：地面 + 3 掩体 + 2 名巡逻哨兵（路线/视野/决策三件套）+
+    /// 玩家（WASD+蹲伏，自带跟随相机与 HUD）+ 光源 + 时钟，打开即可 Play。</para>
+    /// <para><b>共享编辑器纪律</b>（本轮实测踩过，勿回退）：
+    /// ①<b>不用模态对话框</b>（会把指令通道卡死）→ 提示一律走日志；
+    /// ②<b>不在有未保存现场时切场景</b>→ 检测到脏场景就中止并提示，绝不丢弃别人的工作；
+    /// ③<b>不访问 <c>renderer.material</c></b>（编辑态访问即报 error 并泄漏材质，破 §1.6b 归零门禁）
+    /// → 用显式材质实例写进 <c>sharedMaterials</c>；
+    /// ④<b>不用「删场景文件再向同路径存盘」</b>：Unity 既不允许卸载最后一个已加载场景，
+    /// 也不允许覆盖同路径的已打开场景，两者叠加会让旧文件被删、新文件没写出来
+    /// （示例场景凭空消失，本轮实测）。正解是<b>打开目标场景后原地 <c>SaveScene(scene)</c></b>。</para>
     /// </summary>
     internal static class StealthSampleSceneBuilder
     {
@@ -21,21 +27,192 @@ namespace Collin.Stealth.EditorTooling
         const string ProfileFolder = SampleFolder + "/Profiles";
         const string ScenePath = SampleFolder + "/Scenes/StealthSample.unity";
 
+        static readonly Color CoverColor = new Color(0.82f, 0.82f, 0.86f);
+        static readonly Color PlayerColor = new Color(0.2f, 0.6f, 1f);
+        static readonly Color GuardColor = new Color(0.9f, 0.35f, 0.25f);
+
         [MenuItem("Tools/Collin/Stealth/生成可玩示例场景")]
         public static void Build()
         {
-            // 共享编辑器纪律：
-            // ①不用模态对话框（会一直等人点确定并把指令通道卡死）；
-            // ②不用 NewScene(Single)（会丢弃其他会话未保存的现场）。
-            // 改用 Additive 建一个内存场景，建完存盘再关掉——全程不碰别人的场景。
-            var originalActive = SceneManager.GetActiveScene();
+            // 共享编辑器：有未保存现场时不切场景，避免丢弃其他会话的工作。
+            for (var i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var s = SceneManager.GetSceneAt(i);
+                if (s.isDirty && s.path != ScenePath)
+                {
+                    Debug.LogWarning("[StealthSampleBuilder] 场景 " + s.name
+                                     + " 有未保存改动，已中止（不丢弃他人现场）。请先保存该场景再重试。");
+                    return;
+                }
+            }
+
+            var originalPath = SceneManager.GetActiveScene().path;
 
             EnsureFolders();
-            CleanupOldAssets();
-            AssetDatabase.Refresh();
+            BuildAssets();
 
-            // ── 资产：路线 + 视野参数（建完必须重新 Load 拿<b>持久化</b>实例，
-            //    否则赋进场景的是临时对象，保存后引用会变成 None）────────
+            // ── 打开目标场景（不存在则新建），清空根物体后原地保存 ──
+            var scene = File.Exists(ScenePath)
+                ? EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single)
+                : EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+
+            foreach (var go in scene.GetRootGameObjects()) Object.DestroyImmediate(go);
+            EditorSceneManager.SetActiveScene(scene);
+
+            var route = AssetDatabase.LoadAssetAtPath<PatrolRoute>(ProfileFolder + "/WarehouseLoop.asset");
+            var route2 = AssetDatabase.LoadAssetAtPath<PatrolRoute>(ProfileFolder + "/CrossSweep.asset");
+            var profile = AssetDatabase.LoadAssetAtPath<VisionProfile>(ProfileFolder + "/GuardNormal.asset");
+            if (route == null || route2 == null || profile == null)
+            {
+                Debug.LogError("[StealthSampleBuilder] 资产缺失，未搭建场景（route="
+                               + (route != null) + " route2=" + (route2 != null)
+                               + " profile=" + (profile != null) + "）");
+                return;
+            }
+
+            var lightGo = new GameObject("Directional Light");
+            var light = lightGo.AddComponent<Light>();
+            light.type = LightType.Directional;
+            lightGo.transform.rotation = Quaternion.Euler(45f, 30f, 0f);
+
+            var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
+            ground.name = "Ground";
+            ground.transform.localScale = new Vector3(4f, 1f, 4f);
+
+            PlaceCube("Cover_A", new Vector3(-3f, 1.5f, 0f), new Vector3(1.6f, 3f, 1.6f));
+            PlaceCube("Cover_B", new Vector3(4f, 1.5f, -2f), new Vector3(2.4f, 3f, 1.2f));
+            PlaceCube("Cover_C", new Vector3(0f, 1.5f, 5f), new Vector3(1.2f, 3f, 2.4f));
+
+            SpawnGuard("Guard_Patrol", route, profile, Vector3.zero, 0f);
+            SpawnGuard("Guard_Sweeper", route2, profile, new Vector3(2f, 0f, -2f), 3f);
+            BuildPlayerUnit();
+
+            var clockGo = new GameObject("StealthClock");
+            clockGo.AddComponent<StealthClock>();
+
+            EditorSceneManager.MarkSceneDirty(scene);
+            if (!EditorSceneManager.SaveScene(scene))     // 原地保存：无路径占用问题
+            {
+                Debug.LogError("[StealthSampleBuilder] 场景原地保存失败：" + ScenePath);
+                return;
+            }
+
+            // 把活动场景还给原现场（其他会话可能正在别的场景里工作）。
+            if (!string.IsNullOrEmpty(originalPath) && originalPath != ScenePath && File.Exists(originalPath))
+            {
+                EditorSceneManager.OpenScene(originalPath, OpenSceneMode.Single);
+            }
+
+            Debug.Log("[StealthSampleBuilder] 可玩示例已生成：" + ScenePath
+                      + "\n打开它按 Play 即可：WASD 移动、Ctrl 蹲伏，走进哨兵视野会被发现。");
+        }
+
+        /// <summary>
+        /// 玩家单元：Player（根） ├ CapsuleVisual ├ FollowCamera └ Hud。
+        /// 相机与 HUD 做成子物体，是为了让预制件<b>拖进任意空场景就能玩</b>（D-13）：
+        /// 若它们是场景平级物体，烘进预制件后引用会出场景即丢失，空场景里表现为黑屏 + 无 HUD。
+        /// </summary>
+        static void BuildPlayerUnit()
+        {
+            var player = new GameObject("Player");
+            player.transform.position = new Vector3(0f, 0.05f, -16f);
+            var cc = player.AddComponent<CharacterController>();
+            cc.height = 1.8f;
+            cc.center = new Vector3(0f, 0.9f, 0f);
+
+            var playerBody = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            playerBody.name = "CapsuleVisual";
+            playerBody.transform.SetParent(player.transform, false);
+            playerBody.transform.localPosition = new Vector3(0f, 0.9f, 0f);
+            Object.DestroyImmediate(playerBody.GetComponent<Collider>());  // 碰撞交给 CharacterController
+            Tint(playerBody, PlayerColor);
+
+            var detection = player.AddComponent<DetectionState>();
+            var controller = player.AddComponent<PlayerStealthController>();
+
+            var camGo = new GameObject("FollowCamera");
+            camGo.transform.SetParent(player.transform, false);
+            camGo.tag = "MainCamera";
+            var cam = camGo.AddComponent<Camera>();
+            cam.clearFlags = CameraClearFlags.Skybox;
+            camGo.AddComponent<AudioListener>();
+            SetSerializedField(controller, "_followCamera", cam);
+
+            var hudGo = new GameObject("Hud");
+            hudGo.transform.SetParent(player.transform, false);
+            var hud = hudGo.AddComponent<StealthHud>();
+            SetSerializedField(hud, "_target", detection);
+        }
+
+        /// <summary>
+        /// 哨兵单元：<c>name</c>（静态根，预制件的根） ├ <c>RouteRoot</c>（静态，路线参考系）
+        /// └ <c>Body</c>（被求值驱动的本体，挂 Agent/Vision/Brain）。
+        /// <para>为什么这么分层：若把 <c>PatrolRouteRoot</c> 挂在被驱动的本体上，本体的每帧位姿会带动
+        /// 路线根、路线又反过来决定位姿，形成循环（M3 立「反应永不回流基线」纪律时避开的同类问题）。
+        /// 让两者成为兄弟、共同挂在一个静态根下，既断环，又让整个单元可以原样烘进预制件。</para>
+        /// </summary>
+        static void SpawnGuard(string name, PatrolRoute route, VisionProfile profile,
+                               Vector3 bodyOffset, float phase)
+        {
+            var go = new GameObject(name);                      // 静态单元根
+            go.transform.position = Vector3.zero;
+
+            var rootGo = new GameObject("RouteRoot");           // 静态参考系
+            rootGo.transform.SetParent(go.transform, false);
+            rootGo.transform.localPosition = Vector3.zero;
+            var root = rootGo.AddComponent<PatrolRouteRoot>();
+            root.SetRoute(route);
+
+            var bodyGo = new GameObject("Body");                // 被驱动本体
+            bodyGo.transform.SetParent(go.transform, false);
+            bodyGo.transform.localPosition = bodyOffset;
+
+            var agent = bodyGo.AddComponent<PatrolAgent>();
+            SetSerializedField(agent, "_routeRoot", root);
+            SetSerializedField(agent, "_phaseOffset", phase);
+
+            var vision = bodyGo.AddComponent<VisionVolume>();
+            SetSerializedField(vision, "_profile", profile);
+
+            bodyGo.AddComponent<GuardBrain>();
+
+            var visual = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            visual.name = "CapsuleVisual";
+            visual.transform.SetParent(bodyGo.transform, false);
+            visual.transform.localPosition = new Vector3(0f, 0.9f, 0f);
+            Object.DestroyImmediate(visual.GetComponent<Collider>());
+            Tint(visual, GuardColor);
+        }
+
+        static void PlaceCube(string name, Vector3 center, Vector3 scale)
+        {
+            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            cube.name = name;
+            cube.transform.position = center;
+            cube.transform.localScale = scale;
+            Tint(cube, CoverColor);
+        }
+
+        /// <summary>
+        /// 给基元上色。<b>禁止用 <c>renderer.material.color</c></b>：编辑态访问 <c>.material</c>
+        /// 会即时实例化材质并打印 error（材质泄漏 + 破 §1.6b 归零门禁）。
+        /// 这里显式建一份材质写进 <c>sharedMaterials</c>，效果一致、零报错。
+        /// </summary>
+        static void Tint(GameObject go, Color color)
+        {
+            var r = go.GetComponent<Renderer>();
+            if (r == null) return;
+
+            var mats = r.sharedMaterials;
+            if (mats == null || mats.Length == 0 || mats[0] == null) return;
+
+            mats[0] = new Material(mats[0]) { color = color };
+            r.sharedMaterials = mats;
+        }
+
+        /// <summary>建/重建三个共享 Model 资产（路线 ×2 + 视野参数）。</summary>
+        static void BuildAssets()
+        {
             var route = CreateRoute("WarehouseLoop", ProfileFolder + "/WarehouseLoop.asset",
                 PatrolLoopMode.Loop, 2f,
                 new[] { new Vector3(-6f, 0f, -6f), new Vector3(6f, 0f, -6f),
@@ -48,136 +225,60 @@ namespace Collin.Stealth.EditorTooling
                         new Vector3(9f, 0f, 2f) },
                 new[] { 1.5f, 0.5f, 1.5f });
 
+            if (route == null) Debug.LogError("[StealthSampleBuilder] WarehouseLoop 资产加载失败");
+            if (route2 == null) Debug.LogError("[StealthSampleBuilder] CrossSweep 资产加载失败");
+
             var profilePath = ProfileFolder + "/GuardNormal.asset";
-            var profileInstance = ScriptableObject.CreateInstance<VisionProfile>();
-            profileInstance.name = "GuardNormal";
-            profileInstance.SetHorizontalAngle(110f);
-            profileInstance.SetMaxDistance(14f);
-            profileInstance.SetEyeHeight(1.7f);
-            profileInstance.SetSuspicionGain(0.45f);
-            profileInstance.SetDecayPerSecond(0.3f);
-            profileInstance.SetSuspicionThreshold(0.35f);
-            profileInstance.SetAlertThreshold(0.8f);
-            profileInstance.SetLightSensitivity(0f);
-            AssetDatabase.CreateAsset(profileInstance, profilePath);
+            var existing = AssetDatabase.LoadAssetAtPath<VisionProfile>(profilePath);
+            var profile = existing != null ? existing : ScriptableObject.CreateInstance<VisionProfile>();
+            if (existing == null)
+            {
+                profile.name = "GuardNormal";
+                AssetDatabase.CreateAsset(profile, profilePath);
+                profile = AssetDatabase.LoadAssetAtPath<VisionProfile>(profilePath);
+            }
 
-            var profile = AssetDatabase.LoadAssetAtPath<VisionProfile>(profilePath);
+            Undo.RecordObject(profile, "初始化视野参数");
+            profile.SetHorizontalAngle(110f);
+            profile.SetMaxDistance(14f);
+            profile.SetEyeHeight(1.7f);
+            profile.SetSuspicionGain(0.45f);
+            profile.SetDecayPerSecond(0.3f);
+            profile.SetSuspicionThreshold(0.35f);
+            profile.SetAlertThreshold(0.8f);
+            profile.SetLightSensitivity(0f);
+            EditorUtility.SetDirty(profile);
+
             AssetDatabase.SaveAssets();
-
-            // ── 场景（Additive 空场景，只存在于内存，存盘后关闭）────
-            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
-            EditorSceneManager.SetActiveScene(scene);
-
-            // 光
-            var lightGo = new GameObject("Directional Light");
-            var light = lightGo.AddComponent<Light>();
-            light.type = LightType.Directional;
-            lightGo.transform.rotation = Quaternion.Euler(45f, 30f, 0f);
-
-            // 地面
-            var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
-            ground.name = "Ground";
-            ground.transform.localScale = new Vector3(4f, 1f, 4f);
-
-            // 掩体（Default 层即可——遮挡层掩码默认全层）
-            PlaceCube("Cover_A", new Vector3(-3f, 1.5f, 0f), new Vector3(1.6f, 3f, 1.6f));
-            PlaceCube("Cover_B", new Vector3(4f, 1.5f, -2f), new Vector3(2.4f, 3f, 1.2f));
-            PlaceCube("Cover_C", new Vector3(0f, 1.5f, 5f), new Vector3(1.2f, 3f, 2.4f));
-
-            // 哨兵 ×2
-            SpawnGuard("Guard_Patrol", route, profile, Vector3.zero, 0f, 0f);
-            SpawnGuard("Guard_Sweeper", route2, profile, new Vector3(2f, 0f, -2f), 3f, 4f);
-
-            // 玩家 + 相机 + HUD
-            var player = new GameObject("Player");
-            player.transform.position = new Vector3(0f, 0.05f, -16f);
-            var cc = player.AddComponent<CharacterController>();
-            cc.height = 1.8f;
-            cc.center = new Vector3(0f, 0.9f, 0f);
-            var body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            body.name = "CapsuleVisual";
-            body.transform.SetParent(player.transform, false);
-            body.transform.localPosition = new Vector3(0f, 0.9f, 0f);
-            Object.DestroyImmediate(body.GetComponent<Collider>());   // 碰撞交给 CharacterController
-            body.GetComponent<Renderer>().material.color = new Color(0.2f, 0.6f, 1f);
-
-            var detection = player.AddComponent<DetectionState>();
-            var controller = player.AddComponent<PlayerStealthController>();
-
-            var camGo = new GameObject("Main Camera");
-            camGo.tag = "MainCamera";
-            var cam = camGo.AddComponent<Camera>();
-            cam.clearFlags = CameraClearFlags.Skybox;
-
-            var hudGo = new GameObject("StealthHud");
-            var hud = hudGo.AddComponent<StealthHud>();
-            SetSerializedField(hud, "_target", detection);
-
-            // 时钟（全系统唯一时间源）
-            var clockGo = new GameObject("StealthClock");
-            clockGo.AddComponent<StealthClock>();
-
-            EditorSceneManager.MarkSceneDirty(scene);
-            EditorSceneManager.SaveScene(scene, ScenePath);
-
-            // 收尾：关掉临时场景、把活动场景还给原现场，编辑器状态与执行前一致。
-            EditorSceneManager.CloseScene(scene, true);
-            if (originalActive.IsValid()) EditorSceneManager.SetActiveScene(originalActive);
-
-            Debug.Log("[StealthSampleBuilder] 可玩示例已生成：" + ScenePath +
-                      "\n打开它按 Play 即可：WASD 移动、Ctrl 蹲伏，走进哨兵视野会被发现。");
+            AssetDatabase.Refresh();
         }
 
-        static void SpawnGuard(string name, PatrolRoute route, VisionProfile profile,
-                               Vector3 bodyOffset, float phase, float extraDelay)
-        {
-            var go = new GameObject(name);
-            go.transform.position = bodyOffset;
-
-            var rootGo = new GameObject(name + "_RouteRoot");
-            rootGo.transform.position = Vector3.zero;
-            var root = rootGo.AddComponent<PatrolRouteRoot>();
-            root.SetRoute(route);
-
-            var agent = go.AddComponent<PatrolAgent>();
-            SetSerializedField(agent, "_routeRoot", root);
-            SetSerializedField(agent, "_phaseOffset", phase);
-
-            var vision = go.AddComponent<VisionVolume>();
-            SetSerializedField(vision, "_profile", profile);
-
-            var brain = go.AddComponent<GuardBrain>();
-
-            var body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            body.name = "CapsuleVisual";
-            body.transform.SetParent(go.transform, false);
-            body.transform.localPosition = new Vector3(0f, 0.9f, 0f);
-            Object.DestroyImmediate(body.GetComponent<Collider>());
-            body.GetComponent<Renderer>().material.color = new Color(0.9f, 0.35f, 0.25f);
-        }
-
-        static void PlaceCube(string name, Vector3 center, Vector3 scale)
-        {
-            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            cube.name = name;
-            cube.transform.position = center;
-            cube.transform.localScale = scale;
-        }
-
-        /// <summary>建路线资产并返回<b>持久化</b>实例。</summary>
+        /// <summary>建路线资产并返回<b>持久化</b>实例（已存在则原地改写，不重导 GUID）。</summary>
         static PatrolRoute CreateRoute(string assetName, string path, PatrolLoopMode mode,
                                        float speed, Vector3[] points, float[] stops)
         {
-            var instance = ScriptableObject.CreateInstance<PatrolRoute>();
-            instance.name = assetName;
-            instance.SetDefaultSpeed(speed);
-            instance.SetLoopMode(mode);
-            for (var i = 0; i < points.Length; i++)
+            var existing = AssetDatabase.LoadAssetAtPath<PatrolRoute>(path);
+            PatrolRoute route;
+            if (existing != null)
             {
-                instance.AddWaypoint(points[i], stops[i]);
+                route = existing;
             }
-            AssetDatabase.CreateAsset(instance, path);
-            return AssetDatabase.LoadAssetAtPath<PatrolRoute>(path);
+            else
+            {
+                route = ScriptableObject.CreateInstance<PatrolRoute>();
+                route.name = assetName;
+                AssetDatabase.CreateAsset(route, path);
+                route = AssetDatabase.LoadAssetAtPath<PatrolRoute>(path);
+                if (route == null) return null;
+            }
+
+            Undo.RecordObject(route, "初始化路线");
+            for (var i = route.WaypointCount - 1; i >= 0; i--) route.RemoveWaypointAt(i);
+            route.SetDefaultSpeed(speed);
+            route.SetLoopMode(mode);
+            for (var i = 0; i < points.Length; i++) route.AddWaypoint(points[i], stops[i]);
+            EditorUtility.SetDirty(route);
+            return route;
         }
 
         /// <summary>
@@ -232,19 +333,6 @@ namespace Collin.Stealth.EditorTooling
                 AssetDatabase.CreateFolder(SampleFolder, "Scenes");
             if (!AssetDatabase.IsValidFolder(ProfileFolder))
                 AssetDatabase.CreateFolder(SampleFolder, "Profiles");
-        }
-
-        static void CleanupOldAssets()
-        {
-            DeleteIfExists(ProfileFolder + "/WarehouseLoop.asset");
-            DeleteIfExists(ProfileFolder + "/CrossSweep.asset");
-            DeleteIfExists(ProfileFolder + "/GuardNormal.asset");
-            DeleteIfExists(ScenePath);
-        }
-
-        static void DeleteIfExists(string path)
-        {
-            if (AssetDatabase.LoadMainAssetAtPath(path) != null) AssetDatabase.DeleteAsset(path);
         }
     }
 }

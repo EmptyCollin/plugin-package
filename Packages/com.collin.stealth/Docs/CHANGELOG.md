@@ -4,10 +4,42 @@
 
 ## [Unreleased]
 
-### Added
-- M5 余项：`StealthPlayer` / `StealthGuard` **预制件资产**（当前示例为场景内直接搭建，功能等价但未沉淀成可拖拽预制件）+ `ShowcaseMedia` 实录演示视频（§6 两段硬性要求）+ 展板接入核验。
+> **版本号故意仍为 0.4.0**：§6 演示视频未录制，该包演示按 §6 判不合格，提版本会谎报交付边界。
+> 以下改动已入库，待视频补齐后一并收版。
+
+### Added（M5 部分：预制件沉淀 + 拆箱即用验证）
+- `Editor/StealthPrefabBaker.cs`：把示例场景的玩家与哨兵单元沉淀为
+  `Sample/Prefabs/StealthPlayer.prefab` / `StealthGuard.prefab`，内置**引用完整性自检**
+  （Body 三件套、路线根引用、路线/视野资产非空、T 周期 > 0、沿周期求值有位移）。
+  菜单 `Tools ▸ Collin ▸ Stealth ▸ 沉淀示例预制件（玩家+哨兵）`。
+- `Editor/StealthPrefabVerifier.cs`：**内存临时场景只放预制件 + 一个时钟**（不建地面、不建掩体、
+  不手写资产）验证拆箱即用；检查 `PrefabInstanceStatus.Connected` 与跨包枚举**新增数量差值**；
+  验完 `CloseScene` 丢弃、不落盘。菜单 `验证预制件自洽（内存临时场景）`。
+- `Sample/README.md`：由 M0 规划改写为实际落位 + 三条使用路径。
+- 实测：两个预制件已落盘（9393 B / 7766 B），GUID 级引用比对全通过，
+  验证日志 `actors新增=1 cycle=28.00s 结论=通过`；门禁三项全绿（编译 0 错、
+  归零后 `consoleErrors:0 / consoleWarnings:0`、全量 210/210、校验器绿灯）。
+- **M5 余项（未做）**：`ShowcaseMedia` 两段式实录视频 + 展板接入核验。
+  录屏管道已确认可用（ffmpeg 具 `gdigrab`、Unity 主窗口可按标题定位），但尚未拍摄。
 - M6：冻结对外契约 `Docs/Modules/00-Contract.md`（逐签名核验 DTO 全部来自 core），交付给 B 包消费。
-- 待补证据：性能验收（50 NPC ≥ 55 FPS）；编辑态回溯「拖滑块 NPC 连续移动」的截图（ACCEPTANCE 条目 71 标注为部分通过）。
+- 待补证据：性能验收（50 NPC ≥ 55 FPS）；编辑态回溯「拖滑块 NPC 连续移动」的截图（条目 71 部分通过）。
+
+### Fixed（M5 实现轮自查，均为自造）
+- **示例场景凭空消失**：原先 `DeleteAsset` 场景文件后再向同一路径 `SaveScene`。Unity 既不允许覆盖
+  同路径的已打开场景、也不允许卸载最后一个已加载场景 ⇒ 旧文件被删、新文件没写出来
+  （已入库场景一度需 `git checkout` 恢复）。改为**打开目标场景 → 清空根物体 → 原地 `SaveScene`**。
+- **编辑态材质泄漏刷 3 条 error**（破 §1.6b 归零）：上色用 `renderer.material.color`；
+  改为显式 `new Material(sharedMaterials[0])` 写回 `sharedMaterials`。
+- **自检断言写错**：断言「哨兵预制件根上应有 `PatrolRouteRoot`」，而该组件按分层挂在 `RouteRoot`
+  子物体上 ⇒ 必失败并报自造 error；改由专项 `VerifyBody` 负责。
+- **计数断言方式错**：跨包枚举走全工程搜索，此刻还加载着其他会话的场景 ⇒ 绝对值既会误报也可能凑数假绿；
+  改为实例化前后的**差值**。
+- 生成器加两道保护：他人场景有未保存改动时中止并日志提示（不弹模态窗）；存盘失败输出明确 error。
+
+### 环境事实（新增）
+- 编辑器处于 Play 模式时执行 `test run`：TestRunner 因无法建/还原场景刷出一批
+  `This cannot be used during play mode` error，**且 `Summary.Total` 返回 0**——不是「工程里没有测试」。
+  跑门禁前先 `editor status` 确认 `playMode: stopped`。
 
 ### Changed
 - 2026-11-03 用户拍板 Q-A1~Q-A5 后调整设计：新增 `com.unity.inputsystem` 依赖；路点改为相对坐标 + 预制件承载；**听觉/声音侦测移出本包范围**（最小可用子集），`StealthMask` 对应位改为预留位不启用；玩家移动控制器由「交给外部工程」改为「包内自带、拆箱即用」。

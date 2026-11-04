@@ -184,6 +184,44 @@
   包内场景必须走 `EditorSceneManager.OpenScene`；`capture screenshot --view game` 在 Game 视图非前台时
   **抓不到 IMGUI 覆盖层**，HUD 需改用 `capture game_view --source screen`。
 
+## M5 增量（预制件沉淀 + 拆箱即用验证，2026-11-04，验证者 qianwen-work-assistant · stealth-m5-2026-11-04）
+
+> 新增 Editor 工具两个：`StealthPrefabBaker`（沉淀预制件 + 引用自检）、
+> `StealthPrefabVerifier`（内存临时场景只放预制件验证自洽）；
+> 示例生成器重写（原地存盘 + 消除材质泄漏）；产物 `Sample/Prefabs/StealthPlayer.prefab`、
+> `StealthGuard.prefab` 已落盘。
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 日期时间 | 结果与证据 |
+|---|---|---|---|---|
+| 73 | 玩家单元可沉淀为预制件且保持实例连接 | 菜单 `Tools ▸ Collin ▸ Stealth ▸ 沉淀示例预制件` → `ls Sample/Prefabs/` | 2026-11-04 | **通过** — `StealthPlayer.prefab` 9393 B、`StealthGuard.prefab` 7766 B 均落盘；工具日志 `player=True guard=True` |
+| 74 | **预制件自带全部组件与共享资产引用**（拆箱即用的前提） | 烘焙工具内置 `VerifyBody` 自检（Body 三件套 + 路线根引用 + 路线/视野资产非空） | 2026-11-04 | **通过** — 日志：`自检通过：StealthGuard.prefab 携带路线 WarehouseLoop 与视野 GuardNormal，可直接拖进任意空场景使用` |
+| 75 | 引用完整性独立复核（不依赖工具自己的日志） | 静态解析两个 `.prefab` 的 `guid:` 引用，与本包 `.cs.meta` / `.asset.meta` GUID 逐一比对 | 2026-11-04 | **通过** — Player 含 `PlayerStealthController`/`DetectionState`/`StealthHud` 脚本引用；Guard 含 `PatrolAgent`/`VisionVolume`/`GuardBrain`/`PatrolRouteRoot` 四个脚本引用 + 路线与视野资产引用；唯一未匹配项 `0000…e000…` 为 Unity 内置资源 GUID，非丢失引用 |
+| 76 | **拖进空场景即玩**（验收 24 的完整形态） | 菜单 `验证预制件自洽（内存临时场景）`：临时场景内**不建地面、不建掩体、不手写资产**，只 `InstantiatePrefab` + 一个时钟 | 2026-11-04 | **通过** — 探针日志：`actors新增=1 cycle=28.00s 结论=通过，预制件自洽、拆箱即用`；同时校验 `PrefabInstanceStatus.Connected`（实例未与预制件断开）与「沿 T 周期求值确有位移」 |
+| 77 | 哨兵单元分层不形成位姿循环 | 结构约定：根 / `RouteRoot`（静态参考系）/ `Body`（被驱动本体）为兄弟；见 Sample/README 与生成器注释 | 2026-11-04 | **通过** — 静态结构核验；若路线根挂在被驱动本体上，本帧位姿会带动路线根、路线又反过来决定位姿（M3 立「反应不回流基线」时避开的同类循环） |
+| 78 | 示例生成器幂等：重复执行不留残骸、不丢场景 | 连续执行菜单两次 + `ls Sample/Scenes/`；对照 git 状态 | 2026-11-04 | **通过（修复后）** — 首轮曾出现「旧场景被删、新场景没写出来」，根因见下方 F-9；改为原地存盘后产物正常 |
+| 79 | **交锁门禁三项** | `script recompile_status`；`console clear` → 重跑 recompile + test run → `console status`；`python Tools/verify_project.py` | 2026-11-04 12:41 | **全绿** — ①`failed:false, errors:0` ②`console clear` 后重跑全部验证动作，`groundTruth` = **`consoleErrors:0 / consoleWarnings:0`**（`sampledUtc:2026-11-04T04:41:30Z`）③校验器 **结论: 绿灯**；全量 **210/210**（CityMap 128 / **Stealth 82**） |
+
+## M5 实现轮抓到并修复的缺陷
+
+- **F-9 示例场景凭空消失（自造，已修）**：生成器原先「先 `DeleteAsset` 场景文件 → 再向同一路径 `SaveScene`」。
+  但 Unity 既不允许覆盖同路径的已打开场景，也不允许卸载最后一个已加载场景，
+  于是**旧文件被删、新文件写不出来**，已入库的示例场景直接消失（曾需 `git checkout` 恢复）。
+  正解：**打开目标场景 → 清空根物体 → 原地 `SaveScene(scene)`**，不做任何删除。
+- **F-10 编辑态访问 `renderer.material` 报 error 并泄漏材质（自造，已修）**：上色原先写 `renderer.material.color`，
+  一次执行刷出 3 条 `Instantiating material ... during edit mode` 的 error，直接破 §1.6b 归零门禁。
+  改为显式 `new Material(sharedMaterials[0])` 写回 `sharedMaterials`，效果一致、零报错。
+- **F-11 预制件自检断言写错（自造 1 条 error，已修）**：原先断言「哨兵预制件**根**上应有 `PatrolRouteRoot`」，
+  而该组件按分层设计挂在 `RouteRoot` 子物体上 ⇒ 必失败并报 error。改由专项 `VerifyBody` 负责结构断言。
+- **F-12 「数单位个数」是错的断言方式**：跨包单位枚举走全工程 `FindObjectsByType`，
+  而此刻还加载着其他会话正在编辑的场景 ⇒ 绝对值断言既会误报失败也可能凑数假绿。
+  改为**实例化前后的差值**（实测 `actors新增=1`）。
+- **新环境事实**：若编辑器处于 Play 模式时执行 `test run`，TestRunner 会因无法建/还原场景刷出
+  一批 `This cannot be used during play mode` 的 error，**且 `Summary.Total` 返回 0**——
+  这不是「工程里没有测试」。跑门禁前先 `editor status` 确认 `playMode: stopped`。
+- **新环境事实**：本机 ffmpeg（essentials 构建）具备 `gdigrab` 抓取设备，Unity 主窗口可用
+  EnumWindows 按标题定位（`plugin-package - … - Unity 6.6 (6000.6.7f1) <DX12>`，2560×1407）
+  ⇒ 自动录屏技术上可行；**本轮未录**，见 U-5。
+
 ## 未通过项
 
 | # | 现象 | 复现步骤 | 状态 |
@@ -192,3 +230,4 @@
 | U-2 | M0 时记录的「本包骨架未取得绿灯证据」 | — | **已由 F-1/F-2 与条目 1-3 闭环，作废** |
 | U-3 | 交锁门禁 §1.6b「控制台归零」一度无法达成：`recompile_status` = `failed:true`，`groundTruth` = `consoleErrors:15 / consoleWarnings:3`（2026-11-03 19:26 读数） | `unity command "script recompile_status"`；`unity command "console status"` | **已作废（20:28 复测转绿）** — 当时 15 条 error 全部来自 `com.collin.citymap/Runtime/View/` 两个**未被版本库跟踪**的进行中文件（另一会话写入），按 §2 包互斥与 §1.9 本会话未代其修复，该会话随后自行修好。末次实测：`failed:false, errors:0`、`consoleErrors:1 / consoleWarnings:0`（命中 §1.8 已批准豁免）、校验器 **结论: 绿灯**、全量 141/141 |
 | U-4 | 本会话自造 1 条 error：契约的「重复注册」用例故意触发 core 冲突报错，原先用 `LogAssert.Expect` 声明预期 | 该用例运行时 `console status` 计数 | **已修复** — 实测 `LogAssert.Expect` 只让测试不失败、**不回退 `consoleErrors` 计数**，仍破 §1.6b 门禁。改为断言期间 `Debug.unityLogger.logEnabled=false` + `finally` 复位（与 citymap 交接单记录的正解一致） |
+| U-5 | **§6 演示视频未交付**：`Showcase.json` 的 `video` 仍为空串，`ShowcaseMedia/` 仍为空目录 | `cat Packages/com.collin.stealth/Showcase.json`（video 为空时校验器不报 FAIL，但条目 26 仍为「待验证（M5）」） | **未完成** — M5 本轮只交付预制件沉淀与拆箱即用验证。录屏管道已确认可用（ffmpeg 支持 gdigrab，Unity 主窗口可按标题定位），但「怎么用 + 用了之后的效果」两段实录**尚未拍摄**。**按 §6 该包演示不合格，不得声称 M5 已全部完成**；参照 stretch 的既有做法：由用户手动录屏、包内工具负责剪辑入库 |
