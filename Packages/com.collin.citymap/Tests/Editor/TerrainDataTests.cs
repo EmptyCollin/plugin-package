@@ -649,6 +649,56 @@ namespace Collin.CityMap.Tests
         }
 
         /// <summary>
+        /// 用户 2026-11-04 裁定的<b>时序隔离</b>（明确否决"逐格退让"方案）：
+        ///   关＝S1b <b>整段不参与</b>（零约束、零改动），雕刻期内自动平整绝不介入；
+        ///   开＝在"基底+雕刻"的意图地表<b>之上</b>照常整理——这才是平整该发挥作用的时机。
+        /// <para>它同时是用户反馈②「笔刷抬了没反应」的结构性判据：城内 8× 强约束若在雕刻期
+        /// 照常跑，会把刚抬的山当场拟合压回平面，视觉上等于没抬。</para>
+        /// </summary>
+        [Test]
+        public void Flatten_Off_Is_Phase_Gate_Not_Per_Cell_Waiver()
+        {
+            var h = Harness(2401, out var p, worldSize: 600f, flatness: 0f);
+            var g = p.Grid;
+            p.Terrain.SetAutoFlatten(true, 3);        // 制造"平整本来会介入"的前提
+            var d = Track(ScriptableObject.CreateInstance<SculptDeltaAsset>());
+            p.Terrain.SetDelta(d);
+            p.Terrain.SetFlattenEnabled(false);       // 雕刻期：平整关
+            RunS1a(h, p);
+
+            var cx = g.Columns / 2; var cz = g.Rows / 2;
+            for (var z = cz - 8; z <= cz + 8; z++)
+            for (var x = cx - 8; x <= cx + 8; x++)
+                d.AddDelta(g, x, z, 25f);
+
+            var res = new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit);
+            Assert.IsTrue(res.Success);
+            Assert.AreEqual(0, res.Outputs,
+                "关平整时必须零约束——是阶段闸门，不是逐格跳过（逐格方案已被用户否决）");
+
+            var idx = cz * g.Columns + cx;
+            var carved = h.Field.BaseHeights[idx] + 25f;
+            Assert.AreEqual(carved, h.Field.Heights[idx], 1e-4f,
+                "关平整时抬升的 25m 必须原样保留，不被强约束压回（反馈②的判据）");
+
+            // 关平整同样必须幂等：复位后重放，不得把雕刻叠第二遍
+            Assert.IsTrue(new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit).Success);
+            Assert.AreEqual(carved, h.Field.Heights[idx], 1e-4f,
+                "关平整重跑仍只叠一次（短路前已完成复位+重放，幂等不因开关而破）");
+
+            // 打开后平整才在雕好的地形上发挥作用：必须真的生成约束并整理
+            p.Terrain.SetFlattenEnabled(true);
+            var on = new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit);
+            Assert.IsTrue(on.Success);
+            Assert.Greater(on.Outputs, 0,
+                "打开平整后须在意图地表之上生成约束（这才是它发挥作用的实机）");
+
+            Debug.Log($"[M4g] 关平整：雕刻后 {carved:0.###}m 原样保留、约束 0 条；" +
+                      $"开平整：约束 {on.Outputs} 条、改动 {on.CellsTouched} 格");
+            h.Dispose();
+        }
+
+        /// <summary>
         /// 用户裁定的核心语义：<b>雕刻必须波及地块的坡度判定与平整目标平面</b>。
         /// 做成判别式而非"变一点就算过"：若拟合仍读 BaseHeights，压平会把这 20m 拉回未雕刻时的目标平面
         /// ⇒ 差值接近 0，本用例当场红。

@@ -429,6 +429,20 @@ namespace Collin.CityMap.EditorTooling
             var lockDetail = EditorGUILayout.Toggle("冻结细节(只看规划)", profile.RoughnessLock);
             if (lockDetail != profile.RoughnessLock) profile.SetRoughnessLock(lockDetail);
 
+            // ── 阶段开关：自动平整何时发挥作用（12 §2 三步工作流）──
+            // 放在最末，让它读起来像"流程的下一步"而不是又一个参数。
+            EditorGUILayout.Space(4f);
+            var flattenOn = EditorGUILayout.ToggleLeft(
+                new GUIContent("③ 自动平整（在雕好的地形上做整理）",
+                    "关＝停在「噪声+你的雕刻」的意图地表，平整完全不参与，边雕边看不被抹平；\n"
+                  + "开＝在已定稿的意图地表之上跑自动平整（城内 8× 强约束会在这里发挥作用）。\n"
+                  + "推荐顺序：① 调参数 → ② 切「雕刻」模式雕山水（此开关保持关）→ ③ 回这里打开。"),
+                _terrain.FlattenEnabled);
+            if (flattenOn != _terrain.FlattenEnabled) _terrain.SetFlattenEnabled(flattenOn);
+            if (!flattenOn)
+                EditorGUILayout.HelpBox("自动平整已关闭：当前显示的是「噪声 + 雕刻」的意图地表，"
+                    + "未被平整整理。雕完想收坡/找平请打开上面这个开关。", MessageType.Info);
+
             if (_terrain.LastConstraints > 0)
                 EditorGUILayout.LabelField($"S1b：约束 {_terrain.LastConstraints} 条 · 改动 {_terrain.LastCells} 格" +
                     (_terrain.LastRejectedConstraints > 0 ? $" · 跳过 {_terrain.LastRejectedConstraints}" : string.Empty),

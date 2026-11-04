@@ -54,16 +54,33 @@ namespace Collin.CityMap.EditorTooling
             if (evt.type == EventType.Layout)
                 HandleUtility.AddDefaultControl(GUIUtility.GetControlID(FocusType.Passive));
 
-            if (!_hasGrid || _terrain == null || _terrain.Delta == null) return;
-
+            // 范围指示<b>先于</b>落笔前置条件绘制：只要 hover 到地面就画出<b>贴地表</b>轮廓。
+            // 旧版把环画在 y=0 平面、且在数据不全时画环前就 return —— 结果 ±18m 起伏把环埋住，
+            // 用户完全看不出笔刷有多大（用户反馈①）。采样当前高度场逐段描边，真正贴着地形走。
             if (havePoint && evt.type == EventType.Repaint)
             {
-                var c = new Vector3(ground.x, 0f, ground.z);
-                Handles.color = _stroking ? new Color(1f, 0.55f, 0.2f) : new Color(0.3f, 0.8f, 1f);
-                Handles.DrawWireDisc(c, Vector3.up, RadiusMeters);
-                Handles.color = new Color(0.3f, 0.8f, 1f, 0.35f);
-                Handles.DrawWireDisc(c, Vector3.up, RadiusMeters * CoreRatio);   // 核心半径提示
+                TryCurrentField(out var pvField);
+                void Ring(float r, Color col)
+                {
+                    if (r <= 0f) return;
+                    const int Seg = 48;
+                    Vector3 Edge(int i)
+                    {
+                        var a = i * Mathf.PI * 2f / Seg;
+                        var x = ground.x + Mathf.Cos(a) * r;
+                        var z = ground.z + Mathf.Sin(a) * r;
+                        var y = pvField != null ? pvField.GetHeight(x, z) + 0.08f : 0f;   // 略抬防 z-fighting
+                        return new Vector3(x, y, z);
+                    }
+                    Handles.color = col;
+                    var prev = Edge(0);
+                    for (var i = 1; i <= Seg; i++) { var cur = Edge(i); Handles.DrawAAPolyLine(2f, prev, cur); prev = cur; }
+                }
+                Ring(RadiusMeters, _stroking ? new Color(1f, 0.55f, 0.2f) : new Color(0.3f, 0.8f, 1f));
+                Ring(RadiusMeters * CoreRatio, new Color(0.3f, 0.8f, 1f, 0.5f));   // 核心半径提示
             }
+
+            if (!_hasGrid || _terrain == null || _terrain.Delta == null) return;
 
             switch (evt.type)
             {

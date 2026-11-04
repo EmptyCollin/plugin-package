@@ -33,6 +33,11 @@ namespace Collin.CityMap
         [Tooltip("SculptDeltaAsset：笔刷增量与绝对压平目标；null = 无人工改动")]
         [SerializeField] SculptDeltaAsset delta;
 
+        [Header("阶段开关：自动平整（12 §2 三步工作流）")]
+        [Tooltip("关＝停在「噪声+雕刻」的意图地表，平整不参与（边雕边看、不被抹平）；"
+                 + "开＝在已定稿的意图地表之上跑自动平整整理。雕刻期建议关。")]
+        [SerializeField] bool flattenEnabled = true;
+
         [Header("身份")]
         [SerializeField] string stableId;
         [SerializeField] IntentChangeLedger ledger = new IntentChangeLedger();
@@ -45,6 +50,7 @@ namespace Collin.CityMap
         public TerrainProfile Profile => profile;
         public SculptDeltaAsset Delta => delta;
         public bool AutoFlattenAtCenter => autoFlattenAtCenter;
+        public bool FlattenEnabled => flattenEnabled;
         public int AutoTileCount => Mathf.Clamp(autoTileCount, 1, 12);
         public IReadOnlyList<ManualFlattenZone> ManualZones => manualZones;
         public string StableId => stableId;
@@ -61,6 +67,19 @@ namespace Collin.CityMap
             // 换 Profile 不 bump 本对象的 TerrainModel 通道（那是 Profile 自己的变化），
             // 但实例引用变了 ⇒ 必须重算地形
             Bump(IntentKind.TerrainModel);
+        }
+
+        /// <summary>
+        /// 自动平整阶段开关（12 §2 三步工作流）。<b>关闭</b>时 S1b 只重放到"噪声基底+雕刻"的
+        /// 意图地表就返回（平整不参与，雕刻不被抹平）；<b>开启</b>时在已定稿的意图地表之上跑平整。
+        /// <para>走 ParcelModel 通道（S4→S1b→S6）：切换本身必须触发一次 S1b 重算，
+        /// 否则从关到开时画面仍是旧的未平整态（所见即所得要求即时响应）。</para>
+        /// </summary>
+        public void SetFlattenEnabled(bool on)
+        {
+            if (on == flattenEnabled) return;
+            flattenEnabled = on;
+            Bump(IntentKind.ParcelModel);
         }
 
         public void SetAutoFlatten(bool on, int tiles)

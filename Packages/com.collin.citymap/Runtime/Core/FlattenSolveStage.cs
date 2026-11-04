@@ -54,6 +54,19 @@ namespace Collin.CityMap
             var d = _terrain.Delta;
             if (d != null) d.ApplyTo(field);
 
+            // ①c 阶段开关（12 §2 三步工作流，用户 2026-11-04 裁定）：
+            //     关闭时**平整不参与**，工作数组停在"噪声基底 + 人工雕刻"的意图地表上直接交出。
+            //     存在的理由：雕刻期若自动平整照常跑，城内 8× 强约束会把刚抬的山当场拟合压回平面
+            //     ——用户反馈"笔刷抬了没反应"的结构性根因。时序隔离而非逐格退让：先雕好地形，
+            //     再开这个开关让平整在<b>定稿的意图地表之上</b>做整理（这才是平整该发挥作用的时机）。
+            if (!_terrain.FlattenEnabled)
+            {
+                // cells/outputs=0：平整一格未动（delta 叠加不算平整改动），与下方"无约束"分支同口径，
+                // 避免诊断虚报"平整改了 N 万格"。
+                _terrain.ReportSolveResult(0, 0, 0);
+                return StageResult.Ok(0, 0);
+            }
+
             // ② 收集约束
             _constraints.Clear();
             var skipped = CollectConstraints(ctx, field, grid);

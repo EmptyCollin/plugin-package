@@ -1,9 +1,18 @@
 # 交接单 — com.collin.citymap
 
-> 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-03（会话 `2026-11-03 m4-terrain-workflow`）
+> 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-04（会话 `2026-11-04 m4-brush-fix`）
 > 代码阶段：本会话按 §3 原子取锁开工，按 §1.6 三项门禁交锁。**未 push。**
 
-## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质 + M4-b delta 地基 + M4-c 雕刻接入 + M4-d/e/f 笔刷工具）
+## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质 + M4-b delta 地基 + M4-c 雕刻接入 + M4-d/e/f 笔刷工具 + M4-g 平整阶段闸门）
+- **M4-g（平整介入时机 + 笔刷可见性，2026-11-04，本包 129/129、校验器 `FAIL 0` 绿灯）**：
+  - `CityTerrain.FlattenEnabled`（默认开）+ `SetFlattenEnabled()` 走 ParcelModel 通道；
+    `FlattenSolveStage` 在 `CommitBaseAsWorking()+Delta.ApplyTo()` **之后、收集约束之前**整段短路。
+    登记为 DESIGN **D-33**（用户否决我初版"逐格退让"方案后的正确机制，退让代码已撤净无残留）。
+    实测：关 → 抬 25m 保留、约束 0 条、重跑仍 25m（关闭态幂等）；开 → 约束 9 条、改动 76729 格。
+  - 笔刷预览环改**贴地表 48 段描边**并移到前置条件**之前**（旧版画在 y=0 被 ±18m 地形埋住 = 用户反馈①）。
+  - **两处自身错误已在 09 §26/§27 留痕**：H-48 我曾在 12 §1 写下**不存在的** `ManualLocked` 豁免机制
+    （grep 不到检查点 ⇒ 文档句子必须能在代码里落地）；H-49 把"A 不该妨碍 B"误解为"A 缩小范围"，
+    实际要的是"A 延后时机"。
 - **M4-d/e/f（雕刻笔刷工具链，2026-11-04）**，用户实机反馈②"先雕山水再生城"的落地：
   `Runtime/Core/SculptBrush.cs`（fb8f6bc，纯函数数学 + `SculptStroke` 状态机，**放 Runtime 才能测 A-1-5
   "60Hz/144Hz 同 delta"**；固定步长积分不乘 deltaTime、位移取世界量、不足一步的位移跨调用留存）
@@ -93,33 +102,27 @@
 
 ## 3. 未完成
 - **显示层只做地形 mesh**。道路条带 mesh、建筑 prefab 实例、SceneView overlay（城心圆环、约束带可视化、光标读数）未做（01 §3.3/§4.4）。
-- **面板参数控件的 GUI 交互尚未实机取证**：`DrawTerrainProfile()` / `DetectDirectProfileEdit()` 已落盘并编译通过、
-  数据地基（值指纹逐字段覆盖、`SetXxx` 通道归属、S1a/S1b 已注册）已断言；但滑条拖动 → 重算 → 画面这条手感
-  **EditMode 断言不了**（反射调 `OnGUI` 抛「只能在 OnGUI 内调用」，项目既有实测）⇒ 须用户在
-  `Tools/Collin/CityMap/City Window` 实机确认 A-1-3/A-0-3 的 Preview→Commit 两档。
-- **雕刻：数据层 + 管线接线已做（M4-b/M4-c），但"笔刷工具本体"未做**：
-  `SculptDeltaAsset`（稀疏/NaN 哨兵/确定序重放）与"S1b 拟合读意图地表"的接线都已完成并断言（本包 119/119），
-  但目前 delta **只能由代码写**（`AddDelta`/`SetAbsolute`），没有 `TerrainSculptTool`（EditorTool，抬/压/平滑/固定步长积分），
-  也**没做 delta 资产的撤销登记**（`Undo.RecordObject(deltaAsset)` + `SetDirty`，01 §5.2）——现在雕刻不会进 undo 栈。
-  河流下切层（S2/carve，01 §3.2 第 2 层）完全未做。
-- **D-32 坡度三级退让只登记、未实现**：`hardRetreatSlope=18°` 与"早判 steepMask 置 NoBuild"目前**只写进 DESIGN D-32 与 12 文档**，
-  代码里 `TerrainProfile` 还没有该参数、也没有 `steepMask` 计算（12 §2：必须在 S1a+delta 之后、S3 路网之前判，放 S1b 则路网已定、退让无效）。
-  S3/S4 尚不存在（M5/M6），所以"让路网绕行"这一半现在无处可接，实现 D-32 的掩码写入应等 S3 落地时一并做。
+- **雕刻笔刷链已全部就位（M4-d/e/f/g），但"实机手感"待用户验证**（这是当前最大的未闭环项，数据侧已断言不等于手感成立）：
+  切「雕刻」模式后 ①**贴地预览环是否真的看得见**（M4-g 刚从 y=0 改贴地，SceneView 渲染 EditMode 无从断言）
+  ②关「③ 自动平整」后拖笔是否即时起山、Ctrl+Z 是否整笔回退、delta 是否跨域重载留存。
+  验证路径：面板「③ 自动平整」**关掉** → 切「雕刻」→ 拖笔（不关平整则城内 8× 强约束会把抬升压回，见 D-33）。
+- **河流下切层（S2/carve，01 §3.2 第 2 层）完全未做**：delta 与平整已接，河道 carve 还没有。
+- **D-32 坡度三级退让只登记、未实现**：`hardRetreatSlope=18°` 与"早判 steepMask 置 NoBuild"写进 DESIGN D-32/12 文档，
+  但 `TerrainProfile` 还没有该参数、代码里没有 `steepMask` 计算。
+  **阻塞点如实说明**：S3/S4 至今**只有枚举、无实现体**，"让路网绕行"无处可接；等 S3 落地时一并做掩码写入，
+  不空转新建未选的阶段。（我曾误把该任务标 completed，已回退 pending——状态也算证据。）
 - 无 PlayMode 测试；真实 `Ctrl+Z` 端到端链路（A-17 完整形态）待接。
 - `Sample` 小城与演示视频：M10。
 
-## 4. 下一步（两参数已定案、delta 已接线，剩下是"让用户能用手雕"）
-1. **雕刻笔刷工具本体 `TerrainSculptTool`（EditorTool，01 §5）**：抬/压/平滑/压平到指定值，
-   **固定步长积分**（`strength·笔速·固定步数`，与帧率无关 → A-1-5 跨机器一致）、`maxCellsPerStroke` 截断（01 §5.4），
-   落笔调一次 `CityTerrain.MarkDeltaChanged(笔刷位置, 半径)`。
-   **必须同时做 delta 的撤销登记**（`Undo.RecordObject(deltaAsset)` + `EditorUtility.SetDirty`，01 §5.2）：
-   现在雕刻不进 undo 栈，Ctrl+Z 会把整城回退而吃掉笔划。A-1-6（一次笔划 = 1 条 undo）也在此验。
-2. **S2 河流下切**（Modules/02）：接 01 §3.2 第 2 层（在 delta 之前），显示层 carve 叠加随之可见。
-3. **D-32 的 `steepMask` 早判**：S1a+delta 之后立刻逐格 `GetSlopeDeg ≥ 18°` 置 `NoBuild`；
-   "让路网绕行"那半要等 S3 落地才有消费者（S3/S4 尚不存在），故**先只写掩码 + 面板显示"因坡放弃 N 格"**，不空转做重排。
-4. **实机验收 M3/M3-b/M4-a/M4-c**：`Tools/Collin/CityMap/City Window` → 绑/建 CityProject →
-   「创建地形实例（含显示层）」→ 应看到**带坡度色带的起伏地表**（材质已补）；拖「城内平整度」确认即时变化。
-5. ACCEPTANCE 续接编号 **54+**（M4-c 已用到 53）；代码注释继续引用编号（`// 09 H-46`、`// DESIGN D-31`）。
+## 4. 下一步（笔刷与平整闸门已交付，先让用户实机验手感，再按 12 §4 顺序推进）
+1. **让用户实机验 M4-g**：关平整→雕山水→开平整 这条三段流程是否跟手、贴地环是否可见。
+   现象反馈回来我再按实机归因登记缺陷（本轮已证：只有真跑才暴露 H-38~H-49）。
+2. **S2 河流下切**（Modules/02）：接 01 §3.2 第 2 层（在 delta 之前），与山水笔刷同为"创作自然地表"环节。
+3. **D-32 的 `steepMask` 早判**：待 S3 路网落地才有消费者；先加 `hardRetreatSlope` 参数 + 逐格坡度 + 面板"因坡放弃 N 格"，
+   不空转做路网重排。
+4. ACCEPTANCE 续接编号 **67+**（M4-g 已用到 66）；代码/文档注释继续引用编号（`// 09 H-49`、`// DESIGN D-33`）。
+5. **写代码前先 grep 核实引用**（H-47/H-48 两次教训：臆造 API、写下不存在的 `ManualLocked` 豁免机制）。
+   文档里凡"由 X 机制保证"必须能在代码 grep 到 X 的检查点，grep 不到就是虚构。
 
 ## 5. 勿碰项
 - 不改 AGENTS.md / §8 钉死版本 / `Packages/manifest.json` / `ProjectSettings/**`。

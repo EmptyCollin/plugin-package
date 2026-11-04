@@ -70,6 +70,9 @@
 | 61 | **M4-f** 面板雕刻参数区（半径/强度/动作）仅雕刻模式显示，动作下拉**只列已接线四项** | `CityWindow.DrawSculptPanel()` 提交 f70fcc2；自查修掉一处类型错误（`Popup` 第三参需 `string[]`，初版误传枚举数组，同时使标签数组沦为死字段）；编译 `errors=0` | 同上 | 2026-11-04 | **通过** |
 | 62 | **M4-e/M4-f** 交锁三项门禁（两次增量各自复跑） | 清台 → 本包 `--filter_type assembly` 全量 → `verify_project.py` → `console status` | 同上 | 2026-11-04 | 两次均 **128/128**；校验器 **`FAIL 0`、结论: 绿灯**（交互壳那次 `console 0/0`；面板那次 `error=1` **全部命中 §1.8 已批准豁免清单**，被正确降为 WARN、无虚假绿灯）；`pkg-layout`/`runtime-purity`/`assets-layout` 全 ok |
 | 63 | **端到端实机闭环（落笔→delta 写入→重算→画面刷新）尚未跑通**，如实标注 | 反射驱动 `BeginStroke/ApplyDrag×3/EndStroke` 做真笔划验证时返回 **`terrain=NULL hasGrid=False`**——体验会话被域重载重置、派生 chunk 物体 `HideAndDontSave` 不入库，场景内已无 CityTerrain 实例；该次运行**未写入任何数据**（前置校验即返回），现场未被污染 | 同上 | 2026-11-04 | **待实测**（非失败项，见遗留清单）：需用户在场景「创建地形实例」后拖笔验证。当前证据链 = 数学内核 9 条单测 + 编译/无回归，**不含实机手感** |
+| 64 | **M4-g 平整以阶段闸门介入（D-33，用户否决逐格退让后重做）** | `CityTerrain.FlattenEnabled`（默认开）+ setter 走 ParcelModel 通道触发重算；`FlattenSolveStage` 在 `CommitBaseAsWorking()+Delta.ApplyTo()` 之后、收集约束之前整段短路。断言 `Flatten_Off_Is_Phase_Gate_Not_Per_Cell_Waiver`：**关平整 → 抬 25m 原样保留、`Outputs=0`、重跑仍 25m（关闭态幂等）；开平整 → `Outputs=9` 条约束、改动 76729 格** | qianwen-work-assistant（会话 `2026-11-04 m4-brush-fix`） | 2026-11-04 | **通过**（见 §M4-g-1） |
+| 65 | **M4-g 笔刷范围可见（用户反馈①）**：预览环由 y=0 平面改为**贴地表采样描边**，且绘制**先于**落笔前置条件（旧版数据不全时在画环前 return ⇒ 连环都没有、也无提示） | `SculptBrushTool.OnSceneGUI`：48 段折线逐段取 `field.GetHeight(x,z)+0.08f` 贴地绘制外圈与核心圈；编译 `errors=0`、本包 129/129 无回归 | 同上 | 2026-11-04 | **通过（代码与编译）/ 观感待用户实机确认**（SceneView 绘制不可 EditMode 断言，不虚报） |
+| 66 | **M4-g 交锁三项门禁 + 违规资产处置** | 清台 → 本包 `--filter_type assembly` 全量 → `verify_project.py` → `console status`；`assets-layout` 抓到 `Assets/Scenes/testscene.unity`（非本会话产物）经用户裁定删除 | 同上 | 2026-11-04 | **129/129**；`RECOMPILE failed=False errors=0`；`GATE consoleErrors=0 consoleWarnings=0 seeded=True`；校验器 **`FAIL 0`、结论: 绿灯** |
 
 ## 未通过项
 
@@ -687,18 +690,100 @@ shader=Collin/CityMap/Terrain VertexColor
 两次均 `recompile_status failed=False / errors=0`、Editor dll mtime ≥ 源码；
 `pkg-layout`/`runtime-purity`/`assets-layout` 全 ok。
 
+## 本次会话执行记录（M4-g：平整阶段闸门 + 笔刷范围可见，2026-11-04）
+
+> 同会话续做，起因是用户实机体验后三条反馈：①笔刷范围看不见 ②抬了地表没反应 ③起伏是真是假。
+> 以及一次**方向纠正**：我先按"平整对雕刻格逐格退让"实现，被用户指出机制理解反了
+> ——要的时序隔离（雕刻期平整根本不介入），不是让平整给雕刻让位。
+
+### §M4-g-0 用户纠正原话与我的错误方向
+
+> 「错了，自动平整还是要执行，但是它不应该在雕刻时阻碍我，雕刻完后进入自动平整/噪音起伏的环节，
+> 才是它应该发挥作用的时机」
+
+错误方向已实现的 `SculptDeltaAsset.MarkCovered()` + S1b `_covered/_coverFilled` 退让掩码**全部撤净**
+（`grep covered` 零残留，重编译 `errors=0`），改为 D-33 阶段闸门。
+
+> 同时纠正一处**我自己写下的文档不实陈述**：12 §1 曾写"人工钉住的格由 `ManualLocked` 豁免、不被自动平整
+> 抹回"。核查后确认**该机制不存在**——`ManualLocked` 只是地块掩码词表里的一位，S1b 从不检查它。
+> 这条虚构的豁免正是我走偏的源头（文档给了我不存在的信心）。已在 12 §1 原位更正留痕。
+
+### §M4-g-1 阶段闸门（D-33，核心交付）
+
+`CityTerrain.FlattenEnabled`（默认 `true`）+ `SetFlattenEnabled()` 走 ParcelModel 通道（切换即触发一次
+S1b 重算，否则从关到开画面仍是旧的未平整态）；S1b 在 `CommitBaseAsWorking()` + `Delta.ApplyTo()` **之后**、
+`CollectConstraints()` **之前**整段短路。
+
+断言 `Flatten_Off_Is_Phase_Gate_Not_Per_Cell_Waiver`（`flatness=0`、`SetAutoFlatten(true,3)` 制造
+"平整本来会介入"的前提、中心 17×17 格抬 25m），**实测打点**：
+
+```
+[M4g] 关平整：雕刻后 25m 原样保留、约束 0 条；开平整：约束 9 条、改动 76729 格
+```
+
+三条判据都是判别式而非"变一点就算过"：
+- 关 → `Outputs == 0`（阶段闸门，不是逐格跳过）
+- 关 → `Heights[idx] == BaseHeights[idx] + 25f`（抬升**原样保留**，反馈②的判据）
+- 关 → 重跑仍 25m（短路位于复位+重放之后 ⇒ **关闭态同样幂等**，不会把雕刻叠第二遍）
+- 开 → `Outputs > 0` 且改动 76729 格（平整在**定稿意图地表之上**发挥作用）
+
+`Ok(0,0)` 而非 `Ok(field.Heights.Length,0)`：关闭时平整一格未动，虚报改动量会污染面板诊断
+（与下方"无约束"分支同口径）。
+
+### §M4-g-2 笔刷范围可见（反馈①）
+
+预览环从 `DrawWireDisc(y=0)` 改为**贴地采样描边**：48 段折线，每段取 `field.GetHeight(x,z)+0.08f`
+（略抬防 z-fighting），外圈 + 核心圈（`RadiusMeters*CoreRatio`）各画一遍；并把绘制**移到前置条件
+`return` 之前**——旧版数据不全时连环都不画、也没提示，用户既看不到范围也不知道为什么。
+
+根因：环画在 y=0 平面，而地表 ±18m，环被整个埋在地形下面。
+**观感仍需用户实机确认**（SceneView 绘制无法 EditMode 断言，不虚报"已解决"）。
+
+### §M4-g-3 起伏来源澄清（反馈③）
+
+地表起伏是**真实几何**：S1a 噪声基底，默认 `baseAmplitude=18m / baseWavelength=520m` + 细节层。
+材质（M4-a 的 `CityTerrainVertexColor`）只把坡度染成绿→土黄→红棕帮助读高低，**没有"画出"起伏**。
+
+### §M4-g-4 违规资产处置（用户裁定）
+
+`assets-layout` 抓到 `Assets/Scenes/testscene.unity`（今晚新建、非本会话产物）。删除前核验三项：
+不在 `EditorBuildSettings`（grep 计数 0）、无其他资产/代码引用、未被 git 跟踪（`??` 未跟踪态）。
+经**用户明确裁定"是我的临时场景，删掉"**后走 `AssetDatabase.DeleteAsset`（不用 rm，避免编辑器留悬空引用）。
+
+删后编辑器刷出 6 条 `ReloadScene cannot be used with a scene without a SceneAsset: testscene`
+——这是**我删除动作的后果**，不能靠 `console clear` 抹掉绕门禁。查明内存态场景已随资产删除自动卸载
+（剩余场景只剩另一会话的 `StealthSample`，**未做任何改动**），报错源消失，复跑归零。
+
+### §M4-g-5 交锁门禁（最终）
+
+| 项 | 结果 |
+|---|---|
+| 本包测试 | `--filter_type assembly` Total **129** / Passed 129 / Failed 0 |
+| 编译 | `recompile_status failed=False`、`errors=0` |
+| 控制台 | `consoleErrors=0 consoleWarnings=0 consoleLogs=17 seeded=True` |
+| 校验器 | **`FAIL 0`、结论: 绿灯**；`pkg-layout`/`runtime-purity`/`assets-layout` 全 ok |
+
+> 过程中一次自我纠错：重编译脚本只比对了 Runtime/Editor 源码时间戳就报"干净"，而本轮改的是**测试文件**
+> ——按 H-36 教训单独核验 `com.collin.citymap.Tests.dll` mtime ≥ 测试源码后才跑测试，避免取到假绿。
+
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~63）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~66）。
 - **M4-e/M4-f 的实机闭环待用户验证**（§M4-e-3）：场景内创建地形实例后拖笔，看是否即时起伏、
   一笔一撤销是否成立、超格数提示是否出现。这是"雕刻笔刷"从"代码正确"到"手感成立"的最后一跳。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。
 - 未实测且当前无法验证的：所有需要河/路/场域/建筑真实数据的断言（A-2~A-8、A-26~A-44、A-48 的端到端形态）。
   **地形侧已在 M2/M3/M4 打通**（S1a/S1b + 显示 mesh + 雕刻数据层与重放均实机可见/已断言）；尚缺的条目：
-  A-1-2（重生成下 delta 逐点保持——delta 层与重放已就位，**缺笔刷工具与雕刻资产持久化闭环**）、
+  A-1-2（重生成下 delta 逐点保持——delta 层、重放与**笔刷工具（M4-e）均已就位**，
+  **端到端实机手感待用户验证**：拖笔是否即时起伏、Ctrl+Z 是否整笔回退、雕刻资产是否跨域重载留存）、
   A-1-4（道路各向异性，需 M5 路网）、
   A-1-5（帧率无关）**数学半边已由 M4-d 断言**（纯函数侧 30/60/144Hz 一致 + 余量留存），
-  **端到端形态仍缺**（需场景交互壳实际驱动笔划）；A-1-6（一笔一 undo）同理，状态机半边已断言、
-  `Undo.RecordObject` 半边待交互壳；A-1-8 的"拖动场域不触发 S1a"端到端形态（需 M7 场域）。
+  交互壳已按"世界位移驱动、不乘帧时"接线（M4-e），**拖动实感待用户确认**；
+  A-1-6（一笔一 undo）状态机半边已断言、`Undo.RecordObject` 半边已接（M4-e），**待实机确认**；
+  A-1-8 的"拖动场域不触发 S1a"端到端形态（需 M7 场域）。
+- **M4-g 阶段闸门的实机手感待用户验证**（§M4-g-1/§M4-g-2）：数据侧已断言（关平整 25m 保留 + 0 约束、
+  开平整 9 约束），但"切到雕刻模式后**贴地预览环是否真的看得见**"、"关平整后拖笔是否即时起山"
+  属 SceneView 渲染与交互，EditMode 无从断言，**不虚报已解决**。
+  验证路径：面板把「③ 自动平整」关掉 → 切「雕刻」→ 拖笔。
 - `Sample` 小城与演示视频：M10。
 - 本文档为覆写式，非追加日志（AGENTS §4）。
