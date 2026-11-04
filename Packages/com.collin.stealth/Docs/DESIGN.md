@@ -84,8 +84,11 @@ PatrolPose EvaluatePose(PatrolRouteData route, float t)   // 确定性：同 (ro
 | `GroundVisionProjection` | Runtime | 静态纯函数 | **与判定同源**的地面投影：外缘 sqrt(maxDist²−Δh²)、内缘俯仰盲区、近身豁免收合、遮挡裁边 |
 | `StealthGroundProjection` | Runtime | MonoBehaviour（实例） | Play 态半透明填充（`Graphics.DrawMesh`，不污染层级、不碰 `.material`），随档位变色 |
 | `StealthStageVisual` | Runtime | 静态类 | 档位配色与中文名**唯一口径**（HUD 与投影共用） |
+| `StealthArena` | Runtime | 静态纯函数 | 场地矩形边界：`Clamp`/`Contains`/`Inset`，半宽 ≤0 即关闭（默认关，预制件不凭空加隐形墙） |
 | `StealthExitZone` | Runtime | MonoBehaviour | 撤离区：纯几何圆 + 高度窗 + 驻留计时（不依赖触发器/Rigidbody） |
-| `StealthGameRule` | Runtime | MonoBehaviour | 对局规则：抵达=通关、察觉顶格持续=被抓；Manual 预览态不推进；可重开 |
+| `StealthGameRule` | Runtime | MonoBehaviour | 对局规则：抵达=通关、察觉顶格持续=被抓；Manual 预览态不推进；`ResetRound()` **全量复位**（本组件计时/驻留/玩家察觉/哨兵叠加/巡逻时钟/玩家出生位姿），出结果即冻结玩家输入 |
+| `StealthResultModel` | Runtime | 静态纯函数 | 结算卡片数据组装（标题/归因行/配色/操作提示），`Playing` 返回 null；脱离 Play 态可断言 |
+| `StealthResultPanel` | Runtime | MonoBehaviour | 胜利/失败结算界面（IMGUI，零场景配置，随 `Screen.height` 缩放字号与卡片） |
 | `StealthMask` | Runtime | flags enum | §3.3 判定层掩码位分配（**不进 core**） |
 | `StealthClock` | Runtime | MonoBehaviour | 全局时间索引；`Auto`（每帧自增）/ `Manual`（外部写 t）；并每帧复位射线预算 |
 | `VisionRegistry` / `DetectionRegistry` | Runtime | 静态注册表 | 视野体与察觉目标的读时重建表（保守置脏）；哨兵由 `GuardBrain.All` 剪枝+按需重建 |
@@ -126,17 +129,22 @@ B 包的「N1 NPC 视野可达区域」分层渲染要按层可视化，
 
 ```
 Sample/Scenes/StealthSample.unity
- └─ 关卡根（地面/掩体白盒 + Layer 标注）
-    ├─ StealthGuard 预制件实例 ×N
-    │    ├─ PatrolRouteRoot（局部坐标 → 世界系；移动它=整条路线一起动，D-09）
-    │    │    └─ PatrolRoute "WarehouseLoop" (SO，共享 Model)
-    │    └─ PatrolAgent（实例差异：phaseOffset / speedMul）+ VisionVolume（→ VisionProfile SO）
-    ├─ DetectorRegistry (SO)
-    └─ StealthPlayer 预制件实例（PlayerStealthController + DetectionState）
+ ├─ 围栏 ×4（静态，参与导航烘焙）+ 地面（静态可行走面）+ 掩体/仓库白盒（静态障碍）
+ ├─ StealthGuard 单元 ×3（根 / RouteRoot / Body）
+ │    ├─ PatrolRouteRoot（局部坐标 → 世界系；移动它=整条路线一起动，D-09）
+ │    │    └─ PatrolRoute "WarehouseLoop" / "CrossSweep" / "DepotRing" (SO，共享 Model)
+ │    └─ Body：PatrolAgent（phaseOffset）+ VisionVolume(→VisionProfile SO)
+ │             + GuardBrain（IPatrolModifier）+ StealthGroundProjection
+ ├─ StealthPlayer 单元（CharacterController + PlayerStealthController + DetectionState
+ │                    + FollowCamera + Hud + ResultPanel）
+ ├─ StealthExitZone ×2（北侧主点 / 仓库内备用点）+ StealthGameRule + StealthClock
+ └─ 场地边界：StealthArena 纯函数（由 PlayerStealthController 每帧钳制，D-15）
 
-每帧：StealthClock(t) → PatrolAgent 取 PatrolPose（局部求值 → 经根转世界）→ 写 transform
+每帧：StealthClock(t) → PatrolAgent 取 PatrolPose（局部求值 → 经根转世界）→ 叠加 Modifier 偏移 → 写 transform
       → VisionVolume 逐层判定(L1→L2→L3→L4) → AwarenessModel → DetectionState
-      → 状态机 → EventChannel.Raise(...)
+      → GuardBrain 状态机 → EventChannel.Raise(...)
+      → PlayerStealthController 移动 + StealthArena 钳制
+      → StealthGameRule 判胜负 →（出结果）冻结输入 + StealthResultPanel 弹卡片
 ```
 
 **路点坐标约定（D-09 定案）**：`PatrolRoute` 存**相对路线根的局部坐标**，
@@ -258,6 +266,8 @@ DTO 归属的边界：接口方法签名里出现的类型必须全部来自 cor
 | D-11 | **位置走精确折线、朝向单独缓动**（Q-A3 定案） | 位置与朝向一同 SmoothDamp | 位置精确使 B 的路线反推可解算、轨迹可预测；朝向缓动保留观感 |
 | D-12 | **不做听觉/声音侦测**（Q-A4 定案） | 纳入声源半径 + distraction 实体 | 用户判定本包是最小可用子集；`StealthMask` 对应位保留为预留位不启用 |
 | D-13 | **包内提供玩家移动控制器与预制件，拆箱即用**（Q-A5 定案，推翻原「只留 DetectionState」草案） | 移动交给外部工程 | 用户要求 A 包开箱可玩；控制器优先 `Keyboard.current`，条件编译回退 `Input.*`，两路皆不可用时一次性 warning |
+| D-14 | **结算界面用 IMGUI，不用 uGUI**（11-04 定案） | uGUI（`Canvas + EventSystem`） | uGUI 需要场景里存在 `EventSystem`，会破坏 D-13「预制件拖进任意空场景即可玩」——空场景里表现为**有 UI 但按钮点不动**。IMGUI 与 `StealthHud` 同口径（零依赖零场景配置），代价是须自行按 `Screen.height` 缩放字号 |
+| D-15 | **围栏做两层：可见实体墙（参与烘焙）+ `StealthArena` 硬边界**（11-04 定案） | 只摆可见墙 | 巡逻基线与角色都可能因穿模、腐蚀缺口或掩体被删而溜出地图，落到没有参照的虚空。墙必须标静态否则导航面铺到墙外、NPC 穿墙追人（= 上一轮反馈换个位置复现）。`StealthArena` **默认关闭**：预制件拖进小场景不该凭空出现隐形墙 |
 
 ## 6. 风险
 

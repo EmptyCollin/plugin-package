@@ -39,6 +39,15 @@ namespace Collin.Stealth
         [Tooltip("蹲伏时上报给 L4 的曝光度，越低越难被发现")]
         [SerializeField, Range(0f, 1f)] float _crouchExposure = 0.35f;
 
+        [Header("场地边界（硬钳制，与可见围栏配套）")]
+        [Tooltip("场地中心（水平面）。半宽任一维 ≤0 表示关闭边界，不限制移动")]
+        [SerializeField] Vector3 _arenaCenter = Vector3.zero;
+        [Tooltip("场地半宽 (x, z)。<b>默认 0 = 关闭</b>：预制件拖进任意场景不会凭空出现隐形墙，"
+                 + "需要边界时由场景/生成器显式开启（示例场景为 27）")]
+        [SerializeField] Vector2 _arenaHalfSize = Vector2.zero;
+        [Tooltip("离墙内裕度（米）：留出角色半径，避免贴着墙面摩擦抖动")]
+        [SerializeField, Range(0f, 2f)] float _arenaMargin = 0.55f;
+
         [Header("第三人称视角")]
         [Tooltip("留空自动取 Camera.main；无相机时本组件不管视角")]
         [SerializeField] Camera _followCamera;
@@ -60,6 +69,15 @@ namespace Collin.Stealth
         Transform _capsuleVisual;
         Camera _camera;
 
+        // 出生位姿（Awake 捕获，重开复位的真源）：允许检视覆盖，留默认即"作者摆在哪就从哪出生"。
+        [Tooltip("出生位置覆盖。保留 (9999,9999,9999) 表示自动取场景里摆好的初始位置")]
+        [SerializeField] Vector3 _spawnOverride = new Vector3(9999f, 9999f, 9999f);
+
+        Vector3 _spawnPosition;
+        Quaternion _spawnRotation;
+        float _spawnPitch = 18f;
+        bool _spawnCaptured;
+
         float _verticalVelocity;
         float _camYaw;
         float _camPitch = 18f;
@@ -71,6 +89,13 @@ namespace Collin.Stealth
         bool _camInitialized;
 
         public bool Crouching => _crouching;
+
+        /// <summary>
+        /// 冻结输入（对局结算时由 <see cref="StealthGameRule"/> 置位）。
+        /// <para>出结果后若还能移动，玩家会在结算遮罩后面继续跑，
+        /// 既看不清归因数据，也会让下一次重开的基线被污染。</para>
+        /// </summary>
+        public bool Frozen { get; set; }
         /// <summary>当前镜头水平角（辅助台与相机相关计算用）。</summary>
         public float CameraYaw => _camYaw;
         /// <summary>当前模型朝向角。</summary>
@@ -89,7 +114,23 @@ namespace Collin.Stealth
             // 避免第一帧镜头从别的方向甩过来。
             _camYaw = transform.eulerAngles.y;
             _moveYaw = _camYaw;
+            _spawnPitch = _camPitch;
+            CaptureSpawn();
             ApplyCapsuleShape();
+        }
+
+        /// <summary>
+        /// 捕获出生位姿：<b>优先用检视里显式配的覆盖值</b>，否则取作者在当前场景摆好的
+        /// 位置与朝向（所见即所得：编辑器里放哪，Play 就从哪开始）。
+        /// <para>只在首次且未捕获过时写入，避免重开后再次 Awake 把"死亡点"当成新出生点。</para>
+        /// </summary>
+        void CaptureSpawn()
+        {
+            if (_spawnCaptured) return;
+            var sentinel = new Vector3(9999f, 9999f, 9999f);
+            _spawnPosition = _spawnOverride != sentinel ? _spawnOverride : transform.position;
+            _spawnRotation = transform.rotation;
+            _spawnCaptured = true;
         }
 
         void OnEnable()
@@ -105,6 +146,10 @@ namespace Collin.Stealth
         void Update()
         {
             if (_cc == null) _cc = GetComponent<CharacterController>();
+
+            // 结算冻结：忽略移动/蹲伏输入（镜头保持当前角度，画面稳定便于读数据）。
+            // 蹲伏状态必须在解冻时重新同步，否则冻结前按住的 Ctrl 会残留。
+            if (Frozen) return;
 
             if (_toggleCrouch)
             {
@@ -142,6 +187,12 @@ namespace Collin.Stealth
 
             var velocity = worldDir * CurrentSpeed + Vector3.up * _verticalVelocity;
             _cc.Move(velocity * Time.deltaTime);
+
+            // ⑤ 场地硬边界：可见围栏之外再兜一层。走 _cc.Move 而不是直接写 transform——
+            // 后者会让控制器内部的碰撞状态与实际位置脱节，下一次 Move 可能把人挤过墙。
+            var clamped = StealthArena.Clamp(transform.position, _arenaCenter, _arenaHalfSize, _arenaMargin);
+            var back = clamped - transform.position;
+            if (back.sqrMagnitude > 1e-8f) _cc.Move(back);
         }
 
         void LateUpdate()
@@ -208,17 +259,70 @@ namespace Collin.Stealth
 
         void ApplyCapsuleShape()
         {
+            if (_cc == null) _cc = GetComponent<CharacterController>();
             if (_cc == null) return;
+            // 惰性解析：EditMode 不执行 Awake，测试与写工具直接调本方法时 _capsuleVisual 还是空，
+            // 少这一步就会把摆位整段跳过（GuardBrain 同口径处理过这个坑）。
+            if (_capsuleVisual == null) _capsuleVisual = transform.Find("CapsuleVisual");
+
             var h = Mathf.Max(0.5f, _crouching ? _crouchHeight : _standHeight);
             _cc.height = h;
             _cc.center = new Vector3(0f, h * 0.5f, 0f);
 
             if (_capsuleVisual != null)
             {
-                var ratio = h / Mathf.Max(0.5f, _standHeight);
-                _capsuleVisual.localScale = new Vector3(1f, ratio, 1f);
-                _capsuleVisual.localPosition = new Vector3(0f, (h - _standHeight) * 0.5f, 0f);
+                // 纵向交给纯函数，x/z 保留作者摆好的粗细（所见即所得）。
+                // 旧写法 localPosition.y = (h - 站高)/2 在站立时算出 0 ⇒ 胶囊中心落到脚底、
+                // 下半截埋进地面（用户实机反馈「玩家一出场，胶囊体半个在地里」）。
+                var pose = ThirdPersonRig.CapsuleVisualPose(h);
+                var s = _capsuleVisual.localScale;
+                var p = _capsuleVisual.localPosition;
+                _capsuleVisual.localScale = new Vector3(s.x, pose.x, s.z);
+                _capsuleVisual.localPosition = new Vector3(p.x, pose.y, p.z);
             }
+        }
+
+        /// <summary>
+        /// 把玩家复位到<b>出生位姿</b>并清空本局运动状态（对局重开用）。
+        /// <para>必须先停用 <c>CharacterController</c> 再写 transform：控制器启用时改 transform
+        /// 会被物理层按上一帧的碰撞结果拉回（ teleport 常见坑），表现为「复位后又卡回原地」。</para>
+        /// <para>相机阻尼基准同时作废（<c>_camInitialized=false</c>），否则重开瞬间镜头
+        /// 会从死亡点一路缓动飞回出生点，观感像「没复位成功」。</para>
+        /// </summary>
+        public void ResetToSpawn()
+        {
+            if (_cc != null) _cc.enabled = false;
+            transform.position = _spawnPosition;
+            transform.rotation = _spawnRotation;
+            if (_cc != null) _cc.enabled = true;
+
+            _verticalVelocity = 0f;
+            SetCrouching(false);
+
+            _camYaw = _spawnRotation.eulerAngles.y;
+            _moveYaw = _camYaw;
+            _camPitch = _spawnPitch;
+            _camInitialized = false;
+        }
+
+        /// <summary>是否已记录出生位姿（Awake 之后恒为真）。</summary>
+        public bool HasSpawn => _spawnCaptured;
+
+        /// <summary>当前记录的出生位置（只读，供调试与工具显示）。</summary>
+        public Vector3 SpawnPosition => _spawnPosition;
+
+        /// <summary>
+        /// 把<b>当前</b>位姿记为出生点（覆盖已有记录）。
+        /// <para>公开的原因：编辑模式测试与写工具不执行 <c>Awake</c>，若出生点只能由初始化时序
+        /// 捕获，「重开回到出生点」这条就无法脱离 Play 态验证——本包的纪律正是几何与状态
+        /// 必须能在编辑态断言。关卡作者同样可以在摆好位置后调用它定锚。</para>
+        /// </summary>
+        public void RecordSpawnPoint()
+        {
+            _spawnPosition = transform.position;
+            _spawnRotation = transform.rotation;
+            _spawnPitch = _camPitch;
+            _spawnCaptured = true;
         }
 
         // ── 输入（条件编译只进方法体）───────────────────────────────

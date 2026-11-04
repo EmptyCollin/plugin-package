@@ -7,6 +7,62 @@
 > **版本号故意仍为 0.4.0**：§6 演示视频未录制，该包演示按 §6 判不合格，提版本会谎报交付边界。
 > 以下改动已入库，待视频补齐后一并收版。
 
+### Fixed（成品质量修正，session stealth-ux-2026-11-04）
+- **玩家出生半截埋地**（用户实机反馈）：根因在 `PlayerStealthController.ApplyCapsuleShape()`——
+  旧公式 `localPosition.y = (h − 站高) × 0.5` 在**站立时算出 0**，把整根胶囊中心压到脚底。
+  新增 `ThirdPersonRig.CapsuleVisualPose(h)`（纯函数：`scale.y = 中心 = h/2`，底边贴 y=0）接管纵向，
+  x/z 仍保留作者摆好的粗细。场景与预制件经重新生成/沉淀后 `m_LocalPosition.y` = 0.9。
+- **按 R 重开没效果**（用户实机反馈）：`ResetRound()` 原先只清本组件计时。现**全量复位六处**：
+  本组件结果与计时 → 撤离区驻留 → 玩家察觉状态 → 所有哨兵叠加层 → 巡逻时钟归零 → 玩家回出生点。
+  出生点由 `RecordSpawnPoint()` / `Awake` 捕获（**不写死坐标**，保住 D-13 拆箱即用）；
+  复位先关 `CharacterController` 再写 transform（否则被物理层按旧碰撞结果拉回）。
+- 出结果即**冻结玩家输入**（`PlayerStealthController.Frozen`），结算画面不再被遮罩后的跑动污染。
+- **HUD 与结算面板职责切分**：HUD 撤掉胜负横幅与 R 键处理（两处同帧响应重开会重复触发复位）。
+
+### Added（结算界面 + 场地边界，同上）
+- `Runtime/StealthResultModel.cs`：结算卡片**数据层纯函数**（标题/归因行/配色/操作提示），
+  `Playing` 返回 null。拆出来是为了脱离 Play 态断言文案与数值格式（Play 探针本会话实测不可靠）。
+- `Runtime/StealthResultPanel.cs`：胜利/失败结算界面（IMGUI：压暗遮罩 + 强调条 + 标题 +
+  用时/察觉峰值/惊动哨兵/撤离点四行归因 + 两个按钮）。**刻意不用 uGUI**——uGUI 需要场景里的
+  `Canvas + EventSystem`，会破坏 D-13「预制件拖进空场景即可玩」（空场景无 EventSystem 时按钮失灵）。
+  字号与卡片尺寸统一按 `Screen.height/1080` 缩放，分辨率变化时重建样式。
+- `Runtime/StealthArena.cs`：场地矩形边界纯函数（`Clamp`/`Contains`/`Inset`，半宽 ≤0 即关闭）。
+  玩家控制器接其做**硬钳制**（走 `_cc.Move` 而非直接写 transform，避免碰撞状态与实际位置脱节）。
+  **默认关闭**：预制件拖进任意小场景不该凭空出现隐形墙，示例场景由生成器显式开启。
+
+### Added（示例场景复杂化 + 外侧围栏，同上）
+- **四面围栏**（54×54 内腔、高 4m、转角不重叠以免 z-fighting），全部标静态**参与导航烘焙**——
+  墙若不烘焙，NPC 会穿墙追出去，等于把上一轮的穿模问题换个位置复现。
+- 掩体从 3 个扩到 **18 个实体占位**：南侧掩体群 ×4、西侧长墙、东北角仓库（四面墙 + 净宽 3.8m 门洞）、
+  撤离区立柱 ×2。门洞原设计 1.4m，因 legacy 烘焙按角色半径腐蚀可行走面会封死缺口而加宽。
+- 哨兵 2 → **3 名**（新增 `DepotRing` 环绕仓库），路线资产 `Sample/Profiles/DepotRing.asset`。
+- 撤离点 1 → **2 处**（北侧主点驻留 0.6s / 仓库内备用点驻留 1.2s），逼出直线冲北与绕东穿仓库的取舍。
+- 新增**路线间隙自检** `VerifyRouteClearance()`：巡逻基线不参与碰撞，路点连线压到实体就会当众穿墙，
+  且不会报错——按 0.5m 采样逐段检查，PingPong 路线不检查不存在的闭合段（否则假阳性）。
+- **绕行校验改为按场景真实物体取起终点**：旧版硬编码 (0,±14)，而出生点在 (0,−22)、撤离点在
+  (0,24)/(16,16)——布局一改，校验量的是**地图上不存在的位置**却照样"通过"，等于没校验。
+  现逐撤离区校验可达性，绕行判据只对主点强制（仓库点走东走廊，要求它绕行会把好布局误报成失败）。
+
+### Verified（2026-11-04 21:20 实测）
+- 编译 `failed:false`；`console clear` 后重跑 recompile + test run → `consoleErrors:0 / consoleWarnings:0`；
+  全量 **250/250**（本包 **121** = 原 99 + 新增 `GameRuleResetTests` **22**；余 129 属 citymap，
+  由并行会话新增 1 条）。用例数按 `grep -c "^\s*\[Test\]"` 逐文件实测，非估算。
+- Play 截图取证：蓝色胶囊**完整立于地面**（底部投影可见），四面围栏入画，地面警戒投影正常。
+- Play 截图取证：胜利结算卡片实际弹出——绿色强调条 + "撤离成功" + 四行归因 + 两按钮 + 底部按键提示。
+- Play 探针取证：`ResetRound()` 后 玩家 (0,0.05,24) → **(0,0.05,−22)**（=出生点）、
+  时钟 42.5 → **0.0**、用时 → 0.00、三哨兵 stage 全回 Patrol、两撤离区 reached 全 False、frozen False。
+- 生成器日志：`[Clearance] 三条路线与 20 个实体占位无交叉`；
+  `ExitZone_North 拐点=3 直线=46.00 路径=46.06 横向偏离=1.17`；`ExitZone_Depot 拐点=4 横向偏离=0.72`（两点均可达）。
+
+### 已知环境限制（本会话实测，非本包缺陷）
+- **共享编辑器后台不推进 Play 循环**：窗口失焦时 `frameCount`/`Time.time` 完全冻结
+  （实测 4 秒间隔两次取样均为 13229/41.1）；`set_auto_tick` 只保活编辑器 UI、**不驱动 Play 循环**。
+  ⇒ 驻留/察觉这类**需要时间累积**的玩法只能靠 `focus` 抢前台取证，且每次 CLI 调用都会抢回焦点。
+- **失败（被抓）分支未取到目视截图**：与胜利分支共用同一段绘制代码，数据层已由单测覆盖
+  （`Result_CaughtAttributesToPeakSuspicion`），但"卡片实际弹出"缺画面证据 ⇒ 记入未通过项 U-7。
+- 校验器 `assets-layout` 红灯来自另一会话留在 `Assets/Scenes/testscene.unity` 的未跟踪文件
+  （无提交记录、citymap 锁仍在活动），与本包改动无关，未代修。
+
 ### Added（M5 部分：预制件沉淀 + 拆箱即用验证）
 - `Editor/StealthPrefabBaker.cs`：把示例场景的玩家与哨兵单元沉淀为
   `Sample/Prefabs/StealthPlayer.prefab` / `StealthGuard.prefab`，内置**引用完整性自检**

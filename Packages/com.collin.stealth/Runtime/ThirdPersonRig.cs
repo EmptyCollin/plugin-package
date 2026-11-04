@@ -62,5 +62,21 @@ namespace Collin.Stealth
             }
             return Mathf.Clamp(pitch, minDegrees, maxDegrees);
         }
+
+        /// <summary>
+        /// 视觉胶囊贴合：返回 <c>(localScale.y, localPosition.y)</c>，使胶囊<b>底边恰好落在脚底</b>。
+        /// <para>存在理由（用户实机反馈「玩家一出场，胶囊体半个在地里」）：旧实现写
+        /// <c>localPosition.y = (h - standHeight) * 0.5f</c>，站立时算出 <b>0</b> ⇒ 整根胶囊
+        /// 中心落到脚底、下半截埋进地面。几何真源是 Unity Capsule 基元的
+        /// <c>scale.y = 1 ⇔ 总高 2m</c>，故中心高度必须等于总高之半。</para>
+        /// <para>x/z 分量不在此处决定（保留作者摆好的粗细），本函数只管纵向。</para>
+        /// </summary>
+        /// <param name="currentHeight">当前角色身高（站立传站高、蹲伏传蹲高）。</param>
+        /// <returns>x=缩放后的 localScale.y，y=贴合后的 localPosition.y。</returns>
+        public static Vector2 CapsuleVisualPose(float currentHeight)
+        {
+            var scale = Mathf.Max(0.01f, currentHeight) * 0.5f;   // 基元总高 = 2 × scale.y
+            return new Vector2(scale, scale);                     // 中心 = scale ⇒ 底边贴 y=0
+        }
     }
 }

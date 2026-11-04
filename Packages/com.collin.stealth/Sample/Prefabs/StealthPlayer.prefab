@@ -1,5 +1,51 @@
 %YAML 1.1
 %TAG !u! tag:unity3d.com,2011:
+--- !u!1 &651778039338235941
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 8469765090394011060}
+  - component: {fileID: 4758964581294478246}
+  m_Layer: 0
+  m_Name: ResultPanel
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &8469765090394011060
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 651778039338235941}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 8991300690101152348}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &4758964581294478246
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 651778039338235941}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 51cc869384d16f249a31cd0e70d59412, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: com.collin.stealth::Collin.Stealth.StealthResultPanel
+  _revealDelay: 0.25
+  _cardWidth: 380
 --- !u!1 &1372954726827032138
 GameObject:
   m_ObjectHideFlags: 0
@@ -35,6 +81,7 @@ Transform:
   - {fileID: 8616906548528939734}
   - {fileID: 1183004432834832760}
   - {fileID: 4959455345551441581}
+  - {fileID: 8469765090394011060}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!143 &648331712669166778
@@ -101,6 +148,9 @@ MonoBehaviour:
   _standHeight: 1.8
   _crouchHeight: 1
   _crouchExposure: 0.35
+  _arenaCenter: {x: 0, y: 0, z: 0}
+  _arenaHalfSize: {x: 27, y: 27}
+  _arenaMargin: 0.55
   _followCamera: {fileID: 7867037995374579221}
   _allowOrbit: 1
   _orbitSensitivity: 0.22
@@ -109,6 +159,7 @@ MonoBehaviour:
   _cameraDistance: 5.2
   _cameraPivotRatio: 0.62
   _cameraStiffness: 12
+  _spawnOverride: {x: 9999, y: 9999, z: 9999}
 --- !u!1 &3749935743173783303
 GameObject:
   m_ObjectHideFlags: 0

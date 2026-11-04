@@ -128,37 +128,13 @@ namespace Collin.Stealth
             GUILayout.Label("WASD 相机相对移动 · Shift 跑 · Ctrl 蹲伏 · 右键拖拽转视角", _title);
             GUILayout.EndArea();
 
-            // ④ 胜负横幅
-            if (outcome != StealthGameOutcome.Playing)
+            // 胜负由 StealthResultPanel 统一呈现（含用时/察觉峰值归因数据）。
+            // HUD 不再画横幅：两处同帧都响应 R 会重复触发复位，且横幅与结算卡片同时出现自相矛盾。
+            if (rule == null)
             {
-                var escaped = outcome == StealthGameOutcome.Escaped;
-                _big.normal.textColor = escaped ? new Color(0.35f, 0.95f, 0.45f) : new Color(1f, 0.3f, 0.25f);
                 var box = new Rect(0f, Screen.height * 0.36f, Screen.width, 60f);
-                GUI.Label(box, escaped ? "撤离成功" : "被发现了 —— 按 R 重开", _big);
+                GUI.Label(box, "场景内没有 StealthGameRule（无胜负判定）", _big);
             }
-        }
-
-        void Update()
-        {
-            // R 重开一局：仅在已有结果时生效，避免游玩中途误触。
-            if (ReadRestartPressed())
-            {
-                var rule = FindRule();
-                if (rule != null && rule.Outcome != StealthGameOutcome.Playing) rule.ResetRound();
-            }
-        }
-
-        /// <summary>条件编译只进方法体：写在外面会让调用点在单后端工程里找不到方法。</summary>
-        static bool ReadRestartPressed()
-        {
-#if ENABLE_INPUT_SYSTEM
-            var kb = UnityEngine.InputSystem.Keyboard.current;
-            return kb != null && (kb.rKey.wasPressedThisFrame || kb.fKey.wasPressedThisFrame);
-#elif ENABLE_LEGACY_INPUT_MANAGER
-            return UnityEngine.Input.GetKeyDown(KeyCode.R) || UnityEngine.Input.GetKeyDown(KeyCode.F);
-#else
-            return false;
-#endif
         }
 
         static StealthGameRule FindRule()
