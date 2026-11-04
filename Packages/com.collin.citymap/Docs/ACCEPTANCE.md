@@ -73,6 +73,8 @@
 | 64 | **M4-g 平整以阶段闸门介入（D-33，用户否决逐格退让后重做）** | `CityTerrain.FlattenEnabled`（默认开）+ setter 走 ParcelModel 通道触发重算；`FlattenSolveStage` 在 `CommitBaseAsWorking()+Delta.ApplyTo()` 之后、收集约束之前整段短路。断言 `Flatten_Off_Is_Phase_Gate_Not_Per_Cell_Waiver`：**关平整 → 抬 25m 原样保留、`Outputs=0`、重跑仍 25m（关闭态幂等）；开平整 → `Outputs=9` 条约束、改动 76729 格** | qianwen-work-assistant（会话 `2026-11-04 m4-brush-fix`） | 2026-11-04 | **通过**（见 §M4-g-1） |
 | 65 | **M4-g 笔刷范围可见（用户反馈①）**：预览环由 y=0 平面改为**贴地表采样描边**，且绘制**先于**落笔前置条件（旧版数据不全时在画环前 return ⇒ 连环都没有、也无提示） | `SculptBrushTool.OnSceneGUI`：48 段折线逐段取 `field.GetHeight(x,z)+0.08f` 贴地绘制外圈与核心圈；编译 `errors=0`、本包 129/129 无回归 | 同上 | 2026-11-04 | **通过（代码与编译）/ 观感待用户实机确认**（SceneView 绘制不可 EditMode 断言，不虚报） |
 | 66 | **M4-g 交锁三项门禁 + 违规资产处置** | 清台 → 本包 `--filter_type assembly` 全量 → `verify_project.py` → `console status`；`assets-layout` 抓到 `Assets/Scenes/testscene.unity`（非本会话产物）经用户裁定删除 | 同上 | 2026-11-04 | **129/129**；`RECOMPILE failed=False errors=0`；`GATE consoleErrors=0 consoleWarnings=0 seeded=True`；校验器 **`FAIL 0`、结论: 绿灯** |
+| 67 | **M4-h 显式三步步骤条（12 §1 三段式的 UI 面，用户选"升级成显式步骤条"）** | `CityWindow.DrawWorkflowStepBar()`：① 地图参数 / ② 雕山水 / ③ 平整出地表 三个按钮，点一步＝把该相位该有的状态设好（② 关 `FlattenEnabled`+进雕刻模式，③ 开闸门+回检视）。**相位非门禁**（00 A-24）：其它工具与参数仍随时可用；高亮由真源 `FlattenEnabled`+当前模式回推（`SyncStepFromState`），杜绝"面板显示第③步、闸门实际还关着"的两套状态。编译 `errors=0` | qianwen-work-assistant（会话 `2026-11-04 m4-brush-fix`） | 2026-11-04 | **通过（代码/编译/无回归）；观感与手感待用户实机确认**（Editor GUI 不可 EditMode 断言，不虚报） |
+| 68 | **M4-h 违规/副本资产清理**：`Sample/Profiles/TerrainProfile 1/2/3.asset`（用户体验点"新建"产生的副本，GUID 均无任何场景/资产引用、未入库）经**用户裁定删除**，走 `AssetDatabase.DeleteAsset`；真源 `TerrainProfile.asset` 保留 | 删前核验三项：`EditorBuildSettings` 计数 0、`grep guid` 无引用者、`git status` 为 `??` 未跟踪；删后 `assets-layout` 由 FAIL 恢复 **ok** | 同上 | 2026-11-04 | **通过**；校验器整体转 **`FAIL 0`、绿灯** |
 
 ## 未通过项
 
@@ -768,7 +770,7 @@ S1b 重算，否则从关到开画面仍是旧的未平整态）；S1b 在 `Comm
 
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~66）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~68）。
 - **M4-e/M4-f 的实机闭环待用户验证**（§M4-e-3）：场景内创建地形实例后拖笔，看是否即时起伏、
   一笔一撤销是否成立、超格数提示是否出现。这是"雕刻笔刷"从"代码正确"到"手感成立"的最后一跳。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。

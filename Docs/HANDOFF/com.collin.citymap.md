@@ -3,7 +3,13 @@
 > 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-04（会话 `2026-11-04 m4-brush-fix`）
 > 代码阶段：本会话按 §3 原子取锁开工，按 §1.6 三项门禁交锁。**未 push。**
 
-## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质 + M4-b delta 地基 + M4-c 雕刻接入 + M4-d/e/f 笔刷工具 + M4-g 平整阶段闸门）
+## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质 + M4-b delta 地基 + M4-c 雕刻接入 + M4-d/e/f 笔刷工具 + M4-g 平整阶段闸门 + M4-h 三步步骤条）
+- **M4-h（显式三步步骤条 + 体验副本清理，2026-11-04，本包 129/129、校验器 `FAIL 0` 绿灯）**：
+  `CityWindow.DrawWorkflowStepBar()` 把 12 §1 三段式做成可点步骤条（①参数 ②雕山水 ③平整出地表），
+  点相位＝切 `FlattenEnabled` + 切模式；**相位非门禁**（00 A-24），高亮由真源回推（`SyncStepFromState`）
+  避免两套状态打架。Editor GUI 不可 EditMode 断言 ⇒ **观感/手感待用户实机确认**。
+  另按用户裁定删除 `Sample/Profiles/TerrainProfile 1/2/3.asset`（无引用的体验副本），真源保留，
+  `assets-layout` 恢复 ok。
 - **M4-g（平整介入时机 + 笔刷可见性，2026-11-04，本包 129/129、校验器 `FAIL 0` 绿灯）**：
   - `CityTerrain.FlattenEnabled`（默认开）+ `SetFlattenEnabled()` 走 ParcelModel 通道；
     `FlattenSolveStage` 在 `CommitBaseAsWorking()+Delta.ApplyTo()` **之后、收集约束之前**整段短路。

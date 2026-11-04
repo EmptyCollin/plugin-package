@@ -5,6 +5,20 @@
 ## [Unreleased]
 
 ### Added
+- **M4-h（显式三步步骤条 + 体验副本清理）**（本包 **129/129** Failed 0，校验器 **`FAIL 0`、结论: 绿灯**，
+  `consoleErrors=0 / consoleWarnings=0 / seeded=True`，`RECOMPILE failed=False errors=0`）：
+  - **步骤条 `CityWindow.DrawWorkflowStepBar()`**：`① 地图参数 → ② 雕山水 → ③ 平整出地表` 三个按钮，
+    点一步＝把该相位该有的状态设好（② 关 `FlattenEnabled` + 进雕刻模式；③ 开闸门 + 回检视模式）。
+    **相位是便捷动作、不是门禁**（00 A-24「任何阶段工具在任何时刻可用」）：其它工具与参数仍随时可用。
+    高亮由真源 `FlattenEnabled` + 当前模式回推（`SyncStepFromState`），**避免"面板显示第③步、
+    闸门实际还关着"的两套状态打架**——单一真源仍是 D-33 的阶段闸门。
+    Editor GUI 无法 EditMode 断言（反射调 `OnGUI` 抛「只能在 OnGUI 内调用」，项目既有实测）
+    ⇒ **观感与手感待用户实机确认**，不虚报已验证。
+  - **体验副本清理**：`Sample/Profiles/TerrainProfile 1/2/3.asset`（用户点"新建"反复产生，
+    三个 GUID 经核验**无任何场景/资产引用**、未入库）按**用户裁定**走 `AssetDatabase.DeleteAsset` 删除，
+    真源 `TerrainProfile.asset` 保留。删后 `assets-layout` 由 FAIL 恢复 **ok**、校验器整体转绿。
+  - 过程中的两处自我纠错：一次 `Write` 落点被污染成项目根散文件 `.tmp-insp`（已 `mv` 回缓存目录、根目录清干净）；
+    一次 bash 命令因引号嵌套被拆坏（改为写脚本文件执行，此前已验证该方式稳定）。
 - **M4-g（平整改为阶段闸门介入 + 笔刷范围贴地可见）**（本包 **129/129** Failed 0，校验器**绿灯**
   `FAIL 0`，门禁 `consoleErrors=0 / consoleWarnings=0 / seeded=True`，`RECOMPILE failed=False errors=0`）：
   响应用户实机三条反馈（范围看不见 / 抬了没反应 / 起伏是不是真的），并按用户**否决**我初版"逐格退让"

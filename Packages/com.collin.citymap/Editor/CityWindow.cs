@@ -18,6 +18,14 @@ namespace Collin.CityMap.EditorTooling
         /// <summary>工具模式互斥（00 §5.3）：同一时刻只有一个工具消费 SceneView 事件。</summary>
         public enum ToolMode { Inspect, TerrainSculpt, RiverBrush, RoadGraph, FieldPlace, Build }
 
+        /// <summary>
+        /// 工作流相位（12 §1 三段式）：① 地图参数 → ② 雕山水 → ③ 平整出地表。
+        /// <para>**相位不是门禁**（00 A-24「任何阶段工具在任何时刻可用」）：点某相位只做"把该相位
+        /// 该有的状态设好"的便捷动作，其它工具仍随时可用。真实单一真源在
+        /// <see cref="CityTerrain.FlattenEnabled"/>（D-33 阶段闸门），本枚举只是驱动它 + 高亮当前相位。</para>
+        /// </summary>
+        public enum WorkflowStep { Params = 1, Sculpt = 2, Flatten = 3 }
+
         private static CityWindow _instance;
 
         [SerializeField] CityProject _project;
@@ -36,6 +44,9 @@ namespace Collin.CityMap.EditorTooling
         private CityTerrain _terrain;
         /// <summary>已注册阶段的身份指纹（Profile × CityTerrain 实体 id）。变则重注册。</summary>
         private ulong _stageKey;
+
+        /// <summary>当前工作流相位（步骤条高亮）。点相位时 EnterStep 会把闸门/模式设到该相位该有的状态。</summary>
+        private WorkflowStep _step = WorkflowStep.Params;
 
         public static CityProject ActiveProject => _instance != null ? _instance._project : null;
         public static PipelineRunner ActiveRunner => _instance?._runner;
@@ -258,6 +269,8 @@ namespace Collin.CityMap.EditorTooling
             }
 
             EditorGUILayout.Space(4f);
+            DrawWorkflowStepBar();            // ① 参数 → ② 雕山水 → ③ 平整出地表（相位驱动，非门禁）
+            EditorGUILayout.Space(4f);
             DrawProjectField();
             EditorGUILayout.Space(4f);
             DrawTerrainProfile();
@@ -274,6 +287,75 @@ namespace Collin.CityMap.EditorTooling
             EditorGUILayout.LabelField(_lastRunLine, EditorStyles.miniLabel);
 
             EditorGUILayout.EndScrollView();
+        }
+
+        /// <summary>
+        /// 三步工作流步骤条（12 §1）。**相位是便捷动作、不是门禁**（00 A-24）：点一步只把
+        /// 该步该有的状态设好（② 关平整+进雕刻，③ 开平整+回检视），其它工具与参数仍随时可用。
+        /// <para>真实单一真源是 <see cref="CityTerrain.FlattenEnabled"/>（D-33），高亮由它与实际模式回推，
+        /// 避免"面板显示第③步、数据里闸门还关着"这种两套状态打架。</para>
+        /// </summary>
+        private void DrawWorkflowStepBar()
+        {
+            EditorGUILayout.LabelField("工作流（点一步＝把该步状态设好，不锁其它工具）", EditorStyles.miniBoldLabel);
+            if (_terrain == null) _terrain = FindTerrainInstance();
+            SyncStepFromState();
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                StepButton(WorkflowStep.Params, "① 地图参数",
+                    "调世界参数与地形噪声参数（噪声基底＝山与起伏）。\n这一步不改变你的雕刻，也不强制平整状态。");
+                StepButton(WorkflowStep.Sculpt, "② 雕山水",
+                    "关闭自动平整（D-33 闸门）并切到「雕刻」模式。\n此时抬/压即时保留在「噪声+雕刻」的意图地表上，"
+                  + "不会被城内 8× 强约束当场压回（这是反馈②「抬了没反应」的正解）。");
+                StepButton(WorkflowStep.Flatten, "③ 平整出地表",
+                    "打开自动平整：平整在②定稿的意图地表**之上**做整理，城内强约束此时才进场。");
+            }
+
+            if (_terrain == null)
+                EditorGUILayout.HelpBox("还没有地形实例：先在下方「地形参数」区点「创建地形实例（含显示层）」。",
+                    MessageType.Info);
+        }
+
+        /// <summary>高亮由真源回推：在雕刻模式就是第②步；离开雕刻模式后按闸门状态归位。</summary>
+        private void SyncStepFromState()
+        {
+            if (_mode == ToolMode.TerrainSculpt) { _step = WorkflowStep.Sculpt; return; }
+            if (_step != WorkflowStep.Sculpt) return;
+            _step = _terrain != null && _terrain.FlattenEnabled
+                ? WorkflowStep.Flatten : WorkflowStep.Params;
+        }
+
+        private void StepButton(WorkflowStep s, string label, string tip)
+        {
+            var prev = GUI.backgroundColor;
+            if (_step == s) GUI.backgroundColor = new Color(0.42f, 0.72f, 1f);
+            if (GUILayout.Button(new GUIContent(label, tip), GUILayout.Height(24f))) EnterStep(s);
+            GUI.backgroundColor = prev;
+        }
+
+        private void EnterStep(WorkflowStep s)
+        {
+            _step = s;
+            if (_terrain == null) _terrain = FindTerrainInstance();
+
+            switch (s)
+            {
+                case WorkflowStep.Sculpt:
+                    _mode = ToolMode.TerrainSculpt;
+                    // 判空用 != null 而非 `?.`：Unity 对已销毁对象的 == 有重载语义，
+                    // 对 MonoBehaviour 用 null 条件运算符会绕过这层保护。
+                    if (_terrain != null) _terrain.SetFlattenEnabled(false);
+                    break;
+                case WorkflowStep.Flatten:
+                    _mode = ToolMode.Inspect;
+                    if (_terrain != null) _terrain.SetFlattenEnabled(true);
+                    break;
+                default:
+                    _mode = ToolMode.Inspect;
+                    break;
+            }
+            Repaint();
         }
 
         private void DrawModeSelector()
