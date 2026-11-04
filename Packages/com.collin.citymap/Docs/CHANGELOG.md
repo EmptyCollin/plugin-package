@@ -5,6 +5,22 @@
 ## [Unreleased]
 
 ### Added
+- **M4-e + M4-f（场景雕刻笔刷：交互壳 + 面板参数区）**（本包测试两次复跑均 **128/128** Failed 0，校验器**绿灯**，
+  门禁 `console` 达 0/0 或全部命中 §1.8 已批准豁免）：
+  - `Editor/SculptBrushTool.cs`（提交 8ab4689）：`SceneView.duringSceneGui` 静态挂接，**仅"雕刻"模式接管鼠标**、
+    其它模式原样放行；预览环画在 y=0 平面（纯几何求交，不依赖碰撞体——派生 mesh 是不入库隐藏物体）；
+    落笔走 `SculptBrush` 纯数学（固定步长/世界位移/carry 余量），写入 `SculptDeltaAsset`，
+    松手 `MarkDeltaChanged(笔刷中心, 半径)` 交由 D-31 链路刷新（**不在壳内重算/重建**，编辑态与重生成同一条路径）。
+    一笔划 = 一个 `Undo.RecordObject`（A-1-6）；超格数上限提示截断而非静默（01 §5.4）。
+    本轮只接**有输入来源**的动作（抬/压/平滑/定高到起笔点），反色/清除等待数值框输入源，未接线动作明确拒绝并提示。
+  - `CityWindow.DrawSculptPanel()`（提交 f70fcc2）：半径/强度/动作只在雕刻模式显示；动作下拉**只列已接线四个**。
+  - **H-47（自查缺陷，编译当场暴露）**：交互壳初版混入多处**臆造 API**（`CityRegistry` 不存在、
+    `CellSizeMeters`/`HeightAtWorld` 名称错、`GetSlot<CityGrid>`——CityGrid 是**值类型**，槽位约束 `where T:class`
+    直接编译失败）+ 一句残缺代码。整文件按逐条核实过的真实签名重写；教训与 H-46 同族：
+    **引用不核源头就写，编辑器只会比 grep 更诚实**。
+  - **端到端实测状态（如实）**：反射驱动笔划时场景内**没有 CityTerrain 实例**（体验会话已被域重载重置、
+    派生物体不入库），`terrain=NULL` ⇒ "落笔→delta 写入→重算刷新"的**实机闭环尚未跑通**，
+    当前证据链 = 数学内核 9 条单测 + 编译/无回归；**待你在场景创建实例后实测**（见 ACCEPTANCE §M4-e-1）。
 - **M4-d（笔刷数学内核，A-1-5 可执行化）**（本包 `test run --mode editor --filter_type assembly` Total **128** / Failed 0，
   较 M4-c 增 9 条断言）：
   - 新增 `Runtime/Core/SculptBrush.cs`：`SculptBrush`（纯函数数学）+ `SculptStroke`（笔划状态机），

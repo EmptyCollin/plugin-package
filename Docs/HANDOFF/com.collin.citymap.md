@@ -3,7 +3,17 @@
 > 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-03（会话 `2026-11-03 m4-terrain-workflow`）
 > 代码阶段：本会话按 §3 原子取锁开工，按 §1.6 三项门禁交锁。**未 push。**
 
-## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质 + M4-b delta 地基 + M4-c 雕刻接入管线）
+## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a 材质 + M4-b delta 地基 + M4-c 雕刻接入 + M4-d/e/f 笔刷工具）
+- **M4-d/e/f（雕刻笔刷工具链，2026-11-04）**，用户实机反馈②"先雕山水再生城"的落地：
+  `Runtime/Core/SculptBrush.cs`（fb8f6bc，纯函数数学 + `SculptStroke` 状态机，**放 Runtime 才能测 A-1-5
+  "60Hz/144Hz 同 delta"**；固定步长积分不乘 deltaTime、位移取世界量、不足一步的位移跨调用留存）
+  → `Editor/SculptBrushTool.cs`（8ab4689，`SceneView.duringSceneGui`，**仅雕刻模式接管鼠标**；
+  预览环 y=0 纯几何求交，不 raycast 派生隐藏物体；一笔 = 一个 `Undo.RecordObject`；
+  松手 `MarkDeltaChanged(笔刷中心,半径)` 交回 D-31 链路刷新，**壳内不重算/不重建**；超格数提示截断）
+  → `CityWindow.DrawSculptPanel()`（f70fcc2，半径/强度/动作只在雕刻模式显示，**下拉只列已接线四项**）。
+  本包 **128/128**（+9 条），三次增量各自复跑门禁：编译零错、控制台 0/0 或**全命中 §1.8 已批准豁免**、
+  校验器 **FAIL 0 / 绿灯**。**H-47**：首版混入臆造 API（`CityRegistry`/`CellSizeMeters`/`HeightAtWorld`/
+  `GetSlot<CityGrid>`——CityGrid 是**值类型**）被编译器当场抓住，全文件按 grep 过的真签名重写。
 - **M4-c（DESIGN D-31 落地，2026-11-04）**：雕刻 delta 接进 S1b（`复位 → delta.ApplyTo → 拟合读意图地表 → 融合`），
   `IntentKind.DeltaStroke` 双表同步（脏 `Flatten|Building`，**不含 Terrain** ⇒ 不重跑噪声）；
   `CityTerrain.MarkDeltaChanged(笔刷位置, 半径)`（脏区域用笔刷实际位置，不用实例 transform）。

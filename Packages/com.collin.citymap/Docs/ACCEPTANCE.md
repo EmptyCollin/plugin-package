@@ -65,6 +65,11 @@
 | 56 | **M4-d** 一笔划影响格数**截断而非静默**（01 §5.4）、重复格不双计、新笔划不残留上笔截断 | `SculptStroke` 三条状态机断言（上限 100 喂 500 点 → 恰 100 + `Truncated=true`；`Begin` 重置；同格 50 次 → `CellCount==1`） | 同上 | 2026-11-04 | **通过** |
 | 57 | **M4-d** 交锁三项门禁 | 清台 → 静默 → 本包全量 → `verify_project.py` → `console status` | 同上 | 2026-11-04 | 本包 **128/128**；`console` 检查 **`error=0 warning=0`**；校验器 **`FAIL 0`、结论: 绿灯**（含 `pkg-layout`/`runtime-purity`/`assets-layout` 全 ok）。见 §M4-d-3 |
 | 58 | **前提核实（如实上报）**：`S3_Road`/`S4_Parcel` **尚无实现体**，故用户裁定的"steepMask 在 S3/S4 内现算"**当前无落点** | `ls Runtime/Core` 仅 `AssembleStage`/`TerrainBaseStage`/`FlattenSolveStage`；`StageId` 与 `DirtyBits.Of` 里 S3/S4 有枚举位但无对应类 | 同上 | 2026-11-04 | **已上报用户**：steepMask 顺延至路网阶段落地时实施；本轮改做不依赖它的场景笔刷交互壳（A-1-5/A-1-6 半边已在 M4-d 立住） |
+| 59 | **M4-e** 场景笔刷交互壳编译通过且无回归；一处**自造缺陷 H-47**（臆造 API）被编译器当场抓住并整体重写 | `Editor/SculptBrushTool.cs` 首版报 3 错：`CS0452`（CityGrid 是值类型，不满足 `GetSlot<T> where T:class`）+ 2×`CS1061`（对值类型用 `HasValue/Value`）；另有残缺语句与不存在的 `CityRegistry`。按逐条核实过的真实签名重写 → `recompile_status failed=False / errors=0`，Editor dll mtime ≥ 源码；本包全量 **128/128 Failed 0** | 同上 | 2026-11-04 | **通过**（见 §M4-e-1） |
+| 60 | **M4-e** 交互壳职责边界：仅"雕刻"模式接管鼠标、笔刷参数改静态字段不触发重生成、松手才提交脏区且用**笔刷中心**（非 transform 位置）、一笔 = 一个 undo、超格数**提示截断不静默**、未接线动作**明确拒绝** | 源码审阅 + 编译验证：`CityWindow.CurrentMode != TerrainSculpt` 直接 return；`StampRadius` 走 `SculptBrush.DeltaFor/FalloffAt/SmoothDelta`（纯数学）；`EndStroke` 调 `_terrain.MarkDeltaChanged(_lastCenter, RadiusMeters)`；`BeginStroke` 前置 `Undo.RecordObject`；`_stroke.Truncated` → `Hud(...)`；`ActionSupported` 白名单 | 同上 | 2026-11-04 | **实现到位**；行为断言的 Runtime 半边由 M4-d `SculptStroke` 三条状态机用例覆盖 |
+| 61 | **M4-f** 面板雕刻参数区（半径/强度/动作）仅雕刻模式显示，动作下拉**只列已接线四项** | `CityWindow.DrawSculptPanel()` 提交 f70fcc2；自查修掉一处类型错误（`Popup` 第三参需 `string[]`，初版误传枚举数组，同时使标签数组沦为死字段）；编译 `errors=0` | 同上 | 2026-11-04 | **通过** |
+| 62 | **M4-e/M4-f** 交锁三项门禁（两次增量各自复跑） | 清台 → 本包 `--filter_type assembly` 全量 → `verify_project.py` → `console status` | 同上 | 2026-11-04 | 两次均 **128/128**；校验器 **`FAIL 0`、结论: 绿灯**（交互壳那次 `console 0/0`；面板那次 `error=1` **全部命中 §1.8 已批准豁免清单**，被正确降为 WARN、无虚假绿灯）；`pkg-layout`/`runtime-purity`/`assets-layout` 全 ok |
+| 63 | **端到端实机闭环（落笔→delta 写入→重算→画面刷新）尚未跑通**，如实标注 | 反射驱动 `BeginStroke/ApplyDrag×3/EndStroke` 做真笔划验证时返回 **`terrain=NULL hasGrid=False`**——体验会话被域重载重置、派生 chunk 物体 `HideAndDontSave` 不入库，场景内已无 CityTerrain 实例；该次运行**未写入任何数据**（前置校验即返回），现场未被污染 | 同上 | 2026-11-04 | **待实测**（非失败项，见遗留清单）：需用户在场景「创建地形实例」后拖笔验证。当前证据链 = 数学内核 9 条单测 + 编译/无回归，**不含实机手感** |
 
 ## 未通过项
 
@@ -639,9 +644,54 @@ shader=Collin/CityMap/Terrain VertexColor
 故 steepMask 顺延至路网阶段落地时实施；本轮改做**不依赖 S3/S4 的场景笔刷交互壳**，
 避免为了"看起来完成了退让"而擅自新建你没选的阶段。
 
+## 本次会话执行记录（M4-e/M4-f：场景笔刷交互壳 + 面板参数区，2026-11-04）
+
+### §M4-e-1 交互壳：职责边界与两条"必须不在这里做"的事
+`Editor/SculptBrushTool.cs`（提交 8ab4689）。它**只做三件事**：输入（鼠标轨迹→世界落点）、
+可视化（半径预览环）、把 `SculptBrush` 的纯数学结果写进 `SculptDeltaAsset` 并 `MarkDeltaChanged`。
+两条刻意"不在这里做"的约束：
+1. **不在壳内重算地形/重建 mesh** —— 落笔后交回既有 D-31 链路（面板合并窗口 → S1b 重算 →
+   显示层按脏区增量重建）。若在壳内另开一条刷新路径，"编辑态所见"与"重新生成所得"就会分叉（§0.1 原则3）。
+2. **只在 `CityWindow.CurrentMode == TerrainSculpt` 时接管鼠标** —— 其它模式原样放行，绝不吞事件。
+
+预览环画在 **y=0 平面用纯几何求交**，不依赖碰撞体/射线检测：派生 chunk 物体是 `HideAndDontSave`
+的隐藏物体，拿它做 raycast 会在域重载后静默失效。
+
+一笔划 = 一个 `Undo.RecordObject`（A-1-6）；`EndStroke` 用**笔刷中心**而非 `transform.position`
+提交脏区（H-42 同族：算错影响范围 ⇒ "雕了别处、画面不动"）；超格数上限**提示截断**不静默；
+未接线动作（反色/清除/定高到指定值，缺数值框输入源）**明确拒绝并提示**，不给静默失败留口子。
+
+### §M4-e-2 H-47：臆造 API 被编译器当场抓住（与 H-46 同族教训）
+首版交互壳报 3 错：`CS0452`（`CityGrid` 是**值类型**，不满足 `GetSlot<T> where T : class`）、
+2×`CS1061`（对值类型用 `HasValue/Value`），另含不存在的 `CityRegistry` 与一句残缺代码。
+教训固化：**写引用前先 grep 真实签名**，编辑器比自审更诚实。正确取格网方式是 `ctx.Grid`
+（= `Project.GetGrid()`，值类型 ⇒ 有效性判据取 `CellCount>0 && CellSize>1e-5f`，不是 null 判断）。
+
+### §M4-f 面板参数区（提交 f70fcc2）
+半径/强度/动作**只在雕刻模式显示**（常驻会挤占面板，且其它模式改了无效）。动作下拉**只列已接线的四个**
+——列出不可用项会让用户选到没作用的选项，比"看不见"更糟。自查修掉一处类型错误
+（`EditorGUILayout.Popup` 第三参需 `string[]`，初版误传枚举数组、并让标签数组沦为死字段）。
+
+### §M4-e-3 端到端实机闭环**尚未跑通**（如实标注，非失败项）
+反射驱动 `BeginStroke → ApplyDrag×3 → EndStroke` 做真笔划验证时返回 **`terrain=NULL hasGrid=False`**：
+体验会话被域重载重置、派生 chunk 不入库，场景内已无 `CityTerrain` 实例。
+该次运行**没有写入任何数据**（前置校验即返回），现场未被污染、探针已清理。
+所以"落笔→delta 写入→重算→画面刷新"的**实机手感仍待用户验证**；
+当前证据链 = 数学内核 9 条单测（M4-d）+ 编译干净 + 128/128 无回归，**不含实机体验**。
+
+### §M4-e-4 交锁门禁（两次增量各自复跑，2026-11-04）
+| 增量 | 本包测试 | 校验器 | 控制台 |
+|---|---|---|---|
+| M4-e 交互壳 | **128/128** Failed 0 | **`FAIL 0`、结论: 绿灯** | `error=0 warning=0` |
+| M4-f 面板区 | **128/128** Failed 0 | **`FAIL 0`、结论: 绿灯** | `error=1` 全部命中 §1.8 已批准豁免（正确降为 WARN，无虚假绿灯） |
+两次均 `recompile_status failed=False / errors=0`、Editor dll mtime ≥ 源码；
+`pkg-layout`/`runtime-purity`/`assets-layout` 全 ok。
+
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~58）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~63）。
+- **M4-e/M4-f 的实机闭环待用户验证**（§M4-e-3）：场景内创建地形实例后拖笔，看是否即时起伏、
+  一笔一撤销是否成立、超格数提示是否出现。这是"雕刻笔刷"从"代码正确"到"手感成立"的最后一跳。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。
 - 未实测且当前无法验证的：所有需要河/路/场域/建筑真实数据的断言（A-2~A-8、A-26~A-44、A-48 的端到端形态）。
   **地形侧已在 M2/M3/M4 打通**（S1a/S1b + 显示 mesh + 雕刻数据层与重放均实机可见/已断言）；尚缺的条目：
