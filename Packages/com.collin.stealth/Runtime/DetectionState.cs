@@ -20,6 +20,10 @@ namespace Collin.Stealth
         [Tooltip("是否处于蹲伏/掩体后（L4）")]
         [SerializeField] bool _crouching;
 
+        [Tooltip("察觉判定点相对脚底的高度（米）。用身体中部而非脚底：\n"
+                 + "脚底点会在哨兵贴近时落到视线正下方，且掩体遮挡判定也会打在脚踝上。")]
+        [SerializeField, Range(0f, 2f)] float _bodyHeight = 0.95f;
+
         /// <summary>当前累积察觉度 [0,1]。</summary>
         [SerializeField] float _suspicion;
 
@@ -47,6 +51,19 @@ namespace Collin.Stealth
         {
             get => _crouching;
             set => _crouching = value;
+        }
+
+        /// <summary>
+        /// 察觉判定点（世界）：脚底 + 身体高度，蹲伏时下移。
+        /// 哨兵感知与自身感知<b>必须共用这一点</b>，否则贴脸时两侧判定不一致会来回翻转。
+        /// </summary>
+        public Vector3 BodyPoint
+        {
+            get
+            {
+                var h = _crouching ? _bodyHeight * 0.55f : _bodyHeight;
+                return transform.position + Vector3.up * h;
+            }
         }
 
         /// <summary>外部（状态机/工具）直接设察觉度，档位同步导出。</summary>
@@ -96,7 +113,7 @@ namespace Collin.Stealth
             var hasSeer = false;
             var hasFallback = false;
 
-            var self = transform.position;
+            var self = BodyPoint;
             var masks = CurrentMasks();
 
             for (var i = 0; i < volumes.Count; i++)
@@ -152,7 +169,7 @@ namespace Collin.Stealth
             if (_crouching) masks |= StealthMask.CoverOrCrouch;
 
             if (Collin.Core.Services.TryGet<Collin.Core.Stealth.ISafeIslandProvider>(out var islands)
-                && islands != null && islands.Count > 0 && islands.Contains(transform.position))
+                && islands != null && islands.Count > 0 && islands.Contains(BodyPoint))
             {
                 masks |= StealthMask.SafeIsland;
             }

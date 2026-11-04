@@ -57,6 +57,12 @@ namespace Collin.Stealth
         [Min(1)]
         [SerializeField] int _lineOfSightCheckInterval = 1;
 
+        [Header("近身感知")]
+        [Tooltip("近身半径（米）：目标进入此距离即视为<b>贴脸察觉</b>，不再受视角锥约束。\n"
+                 + "没有这一档时，NPC 与玩家重叠反而『看不见』——目标几乎在视线正下方，"
+                 + "超出俯仰半角就被判瞎（实机反馈到的 bug）。")]
+        [SerializeField, Range(0f, 10f)] float _proximityRadius = 1.8f;
+
         // ── 只读面 ──────────────────────────────────────────────────
 
         /// <summary>水平视野角（度，全角）。</summary>
@@ -91,6 +97,9 @@ namespace Collin.Stealth
 
         /// <summary>视线检测间隔帧数（至少 1）。</summary>
         public int LineOfSightCheckInterval => _lineOfSightCheckInterval < 1 ? 1 : _lineOfSightCheckInterval;
+
+        /// <summary>近身半径（米）：目标进入此距离即贴脸察觉，不受视角锥约束。0 = 关闭。</summary>
+        public float ProximityRadius => _proximityRadius;
 
         // ── 写入面（Controller 专用：Editor 面板与跨包命令经此写 Model，见 §0.1 原则 2）──
 
@@ -159,6 +168,12 @@ namespace Collin.Stealth
         public void SetLineOfSightCheckInterval(int frames)
         {
             _lineOfSightCheckInterval = frames < 1 ? 1 : frames;
+        }
+
+        /// <summary>设近身半径（米，钳制 0~10；0 = 关闭贴脸察觉）。</summary>
+        public void SetProximityRadius(float meters)
+        {
+            _proximityRadius = Mathf.Clamp(meters, 0f, 10f);
         }
 
         /// <summary>打包察觉阈值与回落速率，供跨帧累加使用。</summary>

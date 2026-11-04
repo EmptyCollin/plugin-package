@@ -30,6 +30,7 @@ namespace Collin.Stealth.EditorTooling
         static readonly Color CoverColor = new Color(0.82f, 0.82f, 0.86f);
         static readonly Color PlayerColor = new Color(0.2f, 0.6f, 1f);
         static readonly Color GuardColor = new Color(0.9f, 0.35f, 0.25f);
+        static readonly Color ExitColor = new Color(0.35f, 0.85f, 1f);
 
         [MenuItem("Tools/Collin/Stealth/生成可玩示例场景")]
         public static void Build()
@@ -77,7 +78,7 @@ namespace Collin.Stealth.EditorTooling
 
             var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
             ground.name = "Ground";
-            ground.transform.localScale = new Vector3(4f, 1f, 4f);
+            ground.transform.localScale = new Vector3(6f, 1f, 6f);   // 60×60m，覆盖出生点(z=-22)到撤离点(z=16)
 
             PlaceCube("Cover_A", new Vector3(-3f, 1.5f, 0f), new Vector3(1.6f, 3f, 1.6f));
             PlaceCube("Cover_B", new Vector3(4f, 1.5f, -2f), new Vector3(2.4f, 3f, 1.2f));
@@ -86,6 +87,7 @@ namespace Collin.Stealth.EditorTooling
             SpawnGuard("Guard_Patrol", route, profile, Vector3.zero, 0f);
             SpawnGuard("Guard_Sweeper", route2, profile, new Vector3(2f, 0f, -2f), 3f);
             BuildPlayerUnit();
+            BuildExitAndRule();
 
             var clockGo = new GameObject("StealthClock");
             clockGo.AddComponent<StealthClock>();
@@ -104,7 +106,39 @@ namespace Collin.Stealth.EditorTooling
             }
 
             Debug.Log("[StealthSampleBuilder] 可玩示例已生成：" + ScenePath
-                      + "\n打开它按 Play 即可：WASD 移动、Ctrl 蹲伏，走进哨兵视野会被发现。");
+                      + "\nPlay 后：WASD 相机相对移动 / Shift 跑 / Ctrl 蹲伏 / 右键拖拽转视角；"
+                      + "\n哨兵警戒范围以半透明色块投在地面，走到北侧蓝色撤离圈内驻留即通关，被察觉到底则失败（R 重开）。");
+        }
+
+        /// <summary>
+        /// 撤离区 + 对局规则：补上「游戏有终点」这一环。
+        /// 撤离点放在<b>巡逻路线之外</b>的北侧（z=+16），玩家必须绕过或穿过哨兵视野才能到，
+        /// 这样潜行才有目标；区域本身用 Gizmos 画圈 + 一根立柱标示。
+        /// </summary>
+        static void BuildExitAndRule()
+        {
+            var exitGo = new GameObject("ExitZone");
+            exitGo.transform.position = new Vector3(0f, 0f, 16f);
+            var zone = exitGo.AddComponent<StealthExitZone>();
+            SetSerializedField(zone, "_radius", 2.4f);
+            SetSerializedField(zone, "_dwellSeconds", 0.6f);
+
+            // 可见标记：半透明立柱，远处也能看见撤离点在哪
+            var beacon = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            beacon.name = "Beacon";
+            beacon.transform.SetParent(exitGo.transform, false);
+            beacon.transform.localPosition = new Vector3(0f, 2.2f, 0f);
+            beacon.transform.localScale = new Vector3(0.5f, 2.2f, 0.5f);
+            Object.DestroyImmediate(beacon.GetComponent<Collider>());   // 不挡路
+            Tint(beacon, ExitColor);
+
+            var ruleGo = new GameObject("StealthGameRule");
+            var rule = ruleGo.AddComponent<StealthGameRule>();
+            var player = GameObject.Find("Player");
+            if (player != null)
+            {
+                SetSerializedField(rule, "_player", player.GetComponent<DetectionState>());
+            }
         }
 
         /// <summary>
@@ -115,7 +149,10 @@ namespace Collin.Stealth.EditorTooling
         static void BuildPlayerUnit()
         {
             var player = new GameObject("Player");
-            player.transform.position = new Vector3(0f, 0.05f, -16f);
+            // 出生点必须在巡逻视距（14m）之外：实测放 (0,0,-16) 时站着不动约 30s 即被
+            // 南侧路点看见并抓获（outcome=Caught），演示不公平。z=-22 到南边 waypoints
+            // 的垂直距离 16>14，静置安全；通往北侧撤离点 (0,16) 仍要穿过巡逻区。
+            player.transform.position = new Vector3(0f, 0.05f, -22f);
             var cc = player.AddComponent<CharacterController>();
             cc.height = 1.8f;
             cc.center = new Vector3(0f, 0.9f, 0f);
@@ -175,6 +212,7 @@ namespace Collin.Stealth.EditorTooling
             SetSerializedField(vision, "_profile", profile);
 
             bodyGo.AddComponent<GuardBrain>();
+            bodyGo.AddComponent<StealthGroundProjection>();
 
             var visual = GameObject.CreatePrimitive(PrimitiveType.Capsule);
             visual.name = "CapsuleVisual";
@@ -247,6 +285,8 @@ namespace Collin.Stealth.EditorTooling
             profile.SetSuspicionThreshold(0.35f);
             profile.SetAlertThreshold(0.8f);
             profile.SetLightSensitivity(0f);
+            profile.SetProximityRadius(1.8f);      // 贴脸必然察觉：修「重叠后丧失目标」
+            profile.SetOccluderMask(-1);           // 全层可遮挡：掩体真的能挡视线
             EditorUtility.SetDirty(profile);
 
             AssetDatabase.SaveAssets();

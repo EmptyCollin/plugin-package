@@ -5,42 +5,53 @@ namespace Collin.Stealth
     /// <summary>
     /// 潜行玩家控制器（<b>拆箱即用</b>，DESIGN D-13）：与 CharacterController +
     /// <see cref="DetectionState"/> 一起打进 <c>StealthPlayer</c> 预制件，
-    /// 拖进任意场景即可 WASD 移动、Ctrl 蹲伏，<b>无需自建 InputAction 资产</b>。
-    /// <para>输入后端（实测）：本工程 <c>ProjectSettings.asset</c> 的
-    /// <c>activeInputHandler: 1</c> = 仅新 Input System，旧 <c>Input.*</c> 运行时不可用。
-    /// 故优先轮询 <c>Keyboard.current</c>，并按 <c>ENABLE_LEGACY_INPUT_MANAGER</c> 回退旧后端；
-    /// 两路都不可用时输出<b>一次性明确 warning</b>，绝不静默失灵。</para>
-    /// <para>条件编译只写在<b>方法体内部</b>：写在方法外会让调用点在单后端工程里找不到方法。</para>
+    /// 拖进任意场景即可玩，<b>无需自建 InputAction 资产</b>。
+    /// <para><b>操控语义（用户实机反馈后的定案，勿回退）</b>：</para>
+    /// <list type="bullet">
+    /// <item><b>W/A/S/D = 相机相对的四向移动</b>（A 向左前进、D 向右前进），
+    /// 数学在 <see cref="ThirdPersonRig.MoveDirection"/>。
+    /// 旧实现把「移动朝向」和「镜头朝向」共用同一个 <c>_yaw</c>，导致按 A/D 变成转镜头。</item>
+    /// <item>角色模型朝向由移动方向决定，且与镜头角<b>各自独立</b>；
+    /// 镜头角只由鼠标右键拖拽改。</item>
+    /// <item><b>相机位置与朝向用同一个阻尼平滑</b>（都取自平滑后的 <c>_camYaw/_camPitch</c>）：
+    /// 旧实现朝向瞬时赋值、位置却单独 Lerp，两者脱节 ⇒ 拖拽时画面抖动。</item>
+    /// <item>相机更新放在 <c>LateUpdate</c>，避免与其他组件的 Update 顺序互相拉扯。</item>
+    /// </list>
+    /// <para>输入后端（实测）：本工程 <c>activeInputHandler: 1</c> = 仅新 Input System；
+    /// 条件编译只写在<b>方法体内部</b>，写在方法外会让调用点在单后端工程里找不到方法。</para>
     /// </summary>
     [RequireComponent(typeof(CharacterController))]
     public sealed class PlayerStealthController : MonoBehaviour
     {
         [Header("移动")]
         [SerializeField, Min(0.1f)] float _walkSpeed = 3.2f;
+        [SerializeField, Min(0.1f)] float _sprintSpeed = 5.0f;
         [SerializeField, Min(0.1f)] float _crouchSpeed = 1.6f;
         [SerializeField, Min(1f)] float _gravity = 18f;
-        [Tooltip("朝向跟随输入方向的转速（度/秒）")]
-        [SerializeField, Min(1f)] float _turnSpeed = 720f;
+        [Tooltip("角色模型转向速度（阻尼系数，越大越跟手）")]
+        [SerializeField, Min(1f)] float _turnStiffness = 14f;
 
         [Header("蹲伏")]
-        [Tooltip("按下 Ctrl 即切换（而非按住才蹲）")]
+        [Tooltip("开=按 Ctrl 切换；关=按住才蹲")]
         [SerializeField] bool _toggleCrouch = true;
         [SerializeField, Min(0.5f)] float _standHeight = 1.8f;
         [SerializeField, Min(0.5f)] float _crouchHeight = 1.0f;
         [Tooltip("蹲伏时上报给 L4 的曝光度，越低越难被发现")]
         [SerializeField, Range(0f, 1f)] float _crouchExposure = 0.35f;
 
-        [Header("第三人称视角（可选）")]
+        [Header("第三人称视角")]
         [Tooltip("留空自动取 Camera.main；无相机时本组件不管视角")]
         [SerializeField] Camera _followCamera;
-        [Tooltip("右键拖拽环绕视角（不需要鼠标锁定）")]
+        [Tooltip("按住鼠标右键拖拽转镜头")]
         [SerializeField] bool _allowOrbit = true;
-        [SerializeField, Range(0.2f, 10f)] float _orbitSensitivity = 2f;
-        [SerializeField] float _orbitPitchMin = -15f;
-        [SerializeField] float _orbitPitchMax = 65f;
-        [SerializeField, Min(0.5f)] float _cameraDistance = 5f;
-        [Tooltip("观察枢轴相对脚底的高度（按站立/蹲伏自动缩放）")]
-        [SerializeField, Range(0.2f, 2f)] float _cameraPivotRatio = 0.6f;
+        [SerializeField, Range(0.05f, 2f)] float _orbitSensitivity = 0.22f;
+        [SerializeField] float _orbitPitchMin = -10f;
+        [SerializeField] float _orbitPitchMax = 60f;
+        [SerializeField, Min(0.5f)] float _cameraDistance = 5.2f;
+        [Tooltip("观察枢轴相对脚底的高度比例")]
+        [SerializeField, Range(0.2f, 2f)] float _cameraPivotRatio = 0.62f;
+        [Tooltip("镜头跟随阻尼（位置与朝向共用，避免脱节抖动）")]
+        [SerializeField, Min(1f)] float _cameraStiffness = 12f;
 
         static readonly RaycastHit[] s_camBuffer = new RaycastHit[4];
 
@@ -50,27 +61,34 @@ namespace Collin.Stealth
         Camera _camera;
 
         float _verticalVelocity;
-        float _yaw = 180f;
-        float _pitch = 18f;
+        float _camYaw;
+        float _camPitch = 18f;
+        float _moveYaw;
         bool _crouching;
         bool _warnedNoInput;
 
+        Vector3 _camPos;
+        bool _camInitialized;
+
         public bool Crouching => _crouching;
-        public float WalkSpeed => _walkSpeed;
-        public float CurrentSpeed => _crouching ? _crouchSpeed : _walkSpeed;
-        public float Yaw => _yaw;
+        /// <summary>当前镜头水平角（辅助台与相机相关计算用）。</summary>
+        public float CameraYaw => _camYaw;
+        /// <summary>当前模型朝向角。</summary>
+        public float MoveYaw => _moveYaw;
+        public float CurrentSpeed => _crouching ? _crouchSpeed
+            : (IsSprinting() ? _sprintSpeed : _walkSpeed);
 
         void Awake()
         {
             _cc = GetComponent<CharacterController>();
             _detection = GetComponent<DetectionState>();
             _camera = _followCamera != null ? _followCamera : Camera.main;
-            var child = transform.Find("CapsuleVisual");
-            _capsuleVisual = child;
+            _capsuleVisual = transform.Find("CapsuleVisual");
 
-            // 初始朝向取场景里摆好的 transform（所见即所得：在 Scene 里把玩家转向哪里，
-            // 出生就朝哪里）。写死 180° 会让背对关卡的出生点看不见任何内容。
-            _yaw = transform.eulerAngles.y;
+            // 初始角取场景摆好的朝向（所见即所得）；镜头角与模型角同起点，
+            // 避免第一帧镜头从别的方向甩过来。
+            _camYaw = transform.eulerAngles.y;
+            _moveYaw = _camYaw;
             ApplyCapsuleShape();
         }
 
@@ -81,48 +99,99 @@ namespace Collin.Stealth
                 _detection.Exposure = _crouching ? _crouchExposure : 1f;
                 _detection.Crouching = _crouching;
             }
+            _camInitialized = false;
         }
 
         void Update()
         {
             if (_cc == null) _cc = GetComponent<CharacterController>();
 
-            var move = ReadMoveAxis();
             if (_toggleCrouch)
             {
-                // 切换模式：按下即翻转（按住不放不会反复横跳）。
                 if (ReadCrouchPressed()) SetCrouching(!_crouching);
             }
             else
             {
-                // 按住模式：按住才蹲，松开即站起。
                 SetCrouching(ReadCrouchHeld());
             }
 
-            var planar = new Vector3(move.x, 0f, move.y);
-            if (planar.sqrMagnitude > 1f) planar.Normalize();
-
-            if (planar.sqrMagnitude > 1e-4f)
-            {
-                var targetYaw = Mathf.Atan2(planar.x, planar.z) * Mathf.Rad2Deg;
-                _yaw = Mathf.Repeat(Mathf.MoveTowardsAngle(_yaw, targetYaw, _turnSpeed * Time.deltaTime), 360f);
-            }
-            transform.rotation = Quaternion.Euler(0f, _yaw, 0f);
-
+            // ① 镜头角：只由鼠标改，不与移动耦合。
             if (_allowOrbit && IsRightDown())
             {
                 var d = ReadMouseDelta();
-                _yaw = Mathf.Repeat(_yaw - d.x * _orbitSensitivity, 360f);
-                _pitch = Mathf.Clamp(_pitch - d.y * _orbitSensitivity, _orbitPitchMin, _orbitPitchMax);
+                _camYaw = Mathf.Repeat(_camYaw + d.x * _orbitSensitivity, 360f);
+                _camPitch = ThirdPersonRig.ClampPitch(
+                    _camPitch - d.y * _orbitSensitivity, _orbitPitchMin, _orbitPitchMax);
             }
 
+            // ② 移动：相机相对的平面方向（A=左移、D=右移、W=朝镜头前方）。
+            var input = ReadMoveAxis();
+            var worldDir = ThirdPersonRig.MoveDirection(_camYaw, input);
+
+            // ③ 模型朝向跟随移动方向（仅在有输入时转，无输入保持）。
+            if (worldDir.sqrMagnitude > 1e-6f)
+            {
+                var targetYaw = Mathf.Atan2(worldDir.x, worldDir.z) * Mathf.Rad2Deg;
+                _moveYaw = ThirdPersonRig.SmoothAngle(_moveYaw, targetYaw, _turnStiffness, Time.deltaTime);
+            }
+            transform.rotation = Quaternion.Euler(0f, _moveYaw, 0f);
+
+            // ④ 位移与重力。
             if (_cc.isGrounded && _verticalVelocity < 0f) _verticalVelocity = -2f;
             _verticalVelocity -= _gravity * Time.deltaTime;
 
-            var velocity = planar * CurrentSpeed + Vector3.up * _verticalVelocity;
+            var velocity = worldDir * CurrentSpeed + Vector3.up * _verticalVelocity;
             _cc.Move(velocity * Time.deltaTime);
+        }
 
-            FollowCamera();
+        void LateUpdate()
+        {
+            UpdateCamera();
+        }
+
+        void UpdateCamera()
+        {
+            if (_camera == null) return;
+
+            var dt = Time.deltaTime;
+            var height = _crouching ? _crouchHeight : _standHeight;
+            var pivot = transform.position + Vector3.up * height * _cameraPivotRatio;
+            var rot = Quaternion.Euler(_camPitch, _camYaw, 0f);
+            var desired = pivot - rot * Vector3.forward * _cameraDistance;
+
+            // 防穿墙收距
+            var dir = desired - pivot;
+            var dist = dir.magnitude;
+            if (dist > 0.01f)
+            {
+                var n = Physics.RaycastNonAlloc(pivot, dir / dist, s_camBuffer, dist);
+                var nearest = dist;
+                for (var i = 0; i < n; i++)
+                {
+                    var t = s_camBuffer[i].transform;
+                    if (t == null) continue;
+                    if (t == transform || t.IsChildOf(transform)) continue;
+                    if (s_camBuffer[i].distance < nearest) nearest = s_camBuffer[i].distance;
+                }
+                if (nearest < dist - 0.2f) desired = pivot + dir / dist * Mathf.Max(0.6f, nearest - 0.2f);
+            }
+
+            if (!_camInitialized)
+            {
+                _camPos = desired;
+                _camInitialized = true;
+            }
+            else
+            {
+                // 位置与朝向<b>共用同一阻尼</b>：朝向瞬时、位置缓动会脱节，拖拽时表现为画面抖动。
+                var k = _cameraStiffness;
+                _camPos.x = ThirdPersonRig.SmoothValue(_camPos.x, desired.x, k, dt);
+                _camPos.y = ThirdPersonRig.SmoothValue(_camPos.y, desired.y, k, dt);
+                _camPos.z = ThirdPersonRig.SmoothValue(_camPos.z, desired.z, k, dt);
+            }
+
+            _camera.transform.position = _camPos;
+            _camera.transform.rotation = rot;
         }
 
         /// <summary>设蹲伏，同步胶囊形状与 L4 曝光度。</summary>
@@ -152,37 +221,7 @@ namespace Collin.Stealth
             }
         }
 
-        void FollowCamera()
-        {
-            if (_camera == null) return;
-
-            var rot = Quaternion.Euler(_pitch, _yaw, 0f);
-            var height = _crouching ? _crouchHeight : _standHeight;
-            var pivot = transform.position + Vector3.up * height * _cameraPivotRatio;
-            var desired = pivot - rot * Vector3.forward * _cameraDistance;
-
-            // 防穿墙：枢轴→期望点之间若被遮挡，收到命中点前。
-            var dir = desired - pivot;
-            var dist = dir.magnitude;
-            if (dist > 0.01f)
-            {
-                var n = Physics.RaycastNonAlloc(pivot, dir / dist, s_camBuffer, dist);
-                var nearest = dist;
-                for (var i = 0; i < n; i++)
-                {
-                    var t = s_camBuffer[i].transform;
-                    if (t == null) continue;
-                    if (t == transform || t.IsChildOf(transform)) continue;
-                    if (s_camBuffer[i].distance < nearest) nearest = s_camBuffer[i].distance;
-                }
-                if (nearest < dist - 0.2f) desired = pivot + dir / dist * Mathf.Max(0.6f, nearest - 0.2f);
-            }
-
-            _camera.transform.position = Vector3.Lerp(_camera.transform.position, desired, Time.deltaTime * 10f);
-            _camera.transform.rotation = rot;
-        }
-
-        // ── 输入：三档后端自动选择（条件编译只进方法体）───────────
+        // ── 输入（条件编译只进方法体）───────────────────────────────
 
         enum InputBackend { NewSystem, Legacy, None }
 
@@ -199,6 +238,28 @@ namespace Collin.Stealth
             s_backend = InputBackend.None;
 #endif
             return s_backend.Value;
+        }
+
+        bool IsSprinting()
+        {
+            switch (ResolveBackend())
+            {
+                case InputBackend.NewSystem:
+#if ENABLE_INPUT_SYSTEM
+                    var kb = UnityEngine.InputSystem.Keyboard.current;
+                    return kb != null && (kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed);
+#else
+                    return false;
+#endif
+                case InputBackend.Legacy:
+#if ENABLE_LEGACY_INPUT_MANAGER
+                    return UnityEngine.Input.GetKey(KeyCode.LeftShift) || UnityEngine.Input.GetKey(KeyCode.RightShift);
+#else
+                    return false;
+#endif
+                default:
+                    return false;
+            }
         }
 
         Vector2 ReadMoveAxis()
@@ -310,16 +371,17 @@ namespace Collin.Stealth
 #if ENABLE_INPUT_SYSTEM
                     var mo = UnityEngine.InputSystem.Mouse.current;
                     if (mo == null) return Vector2.zero;
+                    // delta 已是「本帧像素位移」，直接交给灵敏度，不再叠经验系数。
                     var d = mo.delta.ReadValue();
-                    // 像素 delta 缩到与旧 Axis 同量级，避免两套后端手感差异。
-                    return new Vector2(d.x * 0.15f, d.y * 0.15f);
+                    return new Vector2(d.x, d.y);
 #else
                     return Vector2.zero;
 #endif
                 case InputBackend.Legacy:
 #if ENABLE_LEGACY_INPUT_MANAGER
+                    // 旧 Axis 已按「每帧像素 / 约 1 单位」归一，放大到与新后端同量级。
                     return new Vector2(UnityEngine.Input.GetAxis("Mouse X"),
-                                       UnityEngine.Input.GetAxis("Mouse Y"));
+                                       UnityEngine.Input.GetAxis("Mouse Y")) * 6f;
 #else
                     return Vector2.zero;
 #endif
@@ -340,12 +402,20 @@ namespace Collin.Stealth
         void OnValidate()
         {
             _walkSpeed = Mathf.Max(0.1f, _walkSpeed);
+            _sprintSpeed = Mathf.Max(_walkSpeed, _sprintSpeed);
             _crouchSpeed = Mathf.Max(0.1f, _crouchSpeed);
             _gravity = Mathf.Max(1f, _gravity);
-            _turnSpeed = Mathf.Max(1f, _turnSpeed);
+            _turnStiffness = Mathf.Max(1f, _turnStiffness);
             _standHeight = Mathf.Max(0.5f, _standHeight);
             _crouchHeight = Mathf.Clamp(_crouchHeight, 0.5f, _standHeight);
             _cameraDistance = Mathf.Max(0.5f, _cameraDistance);
+            _cameraStiffness = Mathf.Max(1f, _cameraStiffness);
+            if (_orbitPitchMax < _orbitPitchMin)
+            {
+                var tmp = _orbitPitchMin;
+                _orbitPitchMin = _orbitPitchMax;
+                _orbitPitchMax = tmp;
+            }
         }
     }
 }

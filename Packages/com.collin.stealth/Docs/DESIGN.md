@@ -71,16 +71,24 @@ PatrolPose EvaluatePose(PatrolRouteData route, float t)   // 确定性：同 (ro
 | `PatrolRouteRoot` | Runtime | MonoBehaviour | 路线根：持有一个 `PatrolRoute` 引用 + 自身 transform 提供世界系；移动根即整条路线平移（D-09） |
 | `PatrolPose` | Runtime | struct | `EvaluatePose` 输出：局部位姿、世界位姿、当前段索引、段内进度、是否处于停留 |
 | `PatrolAgent` | Runtime | MonoBehaviour（实例） | 引用 `PatrolRouteRoot` + **实例级差异数据**（相位偏移、速度倍数、当前状态）——§0.1 原则 2 |
-| `VisionProfile` | Runtime | ScriptableObject（**Model**） | 视野参数：水平视角、视距、视线高度、俯仰角、遮挡 LayerMask、光照敏感度（听觉参数按 D-12 移出） |
-| `VisionVolume` | Runtime | MonoBehaviour（实例） | 引用 `VisionProfile` + 实例级覆盖（如高哨兵视距加倍） |
-| `PlayerStealthController` | Runtime | MonoBehaviour（实例） | 拆箱即用的玩家移动（WASD + Ctrl 蹲伏）与 `isCrouching` 上报（D-13） |
-| `StealthPlayer` | 预制件 | prefab（Sample 资产） | Capsule + CharacterController + `PlayerStealthController` + `DetectionState`，拖进场景即可用 |
-| `StealthGuard` | 预制件 | prefab（Sample 资产） | Capsule + `PatrolAgent` + `VisionVolume` + 可见身体；携带自己的路线根，与玩家预制件成对提供 |
-| `DetectionState` | Runtime | MonoBehaviour（挂被侦测目标） | 察觉深度、累积值、`OnDetected` 事件 |
-| `AwarenessModel` | Runtime | 类 | 察觉度的累积/衰减曲线（可配置无威胁时回落速度） |
-| `StealthMask` | Runtime | flags enum | §3.3 判定层掩码位分配 |
-| `StealthClock` | Runtime | MonoBehaviour | 全局时间索引；`Auto`（每帧自增）/ `Manual`（外部写 t）两种模式 |
-| `DetectorRegistry` | Runtime | ScriptableObject | 场景内 `VisionVolume` / `PatrolAgent` / `DetectionState` 注册表（供查询与 B 包枚举） |
+| `VisionProfile` | Runtime | ScriptableObject（**Model**） | 视野参数：水平/垂直视角、视距、视线高度、遮挡 LayerMask、光照敏感度、**近身半径 `proximityRadius`**、检测间隔帧（听觉参数按 D-12 移出） |
+| `VisionVolume` | Runtime | MonoBehaviour（实例） | 引用 `VisionProfile` + 实例级覆盖（视距倍率、眼高/水平角覆盖）；L3 遮挡射线 + 预算 + 错峰；`targetOwner` 按身份排除目标自身碰撞体 |
+| `VisionGeometry` | Runtime | 静态纯函数 | L1→L2→L3 几何判定；**近身档**（跳锥、不跳遮挡）；退化输入安全（D-01 同源纪律） |
+| `PlayerStealthController` | Runtime | MonoBehaviour（实例） | 拆箱即用：**镜头角与模型角分离**、相机相对四向移动（A/D=侧移）、Shift 跑、Ctrl 蹲伏上报曝光、第三人称相机（位置与朝向共用阻尼、LateUpdate）（D-13） |
+| `ThirdPersonRig` | Runtime | 静态纯函数 | 操控数学：`MoveDirection`（相机相对）、`SmoothAngle/SmoothValue`（帧率无关 `1-e^(-k·dt)`）、`ClampPitch` |
+| `StealthPlayer` | 预制件 | prefab（Sample 资产） | 根 = CharacterController + `DetectionState` + `PlayerStealthController`；子物体 `CapsuleVisual` / `FollowCamera` / `Hud` ⇒ **拖进空场景即可玩** |
+| `StealthGuard` | 预制件 | prefab（Sample 资产） | 三层：根 / `RouteRoot`（静态参考系）/ `Body`（被驱动本体，挂 Agent+Vision+Brain+投影）；携带自己的路线根（断位姿循环） |
+| `DetectionState` | Runtime | MonoBehaviour（挂被侦测目标） | 累积察觉度、档位、`LastSeen`/`LastSeerGain`、**`BodyPoint` 身体判定点**；`dt<=0` 为纯预览语义 |
+| `GuardBrain` | Runtime | MonoBehaviour（实现 `IPatrolModifier`） | 四档状态机 + 可疑点记忆 + 同伴通报 + 察觉事件广播；反应**只叠加不回流基线**（R-1） |
+| `AwarenessModel` | Runtime | 静态纯函数 | 察觉度积分/档位导出/曝光倍率合成（蹲伏、光照、安全岛） |
+| `GroundVisionProjection` | Runtime | 静态纯函数 | **与判定同源**的地面投影：外缘 sqrt(maxDist²−Δh²)、内缘俯仰盲区、近身豁免收合、遮挡裁边 |
+| `StealthGroundProjection` | Runtime | MonoBehaviour（实例） | Play 态半透明填充（`Graphics.DrawMesh`，不污染层级、不碰 `.material`），随档位变色 |
+| `StealthStageVisual` | Runtime | 静态类 | 档位配色与中文名**唯一口径**（HUD 与投影共用） |
+| `StealthExitZone` | Runtime | MonoBehaviour | 撤离区：纯几何圆 + 高度窗 + 驻留计时（不依赖触发器/Rigidbody） |
+| `StealthGameRule` | Runtime | MonoBehaviour | 对局规则：抵达=通关、察觉顶格持续=被抓；Manual 预览态不推进；可重开 |
+| `StealthMask` | Runtime | flags enum | §3.3 判定层掩码位分配（**不进 core**） |
+| `StealthClock` | Runtime | MonoBehaviour | 全局时间索引；`Auto`（每帧自增）/ `Manual`（外部写 t）；并每帧复位射线预算 |
+| `VisionRegistry` / `DetectionRegistry` | Runtime | 静态注册表 | 视野体与察觉目标的读时重建表（保守置脏）；哨兵由 `GuardBrain.All` 剪枝+按需重建 |
 
 Editor 程序集（A 自用最小编辑手段，**不含设计辅助功能**）：
 `PatrolRouteInspector`（Inspector 上直接拖路点、加删点、改速度，改动即时生效）·

@@ -62,6 +62,9 @@ namespace Collin.Stealth
             ? _horizontalAngleOverride
             : (_profile != null ? _profile.HorizontalAngle : 110f);
 
+        /// <summary>生效近身半径（米，实例视距倍率同样作用于它）。0 = 关闭贴脸察觉。</summary>
+        public float EffectiveProximityRadius => _profile != null ? _profile.ProximityRadius : 0f;
+
         /// <summary>生效几何参数（含视距倍率）。无资产时视距为 0 ⇒ 恒不可见。</summary>
         public VisionParams Params
         {
@@ -73,7 +76,8 @@ namespace Collin.Stealth
                     {
                         maxDistance = 0f,
                         horizontalAngleDegrees = EffectiveHorizontalAngle,
-                        verticalAngleDegrees = 60f
+                        verticalAngleDegrees = 60f,
+                        proximityRadius = 0f
                     };
                 }
 
@@ -81,7 +85,8 @@ namespace Collin.Stealth
                 {
                     maxDistance = _profile.MaxDistance * _distanceMultiplier,
                     horizontalAngleDegrees = EffectiveHorizontalAngle,
-                    verticalAngleDegrees = _profile.VerticalAngle
+                    verticalAngleDegrees = _profile.VerticalAngle,
+                    proximityRadius = _profile.ProximityRadius
                 };
             }
         }

@@ -44,6 +44,40 @@
 ### Changed
 - 2026-11-03 用户拍板 Q-A1~Q-A5 后调整设计：新增 `com.unity.inputsystem` 依赖；路点改为相对坐标 + 预制件承载；**听觉/声音侦测移出本包范围**（最小可用子集），`StealthMask` 对应位改为预留位不启用；玩家移动控制器由「交给外部工程」改为「包内自带、拆箱即用」。
 
+### Added（成品质量修正：用户三条实机反馈，session stealth-fix-2026-11-04）
+- `ThirdPersonRig.cs`：操控数学纯函数层——`MoveDirection`（**相机相对**四向：A/D=侧移不是转身）、
+  `SmoothAngle/SmoothValue`（帧率无关的 `1-e^(-k·dt)` 阻尼）、`ClampPitch`（上下限填反自动交换）。
+- `StealthStageVisual.cs`：档位配色与中文名统一口径（HUD 与地面投影共用，杜绝「HUD 说红地上画黄」）。
+- `GroundVisionProjection.cs`：**与判定同源地面投影**（纯函数）：外缘 = sqrt(maxDist²−Δh²)、
+  内缘 = 俯仰盲区 Δh/tan(半垂直角)，近身豁免盖住盲区时收合成连续扇形；遮挡射线裁边。
+- `StealthGroundProjection.cs`：Play 态半透明填充（`Graphics.DrawMesh`，不污染预制件层级、不碰 `.material`），
+  随哨兵档位变色；着色器 URP→Sprites→内置兜底、失败只警告一次。
+- `StealthExitZone.cs`：撤离区（纯几何圆判定 + 驻留计时，不依赖触发器/Rigidbody）。
+- `StealthGameRule.cs`：对局规则——抵达撤离区=通关，察觉度顶格持续=被抓；R 重开；Manual 预览态不推进。
+- `Tests/Editor/GroundProjectionTests.cs`：**17 条**修正守卫（投影半径与判定逐位吻合、
+  盲区环口收合、贴脸可见且仍受遮挡、A/D 严格反向、平滑帧率无关、撤离区驻留/零驻留/高度窗）。
+
+### Changed
+- **玩家操控语义重写**：镜头角与模型角彻底分离（旧实现共用 `_yaw` ⇒ 按 A/D 变转镜头）；
+  相机位置与朝向共用同一阻尼并移到 `LateUpdate`（旧实现朝向瞬时、位置单独 Lerp ⇒ 拖拽抖动）；
+  新增 Shift 跑。`PlayerStealthController` 公开 `CameraYaw/MoveYaw`。
+- **判定点从脚底改为身体中部**：`DetectionState.BodyPoint`（默认 0.95m、蹲伏下移），
+  `GuardBrain` 感知、自身感知、安全岛掩码与投影全部改用同一口径。
+- 示例场景：玩家出生点 (0,-16)→(0,-22)（实测出生 30 秒即被抓获，演示不公平）、地面扩到 60×60m、
+  北侧 (0,16) 放撤离区 + 信标柱、哨兵 Body 挂投影组件、`GuardNormal.asset` 显式配 proximityRadius=1.8
+  与遮挡层全开；HUD 增加撤离指引/被抓倒计时/胜负横幅与 R 重开。
+
+### Fixed
+- 重叠丧失目标（越近越瞎）、A/D 转镜头、拖拽抖动、投影边界与实际不符（旧实现把俯仰角当射程上限，
+  14m 视距只画 ~4.9m——正是用户截图里的现象）、无通关点，共五条实机反馈全部闭环。
+- 探针算法错误（外缘半径按世界原点量得 22.08 假值）→ 按脚底量后 13.98 与期望**逐位吻合**（V3 探针）。
+
+### 门禁（末次实测 17:19）
+编译 `failed:false`；`console clear` 后重跑全部验证动作 `consoleErrors:0 / consoleWarnings:0`；
+全量 **227/227**（Stealth **99**）；校验器 **结论: 绿灯**。Play 探针实测：
+`outerR=13.98=expectR`、`D=(1,0) A=(-1,0)`、`overlapFoot=True overlapBody=True`、
+`exits=1 rules=1 projections=2 outcome=Playing`。
+
 ## [0.4.0] - 2026-11-04
 ### Added
 - **M3 哨兵决策与反应层**：

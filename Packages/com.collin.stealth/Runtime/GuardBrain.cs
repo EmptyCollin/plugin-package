@@ -109,7 +109,10 @@ namespace Collin.Stealth
             {
                 var t = targets[i];
                 if (t == null) continue;
-                if (!_volume.CanSee(t.transform.position, QueryOptions.Full, myId, t.transform)) continue;
+                // 判定点用 BodyPoint（身体中部）而非脚底：脚底点在贴脸时几乎落在视线正下方，
+                // 会被俯仰闸门判为看不见 ⇒ 表现为「NPC 与玩家重叠后就丧失目标」。
+                var aim = t.BodyPoint;
+                if (!_volume.CanSee(aim, QueryOptions.Full, myId, t.transform)) continue;
                 if (t.Suspicion >= bestSus)
                 {
                     bestSus = t.Suspicion;
@@ -120,7 +123,7 @@ namespace Collin.Stealth
 
             if (best != null)
             {
-                _lastSeenPoint = best.transform.position;
+                _lastSeenPoint = best.BodyPoint;
                 _lastSeenTargetId = best.TargetId;
             }
 

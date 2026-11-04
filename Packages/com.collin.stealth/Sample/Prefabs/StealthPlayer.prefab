@@ -28,7 +28,7 @@ Transform:
   m_GameObject: {fileID: 1372954726827032138}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0.05, z: -16}
+  m_LocalPosition: {x: 0, y: 0.05, z: -22}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -77,6 +77,7 @@ MonoBehaviour:
   _targetId: 0
   _exposure: 1
   _crouching: 0
+  _bodyHeight: 0.95
   _suspicion: 0
   _stage: 0
 --- !u!114 &1436461910757841220
@@ -92,20 +93,22 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: com.collin.stealth::Collin.Stealth.PlayerStealthController
   _walkSpeed: 3.2
+  _sprintSpeed: 5
   _crouchSpeed: 1.6
   _gravity: 18
-  _turnSpeed: 720
+  _turnStiffness: 14
   _toggleCrouch: 1
   _standHeight: 1.8
   _crouchHeight: 1
   _crouchExposure: 0.35
   _followCamera: {fileID: 7867037995374579221}
   _allowOrbit: 1
-  _orbitSensitivity: 2
-  _orbitPitchMin: -15
-  _orbitPitchMax: 65
-  _cameraDistance: 5
-  _cameraPivotRatio: 0.6
+  _orbitSensitivity: 0.22
+  _orbitPitchMin: -10
+  _orbitPitchMax: 60
+  _cameraDistance: 5.2
+  _cameraPivotRatio: 0.62
+  _cameraStiffness: 12
 --- !u!1 &3749935743173783303
 GameObject:
   m_ObjectHideFlags: 0
@@ -334,4 +337,4 @@ MonoBehaviour:
   m_EditorClassIdentifier: com.collin.stealth::Collin.Stealth.StealthHud
   _target: {fileID: 3954691609455515994}
   _showGuards: 1
-  _barWidth: 220
+  _barWidth: 260

@@ -222,6 +222,21 @@
   EnumWindows 按标题定位（`plugin-package - … - Unity 6.6 (6000.6.7f1) <DX12>`，2560×1407）
   ⇒ 自动录屏技术上可行；**本轮未录**，见 U-5。
 
+## 成品质量修正（2026-11-04，用户三条实机反馈，验证者 qianwen-work-assistant · stealth-fix-2026-11-04）
+
+> 用户反馈原文：①第三人称下 A/D 变成旋转镜头、右键拖拽视角抖动；②NPC 与玩家重叠后丧失目标、
+> 没有通关点无法结束游戏；③警戒范围要在地面投影，否则看不出边界。
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 日期时间 | 结果与证据 |
+|---|---|---|---|---|
+| 80 | **A/D = 相机相对侧移，与镜头彻底解耦** | EditMode `MoveDirection_*` 3 条 + Play 探针 | 2026-11-04 17:15 | **通过** — 探针 `camYaw=0 D=(1.00,0.00) A=(-1.00,0.00)`（严格反向、不碰镜头）。根因：旧实现「移动朝向」与「镜头朝向」共用同一个 `_yaw`。新实现把镜头角/模型角分离，移动方向数学进 `ThirdPersonRig.MoveDirection`（纯函数） |
+| 81 | **拖拽视角不抖**：相机位置与朝向共用同一阻尼、帧率无关平滑、相机移到 LateUpdate | EditMode `Smoothing_IsFrameRateIndependent_AndSnapsOnZeroDt`（2 帧 vs 200 帧收敛差 <6°） | 17:15 | **通过** — 根因是旧实现朝向瞬时赋值、位置单独 `Lerp(dt*10)` 两者脱节；`Lerp(a,b,dt·k)` 本身帧率敏感，换 `1-e^(-k·dt)` |
+| 82 | **重叠不丧失目标**：近身档（跳锥不跳遮挡）+ 身体判定点（非脚底） | EditMode `Proximity_*` / `DetectionState_BodyPoint…` + Play 重叠探针 | 17:15 | **通过** — 探针 `overlapFoot=True overlapBody=True`。根因：判定点取脚底，贴脸时几乎在视线正下方，俯仰差 ~80° > 半垂直角 30° 被 L2 判瞎——**越近越瞎**。修复双保险：`BodyPoint`（0.95m）+ `proximityRadius=1.8` 近身档；`Proximity_StillRespectsOcclusion` 守住「贴脸不得穿透掩体看见」 |
+| 83 | **有通关点、可结束、可重开**：撤离区驻留通关 + 察觉到底被抓 + R 重开 | EditMode `ExitZone_*` 3 条 + Play 探针 `exits=1 rules=1 outcome=Playing` | 17:15 | **通过** — `StealthExitZone`（纯几何圆判定，不依赖触发器）+ `StealthGameRule`（Escaped/Caught 双结局，Manual 预览态不推进）；HUD 显示撤离方向/距离/驻留进度与胜负横幅。**连带修正**：出生点原 (0,-16) 距巡逻路点仅 10m，站着不动 ~30s 即被抓（探针实测 outcome=Caught）——演示不公平，移至 (0,-22) 后 `playerToGuard=16.4 withinView=False outcome=Playing`；地面同步扩到 60×60m |
+| 84 | **地面投影与判定同源**：外缘半径 = sqrt(maxDist²−Δh²)，盲区环口随近身档收合 | EditMode `Projection_*` 5 条 + Play 探针 | 17:15 | **通过** — 探针 `outerR=13.98 expectR=13.98` **逐位吻合**（旧 bug 正是截图里那种只画 ~4.9m：把俯仰角错用成射程上限）。遮挡裁边、近身圈补画、Gizmos 与运行期填充共用同一 `GroundVisionProjection.Build`。面积 187m² 含近身全向圆，符合预期（纯锥面理论值 94） |
+| 85 | **运行期半透明填充真在画**：随档位变色、零材质泄漏 | Play 探针 `projections=2`；全程控制台 `error=0 warning=0` | 17:15 | **通过** — `Graphics.DrawMesh` 不污染预制件层级；着色器按 URP→Sprites→内置 兜底、失败只警告一次。**截图核验限制**：本会话自动录屏/抓屏因前台被占不可行（见上轮记录），画面效果由数值探针 + 代码审查佐证，最终以展板视频收版时补 |
+| 86 | 全量回归 + 交锁门禁 | recompile → `console clear` → 重跑 recompile + test run → `console status` → `verify_project.py` | 17:19 | **全绿** — 编译 `failed:false`；归零后 `consoleErrors:0 / consoleWarnings:0`；**227/227**（CityMap 128 / **Stealth 99**，新增 `GroundProjectionTests` 17 条 + M3 断言同步 3 处）；校验器 **结论: 绿灯** |
+
 ## 未通过项
 
 | # | 现象 | 复现步骤 | 状态 |

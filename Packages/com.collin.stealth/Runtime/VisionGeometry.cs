@@ -9,6 +9,13 @@ namespace Collin.Stealth
         public float maxDistance;
         public float horizontalAngleDegrees;
         public float verticalAngleDegrees;
+
+        /// <summary>
+        /// 近身半径（米）：目标进入此距离即视为贴脸察觉，<b>跳过 L2 视角锥</b>。
+        /// <para>0 = 关闭。缺这一档会出现「NPC 与玩家重叠反而看不见」：目标几乎在视线正下方，
+        /// 俯仰差 &gt; 半垂直角就被 L2 判瞎（实机反馈到的 bug 根因之一）。</para>
+        /// </summary>
+        public float proximityRadius;
     }
 
     /// <summary>
@@ -39,8 +46,12 @@ namespace Collin.Stealth
             if (distSq > p.maxDistance * p.maxDistance + Eps) return false;
             if (distSq <= Eps) return true;   // 目标就在视线上（含重叠），无方向可言，判可见。
 
+            // 近身档：贴脸即察觉，跳过视角锥（但仍受 L3 遮挡约束——躲进掩体后不该被发现）。
+            var proximal = p.proximityRadius > Eps &&
+                           distSq <= p.proximityRadius * p.proximityRadius;
+
             // L2 视角锥：水平夹角 + 俯仰夹角。
-            if ((options & QueryOptions.ConeOnly) != 0)
+            if (!proximal && (options & QueryOptions.ConeOnly) != 0)
             {
                 if (!InHorizontalCone(delta, forward, p.horizontalAngleDegrees)) return false;
                 if (!InVerticalCone(delta, forward, p.verticalAngleDegrees)) return false;

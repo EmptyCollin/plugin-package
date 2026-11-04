@@ -112,7 +112,8 @@ namespace Collin.Stealth.Tests
 
             Assert.That(brain.Stage, Is.EqualTo(StealthDetectionStage.Suspicious));
             Assert.That(brain.Active, Is.True);
-            AssertVec(new Vector3(0f, 0f, 5f), brain.LastSeenPoint, 1e-4f, "可疑点必须是最后看见玩家的位置");
+            AssertVec(new Vector3(0f, 0.95f, 5f), brain.LastSeenPoint, 1e-4f,
+                      "可疑点必须是最后看见玩家的位置（身体判定点，非脚底）");
         }
 
         [Test]
@@ -173,7 +174,7 @@ namespace Collin.Stealth.Tests
 
             Assert.That(brain.Stage, Is.EqualTo(StealthDetectionStage.Patrol),
                         "纯预览不得改变档位");
-            AssertVec(new Vector3(0f, 0f, 5f), brain.LastSeenPoint, 1e-4f,
+            AssertVec(new Vector3(0f, 0.95f, 5f), brain.LastSeenPoint, 1e-4f,
                       "但感知读数必须刷新（辅助台要靠它画可疑点）");
 
             brain.Tick(0.016f, Vector3.zero, 1f);         // 对照：真实推进即升档
@@ -303,7 +304,7 @@ namespace Collin.Stealth.Tests
 
             Assert.That(b.Stage, Is.EqualTo(StealthDetectionStage.Suspicious),
                         "半径内同伴应被拉到疑惑并同步可疑点");
-            AssertVec(player.transform.position, b.LastSeenPoint, 1e-4f);
+            AssertVec(player.BodyPoint, b.LastSeenPoint, 1e-4f);
             Assert.That(c.Stage, Is.EqualTo(StealthDetectionStage.Patrol),
                         "半径外同伴不受影响");
         }

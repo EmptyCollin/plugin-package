@@ -25,3 +25,4 @@ MonoBehaviour:
   _alertThreshold: 0.8
   _lightSensitivity: 0
   _lineOfSightCheckInterval: 1
+  _proximityRadius: 1.8

@@ -45,6 +45,7 @@ GameObject:
   - component: {fileID: 2465809856968830927}
   - component: {fileID: 8916288290641270637}
   - component: {fileID: 6265950638226983726}
+  - component: {fileID: 5775241290749593633}
   m_Layer: 0
   m_Name: Body
   m_TagString: Untagged
@@ -122,6 +123,22 @@ MonoBehaviour:
   _searchRadius: 4
   _alertRadius: 15
   _detectedChannel: {fileID: 0}
+--- !u!114 &5775241290749593633
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1189450727965231104}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7b9eec1b6b519d04397eab9d3502565d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: com.collin.stealth::Collin.Stealth.StealthGroundProjection
+  _rays: 20
+  _groundY: 0
+  _probeHeight: 0.95
+  _fillOpacity: 0.22
 --- !u!1 &2319348326520676052
 GameObject:
   m_ObjectHideFlags: 0
