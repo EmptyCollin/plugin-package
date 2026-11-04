@@ -158,11 +158,27 @@ Editor 另提供「从当前世界位置反推路点」按钮（把摆放好的�
 
 ### 3.6 与寻路引擎的接缝（可选，默认关）
 
-定义 `IPathBridge { bool TrySnap(Vector3 target, out Vector3 navPoint); }`，
-默认实现 `NullPathBridge`（走原始位置）。工程若接入导航方案，另建可选 asmdef
-`com.collin.stealth.Navigation` 实现该接口并注册到 `Services`。
-**A 包本体不引用任何导航类型**——避免与「HAVOK 付费 + 帧噪声」耦合。
-事件叠加（被玩家撞到需绕行、上下楼梯）通过 `IPatrolModifier`（`t → Vector3 delta`）挂到求值结果上。
+接口 `IPathBridge`：`TryFindPath(from, desired, corners)` 出绕行折线（约定 `corners[0]` 为出发点，
+否则叠加锚点错位会让 NPC 瞬移）；`TrySnap` 保留给轻量实现与工具。默认 `NullPathBridge` ⇒ 直线叠加。
+
+**已于 2026-11-04 实装**（用户反馈「NPC 抓人时直接穿模」）：
+可选子程序集 `com.collin.stealth.Navigation`（+ 其 `Editor` 侧注册点）基于
+**内置 `com.unity.modules.ai` 的 legacy NavMesh** 实现——
+`NavMesh.SamplePosition` 吸附起终点、`NavMesh.CalculatePath` 一次性和路径查询。
+**刻意不引入 `com.unity.ai.navigation`**（D-06：付费 HAVOK，且其 `NavMeshAgent` 按帧积分会摧毁 D-01 地基）。
+
+三条约束（破坏任何一条都会引入回归）：
+1. **绕行只驱动叠加层**：`GuardBrain` 沿折线逐段推进产出 `_offset`，巡逻基线仍是纯函数结果；
+   导航若参与基线，辅助台的 T 周期回溯与轨迹预测全部失效（R-1）。
+2. **不可达 / 无桥必须退回直线**，不能原地停住（否则更像 bug）。
+3. **重路由时追踪点钉在当前位置**（基线 + 现有偏移），且仅在目标移动 >0.6m 或超过
+   `_repathInterval` 时重算——否则每帧重路由会把 NPC 拽回路径起点，表现为抖动/瞬移。
+
+可选性靠"主包 Editor **不引用** Navigation"保证：注册点自带在可选程序集内
+（Play 态 `RuntimeInitializeOnLoadMethod`，编辑态 `[InitializeOnLoad]`），
+**删掉 `Navigation/` 目录主包零影响**。
+
+事件叠加（上下楼梯等）仍走 `IPatrolModifier`（`t → Vector3 delta`）挂到求值结果上。
 
 ## 4. 跨包接口（A 对外暴露的全部面，B 只能通过这些消费）
 
@@ -234,7 +250,7 @@ DTO 归属的边界：接口方法签名里出现的类型必须全部来自 cor
 | D-03 | 四层判定管线 + 掩码 + 帧预算错峰 | 每帧全量射线 | 50 NPC × 60 FPS 预算；B 需要分层可视化 |
 | D-04 | 视野锥用「扇形 + 高度」解析几何近似 | 真实视锥网格 | 玩法够用且便宜；B 侧要精确网格可自行细分 |
 | D-05 | 察觉分四档 + 连续累积值 | 只有「看见/没看见」布尔 | 潜行手感靠累积与衰减；B 可按档分层显示 |
-| D-06 | `IPathBridge` 默认 Null 实现 | A 直接依赖导航包 | 避免付费依赖；保留后续接入接缝 |
+| D-06 | `IPathBridge` 默认 Null 实现；导航走**内置 modules.ai 的可选子程序集**（11-04 已实装，见 §3.6） | A 直接依赖 `com.unity.ai.navigation` | 避免付费依赖与帧噪声耦合；删掉 `Navigation/` 目录主包零影响 |
 | D-07 | A 的 Editor 只含 Inspector/Handles/Gizmos | 把设计辅助也放 A | 用户特性 2 要求解耦；A 可独立交付，B 可被替换 |
 | D-08 | 示例场景白盒、不用真实美术资产 | 用 Poly Haven CC0 资产 | 示例只证明「独立可跑」；真实资产会掩盖玩法问题（stretch 曾因此暴露 Builder 缺陷） |
 | D-09 | **路点存相对 `PatrolRouteRoot` 的局部坐标，路线根做成预制件**（Q-A2 定案） | 直接存世界坐标 | 用户要求「打成预制件，内部相对坐标，可以一起动、也保证直观性」：SO 可跨场景复用、拖一个根即整条路线搬移；直观性由 Editor 世界系手柄 + 「反推路点」按钮补回 |
@@ -248,7 +264,7 @@ DTO 归属的边界：接口方法签名里出现的类型必须全部来自 cor
 | 编号 | 风险 | 影响 | 缓解 |
 |---|---|---|---|
 | R-1 | 纯函数位置 vs 实时寻路（绕开玩家/上下台阶）语义冲突 | 演示不自然 | 基线走纯函数，事件走 `IPatrolModifier` 叠加偏移；B 只预览基线，ACCEPTANCE 写明边界 |
-| R-2 | 无 NavMesh 导致 NPC 穿模/悬空 | 示例观感 | 示例场景设计成全平白盒；接缝 D-06 |
+| R-2 | 无 NavMesh 导致 NPC 穿模/悬空 | 示例观感 | **已缓解（11-04）**：可选导航子程序集 + 示例场景烘焙 NavMesh，实测绕行成立（横向偏离 1.17m，验收 87）。残留：桥未注册（未烘焙）时仍走直线叠加，属预期降级而非 bug |
 | R-3 | 编辑态与 Play 态两套判定结果不一致 | 设计工具失真 | 判定函数只有一条实现（Runtime 内），B 全部走函数调用，禁止 B 自研 |
 | R-4 | 每帧 N 条射线在大场景掉帧 | 性能 | 错峰预算 + 距离早退 + L3 可按 `VisionVolume` 粒度开关 |
 | R-5 | `Services` 域重载后清空 | B 取不到服务 | A 初始化入口注册 + B 面板对 null 优雅降级 |
@@ -285,7 +301,7 @@ DTO 归属的边界：接口方法签名里出现的类型必须全部来自 cor
 | M0.5 | 与用户确认 core 改动窗口，向 core 追加 `IPatrolWorld`/`IVisionWorld`/`IDetectionWorld` + DTO（只增不改，R-11） | **已达成**：core 新增 `Runtime/StealthContracts/` 3 文件；A 侧实现 `StealthWorld`（`IPatrolWorld` + `IStealthScrubDriver`）并经 `Services` 注册；消费方视角 16 条契约用例全绿 |
 | M1 | `PatrolRoute`（局部坐标）+ `PatrolRouteRoot` + `PatrolPose.EvaluatePose` + `StealthClock`；EditMode 测试（验收 1-3） | **已达成**：24 条 EditMode 用例全绿，全工程 108/108 通过；交锁门禁本包三项全绿 |
 | M2 | `VisionProfile` + `VisionVolume` + 四层管线 + `StealthMask` + `DetectionState`（验收 4-6） | **已达成**：新增 11 个 Runtime 文件 + 30 条 EditMode 用例（本包 72/72、全工程 172/172）；`IVisionWorld`/`IDetectionWorld` 已注册；交锁门禁本包三项全绿 |
-| M3 | 状态机 + 警戒广播 + `IPathBridge`（验收 7） | **已达成**：`IPatrolModifier` + `GuardBrain`（四档 + 同伴通报 + 通道广播）+ `IPathBridge`/`NullPathBridge`（默认不注册）；10 条用例绿；**实机 Play 验证 NPC 真的追到玩家出生点**（ACCEPTANCE 条目 67） |
+| M3 | 状态机 + 警戒广播 + `IPathBridge`（验收 7） | **已达成**：`IPatrolModifier` + `GuardBrain`（四档 + 同伴通报 + 通道广播）+ `IPathBridge`/`NullPathBridge`（默认不注册）；10 条用例绿；**实机 Play 验证 NPC 真的追到玩家出生点**（ACCEPTANCE 条目 67）。**接缝已实装（11-04）**：可选 `com.collin.stealth.Navigation` 走内置 legacy NavMesh，绕行只驱动叠加层，实测拐点 4 / 横向偏离 1.17m 绕开掩体（条目 87-90） |
 | M4 | Editor 侧 Inspector/Handles/Gizmos（世界系手柄 + 反推路点）+ `ManualTime` 编辑态预览（验收 8-9、11） | **已达成**：`PatrolRouteRootEditor`（Scene 拖路点/逐点停留段速/子物体烘焙）、`StealthScrubWindow`（T 周期滑块，编辑态实时推送 + 强制重绘）、`StealthGizmos`（巡逻折线 + 视野扇形）。**遗留**：「拖滑块 NPC 连续移动」的编辑态截图待补（条目 71 标注部分通过）；50 NPC 性能验收未做 |
 | M5 | `PlayerStealthController` + `StealthPlayer`/`StealthGuard` 预制件（D-09/D-13）+ `Sample/Scenes/StealthSample.unity` 白盒场景 + `ShowcaseMedia` 实录视频 + 展板接入（验收 12-14） | **部分达成（11-04）**：控制器 + HUD + 白盒场景 + **两个预制件**均已交付。预制件经 `StealthPrefabVerifier` 在「只放预制件 + 时钟」的内存临时场景实测自洽（`actors新增=1 cycle=28.00s 通过`），引用完整性另做 GUID 级静态复核；场景经 Play 实机验证可玩（条目 67-69）。**仍未做**：`ShowcaseMedia` 两段式实录视频、`Showcase.json.video` 填充与展板核验 ⇒ **按 §6 本包演示仍不合格**，故版本号维持 0.4.0 未收 0.5.0 |
 | M6 | 冻结 §4 对外契约并写入 `Docs/Modules/00-Contract.md`（逐签名核验 DTO 归属），交付给 B 包消费 | 契约冻结需用户确认 |

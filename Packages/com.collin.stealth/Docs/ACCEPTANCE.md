@@ -237,6 +237,23 @@
 | 85 | **运行期半透明填充真在画**：随档位变色、零材质泄漏 | Play 探针 `projections=2`；全程控制台 `error=0 warning=0` | 17:15 | **通过** — `Graphics.DrawMesh` 不污染预制件层级；着色器按 URP→Sprites→内置 兜底、失败只警告一次。**截图核验限制**：本会话自动录屏/抓屏因前台被占不可行（见上轮记录），画面效果由数值探针 + 代码审查佐证，最终以展板视频收版时补 |
 | 86 | 全量回归 + 交锁门禁 | recompile → `console clear` → 重跑 recompile + test run → `console status` → `verify_project.py` | 17:19 | **全绿** — 编译 `failed:false`；归零后 `consoleErrors:0 / consoleWarnings:0`；**227/227**（CityMap 128 / **Stealth 99**，新增 `GroundProjectionTests` 17 条 + M3 断言同步 3 处）；校验器 **结论: 绿灯** |
 
+## 导航与投影着色修正（2026-11-04，session stealth-nav-2026-11-04）
+
+> 用户追加两条反馈：①NPC 抓人时穿模（要导航网格）；②地面投影「闪得厉害」（要么改 shader，要么半透 + Z 略高于地面）。
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 日期时间 | 结果与证据 |
+|---|---|---|---|---|
+| 87 | **追击走导航路径、绕开掩体** | 生成菜单内置绕行校验（烘焙后 `NavMesh.CalculatePath` 实测） | 2026-11-04 17:58 | **通过** — `[Nav] 起点=(0.0,0.1,-14.0) 终点=(0.0,0.1,14.0) 拐点=4 直线=28.00 路径=28.13 最大横向偏离=1.17` ⇒「导航烘焙 完成并通过绕行校验」。4 拐点 + 1.17m 横向偏离即掩体已成为障碍的直接证据 |
+| 88 | **导航是"可选"的**（删掉子程序集主包不受影响） | `Navigation/` 与 `Navigation/Editor/` 两个独立 asmdef；主包 Editor **不引用**它们 | 18:00 | **通过** — 编译产物 `com.collin.stealth.Navigation.dll` 与 `.Navigation.Editor.dll` 独立存在；注册点自带在可选程序集内 |
+| 89 | 绕行只作用于叠加层，**巡逻基线仍是纯函数** | 代码审查 + M3 地基用例 `OverlayMovesTransform_ButBaselineStaysPure` | 18:04 | **通过** — 该用例在导航改动后仍绿：`EvaluateWorld` 恒返回纯基线 |
+| 90 | 不可达 / 无桥时**退回直线**，不原地停住 | EditMode `PathBridge_AbsentByDefault_PresentWhenRegistered` 第三段（桥判定不可达） | 18:04 | **通过** — 断言退回直线叠加（z=1.75、x=0） |
+| 91 | **地面色块不再闪烁**（透明队列 + 关深度写入 + 深度偏移 + 贴地抬升） | 专用着色器 `Resources/StealthGroundProjection.shader`；`Queue=Transparent`/`ZWrite Off`/`Offset -1,-1`/`_clearance=0.02` | 18:02 | **代码与材质配置已实装并编译通过**。根因确认：复用 `URP/Unlit` 时 `Queue=Geometry`+`ZWrite On`，alpha<1 也不进透明队列 ⇒ 与地面争深度；且多边形与地面**完全共面**。**闪烁的目视复核受取证限制**（Play 模式 `script eval_file` 本轮两次静默失败、自动录屏不可行），需你实机确认 |
+| 92 | 着色器 `LightMode` 标签非凭记忆 | 检索 `DrawObjectsPass.cs:87` 的 `shaderTagIds` | 17:50 | **通过** — 首位即 `SRPDefaultUnlit`，URP 与内置管线均会绘制 |
+| 93 | 烘焙产物随场景入库 | `git ls-files` → `Sample/Scenes/StealthSample/NavMesh.asset` | 18:05 | **通过** — 场景内 `NavMesh` 字段 23 处；烘焙需静态标记（地面/掩体静态、角色递归取消静态）已写入生成器 |
+| 94 | **校验判据自身曾是错的**（自查） | 旧判据「总长 > 直线 + 0.3m」对 28m 绕 1.6m 障碍在几何上不可能成立 | 17:58 | **已修** — 改用「拐点最大横向偏离 > 0.4m」；并为 5 个早退分支各补诊断日志（此前静默 false 只能靠猜） |
+| 95 | **可选性守卫补成真的**（自查） | 全仓检索 `STEALTH_NAVMESH_AVAILABLE`，发现只出现在 asmdef、**代码零处 `#if` 引用** | 18:11 | **已修** — `#if` 包住 `using UnityEngine.AI` 与整个 NavMesh 实现，`#else` 提供**同名降级实现**（一律返回 false ⇒ 等同未烘焙，由调用方退回直线叠加）。此前宏是虚设的：真缺内置 AI 模块时该程序集整体编译失败，「删掉目录主包零影响」这条承诺在「模块缺失」路径上并不成立。两分支同名 ⇒ 装配点恒可编译 |
+| 96 | 交锁门禁三项 | recompile → `console clear` → 重跑 recompile + test run → `console status` → `verify_project.py` | 18:13 | **全绿**（条目 95 改动**之后**复跑）— `failed:false`；`consoleErrors:0 / consoleWarnings:0`；**227/227**（Stealth 99）；校验器 **结论: 绿灯**。中途一次 `lock-stale` FAIL 是**本会话自身锁的心跳超时**（长测试导致），续期即转绿，非他包问题 |
+
 ## 未通过项
 
 | # | 现象 | 复现步骤 | 状态 |
@@ -246,3 +263,4 @@
 | U-3 | 交锁门禁 §1.6b「控制台归零」一度无法达成：`recompile_status` = `failed:true`，`groundTruth` = `consoleErrors:15 / consoleWarnings:3`（2026-11-03 19:26 读数） | `unity command "script recompile_status"`；`unity command "console status"` | **已作废（20:28 复测转绿）** — 当时 15 条 error 全部来自 `com.collin.citymap/Runtime/View/` 两个**未被版本库跟踪**的进行中文件（另一会话写入），按 §2 包互斥与 §1.9 本会话未代其修复，该会话随后自行修好。末次实测：`failed:false, errors:0`、`consoleErrors:1 / consoleWarnings:0`（命中 §1.8 已批准豁免）、校验器 **结论: 绿灯**、全量 141/141 |
 | U-4 | 本会话自造 1 条 error：契约的「重复注册」用例故意触发 core 冲突报错，原先用 `LogAssert.Expect` 声明预期 | 该用例运行时 `console status` 计数 | **已修复** — 实测 `LogAssert.Expect` 只让测试不失败、**不回退 `consoleErrors` 计数**，仍破 §1.6b 门禁。改为断言期间 `Debug.unityLogger.logEnabled=false` + `finally` 复位（与 citymap 交接单记录的正解一致） |
 | U-5 | **§6 演示视频未交付**：`Showcase.json` 的 `video` 仍为空串，`ShowcaseMedia/` 仍为空目录 | `cat Packages/com.collin.stealth/Showcase.json`（video 为空时校验器不报 FAIL，但条目 26 仍为「待验证（M5）」） | **未完成** — M5 本轮只交付预制件沉淀与拆箱即用验证。录屏管道已确认可用（ffmpeg 支持 gdigrab，Unity 主窗口可按标题定位），但「怎么用 + 用了之后的效果」两段实录**尚未拍摄**。**按 §6 该包演示不合格，不得声称 M5 已全部完成**；参照 stretch 的既有做法：由用户手动录屏、包内工具负责剪辑入库 |
+| U-6 | **地面色块闪烁的目视复核未完成**（对应条目 91）：根因与修复方案均已确定并落码，但「不再闪」这一观感结论**尚无画面证据** | 打开 `Sample/Scenes/StealthSample.unity` 按 Play，观察两哨兵脚下扇形是否随视角/档位切换闪烁 | **待用户实机确认** — 取证受双重限制：Play 态 `script eval_file` 本轮两次整体静默失败（无 error 无输出）、自动录屏不可行（见 §2 环境事实）。若仍闪，下一个可疑项是 `_clearance` 与地面共面的容差，而非队列/深度写入配置 |

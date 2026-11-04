@@ -1,0 +1,19 @@
+{
+  "name": "com.collin.stealth.Navigation.Editor",
+  "rootNamespace": "Collin.Stealth.Navigation.EditorTooling",
+  "references": [
+    "com.collin.core",
+    "com.collin.stealth",
+    "com.collin.stealth.Navigation"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "validateReferences": true
+}

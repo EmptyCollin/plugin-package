@@ -30,6 +30,10 @@ namespace Collin.Stealth
         [Tooltip("填充不透明度")]
         [SerializeField, Range(0f, 0.6f)] float _fillOpacity = 0.22f;
 
+        [Tooltip("贴地抬升（米）。多边形与地面<b>完全共面会 Z 冲突闪烁</b>；"
+                 + "抬到地面之上并配合透明队列 + 关闭深度写入消除闪。")]
+        [SerializeField, Range(0.005f, 0.2f)] float _clearance = 0.02f;
+
         VisionVolume _volume;
         PatrolAgent _agent;
         Mesh _mesh;
@@ -79,6 +83,18 @@ namespace Collin.Stealth
 
             CoverageArea = GroundVisionProjection.PolygonArea(_vertices, _indices);
 
+            // 贴地抬升：多边形与地面完全共面会 Z 冲突。抬到地面之上（配合材质的
+            // Queue=Transparent + ZWrite Off + Offset）才能既贴地又不闪。
+            if (_clearance > 0f)
+            {
+                for (var i = 0; i < _vertices.Count; i++)
+                {
+                    var v = _vertices[i];
+                    v.y += _clearance;
+                    _vertices[i] = v;
+                }
+            }
+
             _mesh.Clear(false);
             _mesh.SetVertices(_vertices);
             _mesh.SetTriangles(_indices, 0);
@@ -102,8 +118,10 @@ namespace Collin.Stealth
         }
 
         /// <summary>
-        /// 运行期建一份半透明材质。着色器按 URP → Sprites → 内置 顺序找，
-        /// 都找不到就<b>只报一次 error 并放弃绘制</b>，不反复刷屏。
+        /// 运行期建一份半透明材质。着色器顺序：<b>本包专用投影着色器</b>（Hidden/Collin/Stealth/…）
+        /// → URP Unlit → 内置兜底。专用着色器带 Queue=Transparent + ZWrite Off + Offset，
+        /// 是消除「地面色块闪烁」的关键；后两者只在专用着色器不可用时兜底
+        /// （会明显更容易与地面争深度，故届时给出一次性提示）。
         /// </summary>
         Material EnsureMaterial()
         {
@@ -113,10 +131,10 @@ namespace Collin.Stealth
             Shader shader = null;
             string[] candidates =
             {
+                "Hidden/Collin/Stealth/GroundProjection",
                 "Universal Render Pipeline/Unlit",
                 "Unlit/Color",
                 "Sprites/Default",
-                "Particles/Standard Unlit",
                 "Standard"
             };
             for (var i = 0; i < candidates.Length && shader == null; i++)
@@ -138,6 +156,15 @@ namespace Collin.Stealth
                 name = "StealthGroundProjectionRuntime",
                 hideFlags = HideFlags.HideAndDontSave
             };
+
+            // 没拿到专用着色器时说明在走兜底，提前告知可能的共面闪烁风险。
+            if (shader.name != "Hidden/Collin/Stealth/GroundProjection")
+            {
+                Debug.LogWarning("[StealthGroundProjection] 专用投影着色器不可用，已兜底到 "
+                                 + shader.name + "。该着色器不保证透明队列，地面色块可能与地面争深度而闪烁；"
+                                 + "请确认包内 Resources/StealthGroundProjection.shader 已被导入。");
+            }
+
             return _material;
         }
 
@@ -145,6 +172,7 @@ namespace Collin.Stealth
         {
             _rays = Mathf.Clamp(_rays, 4, 64);
             _fillOpacity = Mathf.Clamp01(_fillOpacity);
+            _clearance = Mathf.Clamp(_clearance, 0.005f, 0.2f);
         }
     }
 }

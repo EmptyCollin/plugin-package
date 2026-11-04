@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Collin.Core.Stealth;
 using UnityEngine;
 
@@ -57,6 +58,19 @@ namespace Collin.Stealth
 
         Vector3 _offset;
         Vector3? _lookAt;
+
+        // ── 导航路径跟随（IPathBridge 注册时才使用）────────────────
+        [Tooltip("重路由间隔（秒）：追击时玩家会跑、掩体会变，需周期性重算路径")]
+        [SerializeField, Min(0.1f)] float _repathInterval = 0.6f;
+
+        readonly List<Vector3> _corners = new List<Vector3>(16);
+        Vector3 _chasePos;
+        bool _chaseSet;
+        bool _pathValid;
+        bool _pathRequested;
+        float _repathTimer;
+        Vector3 _pathBuiltAt;
+        int _cornerIndex;
 
         static readonly System.Collections.Generic.List<GuardBrain> s_all =
             new System.Collections.Generic.List<GuardBrain>();
@@ -204,6 +218,7 @@ namespace Collin.Stealth
             // ③ 叠加收敛。期望偏移以<b>基线</b>为锚计算（以当前 transform 为锚会与基线循环依赖）。
             if (_stage == StealthDetectionStage.Patrol)
             {
+                ClearPathState();
                 _offset = Vector3.MoveTowards(_offset, Vector3.zero, _returnSpeed * dt);
                 if (_offset.sqrMagnitude > 1e-6f)
                 {
@@ -224,20 +239,88 @@ namespace Collin.Stealth
                 dest = _lastSeenPoint + new Vector3(Mathf.Cos(a), 0f, Mathf.Sin(a)) * _searchRadius;
             }
 
-            // 可选寻路接缝：注册了 IPathBridge（如 stealth.Navigation 子程序集）时，
-            // 把叠加目标吸附到导航表面；默认不注册 = 纯直线叠加（DESIGN §3.6）。
-            // 注意只作用于叠加目标——巡逻基线永远是纯函数结果。
-            var targetPoint = dest;
-            if (Collin.Core.Services.TryGet<IPathBridge>(out var bridge) && bridge != null
-                && bridge.TrySnap(baselineWorldPosition, dest, out var snapped))
+            // ③b 反应位移：注册了 IPathBridge（com.collin.stealth.Navigation 子程序集）时
+            // 沿导航<b>绕行路径</b>推进（修「NPC 抓人直接穿掩体」）；未注册或不可达则退回直线叠加。
+            // 关键纪律：路径只驱动<b>叠加层</b>，巡逻基线仍是纯函数结果（DESIGN D-01 / R-1）。
+            var walked = _moveSpeed * dt;
+            _repathTimer -= dt;
+
+            var bridged = Collin.Core.Services.TryGet<IPathBridge>(out var bridge) && bridge != null;
+            var havePath = bridged
+                && (_pathValid || _repathTimer <= 0f)
+                && TryRebuildPath(bridge, baselineWorldPosition, dest);
+
+            if (havePath)
             {
-                targetPoint = snapped;
+                AdvanceAlongPath(walked);
+                _offset = _chasePos - baselineWorldPosition;      // 保留路径高度：导航面本身有起伏
+                _lookAt = _cornerIndex < _corners.Count ? _corners[_cornerIndex] : dest;
+                return;
             }
 
-            var desired = targetPoint - baselineWorldPosition;
-            desired.y = 0f;   // 不接管垂直（导航吸附的纵向处理是 bridge 的职责）
-            _offset = Vector3.MoveTowards(_offset, desired, _moveSpeed * dt);
-            _lookAt = targetPoint;
+            // 直线叠加（无导航 / 无路径）：水平跟随，不接管垂直。
+            if (!_pathValid) { _chaseSet = false; _repathTimer = 0f; }
+            var desired = dest - baselineWorldPosition;
+            desired.y = 0f;
+            _offset = Vector3.MoveTowards(_offset, desired, walked);
+            _lookAt = dest;
+        }
+
+        /// <summary>
+        /// 重新求路径。<b>重建时把追踪点钉在当前显示位</b>（基线 + 现有偏移），
+        /// 否则每次重路由都会把 NPC 拽回路径起点，表现为抖动/瞬移。
+        /// 目标显著移动（追击时玩家会跑）也要重路由，否则绕的是「旧路的障」。
+        /// </summary>
+        bool TryRebuildPath(IPathBridge bridge, Vector3 baseline, Vector3 dest)
+        {
+            var targetMoved = (_pathBuiltAt - dest).sqrMagnitude > 0.6f * 0.6f;
+            if (_pathValid && !_pathRequested && !targetMoved && _repathTimer > 0f) return true;
+
+            if (!bridge.TryFindPath(baseline + _offset, dest, _corners) || _corners.Count < 2)
+            {
+                _pathValid = false;
+                _pathRequested = false;
+                return false;
+            }
+
+            _pathValid = true;
+            _pathRequested = false;
+            _pathBuiltAt = dest;
+            _repathTimer = _repathInterval;
+            _cornerIndex = 1;
+            if (!_chaseSet)
+            {
+                _chasePos = baseline + _offset;   // 钉在当前位置，避免重路由拉扯
+                _chaseSet = true;
+            }
+            return true;
+        }
+
+        /// <summary>沿路径折线按步长推进；当前段走完就换下一段。</summary>
+        void AdvanceAlongPath(float step)
+        {
+            while (step > 1e-6f && _cornerIndex < _corners.Count)
+            {
+                var next = _corners[_cornerIndex];
+                var to = next - _chasePos;
+                to.y = 0f;                        // 水平推进，高度直接跟路径点
+                var dist = to.magnitude;
+                if (dist <= step)
+                {
+                    _chasePos = next;
+                    step -= Mathf.Max(0f, dist);
+                    _cornerIndex++;
+                    if (_cornerIndex >= _corners.Count) _pathRequested = true;   // 到位后请求重估
+                    continue;
+                }
+                _chasePos += to / dist * step;
+                step = 0f;
+            }
+            // 路径尽头：钉在最后拐点上，保持贴住目标
+            if (_cornerIndex >= _corners.Count && _corners.Count > 0)
+            {
+                _chasePos = _corners[_corners.Count - 1];
+            }
         }
 
         public void GetOverlay(out Vector3 worldOffset, out Vector3? worldLookAt)
@@ -246,7 +329,19 @@ namespace Collin.Stealth
             worldLookAt = _lookAt;
         }
 
-        /// <summary>复原初始状态：清档位、清偏移、清记忆。</summary>
+        /// <summary>清空导航路径跟随状态（回巡逻、复原、档位切换时调用）。</summary>
+        void ClearPathState()
+        {
+            _corners.Clear();
+            _chaseSet = false;
+            _pathValid = false;
+            _pathRequested = false;
+            _repathTimer = 0f;
+            _cornerIndex = 0;
+            _pathBuiltAt = Vector3.zero;
+        }
+
+        /// <summary>复原初始状态：清档位、清偏移、清记忆、清导航路径。</summary>
         public void ResetOverlay()
         {
             _stage = StealthDetectionStage.Patrol;
@@ -256,6 +351,7 @@ namespace Collin.Stealth
             _lastSeenTargetId = -1;
             _offset = Vector3.zero;
             _lookAt = null;
+            ClearPathState();
         }
 
         void RaiseDetected(float timeIndex)

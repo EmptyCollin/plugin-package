@@ -79,6 +79,9 @@ namespace Collin.Stealth.EditorTooling
             var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
             ground.name = "Ground";
             ground.transform.localScale = new Vector3(6f, 1f, 6f);   // 60×60m，覆盖出生点(z=-22)到撤离点(z=16)
+            // legacy 烘焙只收 NavigationStatic 物体：地面=可行走面，掩体=障碍（实测教训：
+            // 漏标静态会得到空导航，绕行校验静默不过、追击照旧穿模）
+            SetNavStatic(ground);
 
             PlaceCube("Cover_A", new Vector3(-3f, 1.5f, 0f), new Vector3(1.6f, 3f, 1.6f));
             PlaceCube("Cover_B", new Vector3(4f, 1.5f, -2f), new Vector3(2.4f, 3f, 1.2f));
@@ -88,6 +91,15 @@ namespace Collin.Stealth.EditorTooling
             SpawnGuard("Guard_Sweeper", route2, profile, new Vector3(2f, 0f, -2f), 3f);
             BuildPlayerUnit();
             BuildExitAndRule();
+
+            // 角色与信标必须显式非静态：CreatePrimitive 出来的子物体 isStatic 默认为 true，
+            // 不处理会把哨兵自己烘成障碍，路径会绕着"活人"走（实测过的坑）。
+            SetNavStaticRecursively(GameObject.Find("Player"), false);
+            SetNavStaticRecursively(GameObject.Find("Guard_Patrol"), false);
+            SetNavStaticRecursively(GameObject.Find("Guard_Sweeper"), false);
+            SetNavStaticRecursively(GameObject.Find("StealthClock"), false);
+            var beacon = GameObject.Find("Beacon");
+            if (beacon != null) SetNavStaticRecursively(beacon.transform.parent.gameObject, false);
 
             var clockGo = new GameObject("StealthClock");
             clockGo.AddComponent<StealthClock>();
@@ -99,6 +111,13 @@ namespace Collin.Stealth.EditorTooling
                 return;
             }
 
+            // ── 导航网格：先存盘再烘焙（legacy bake 要求场景已落盘）──────
+            var navOk = BakeNavigation();
+            if (!EditorSceneManager.SaveScene(scene))
+            {
+                Debug.LogWarning("[StealthSampleBuilder] 烘焙后二次存盘失败，导航数据可能未写入场景");
+            }
+
             // 把活动场景还给原现场（其他会话可能正在别的场景里工作）。
             if (!string.IsNullOrEmpty(originalPath) && originalPath != ScenePath && File.Exists(originalPath))
             {
@@ -106,8 +125,142 @@ namespace Collin.Stealth.EditorTooling
             }
 
             Debug.Log("[StealthSampleBuilder] 可玩示例已生成：" + ScenePath
+                      + (navOk ? "（导航已烘焙并通过绕行校验，哨兵追击会绕开掩体）"
+                                : "（导航未通过绕行校验，追击将退回直线——见上方烘焙日志）")
                       + "\nPlay 后：WASD 相机相对移动 / Shift 跑 / Ctrl 蹲伏 / 右键拖拽转视角；"
                       + "\n哨兵警戒范围以半透明色块投在地面，走到北侧蓝色撤离圈内驻留即通关，被察觉到底则失败（R 重开）。");
+        }
+
+        /// <summary>
+        /// 烘焙 legacy 导航网格并校验「真的会绕行」。
+        /// <para>用 <c>UnityEditor.AI.NavMeshBuilder</c> + 内置 <c>com.unity.modules.ai</c>，
+        /// <b>不引入 com.unity.ai.navigation</b>（DESIGN D-06：付费 HAVOK + 其组件按帧积分会摧毁
+        /// 位姿纯函数地基）。烘焙要求场景已落盘，故流程是「存盘 → 烘焙 → 再存盘」。</para>
+        /// <para>烘焙不可用（场景被占用 / 无烘焙数据）时只 <b>LogWarning 退回直线叠加</b>，
+        /// 绝不报 error——本包全程零自造 error，否则破 §1.6b 归零门禁。</para>
+        /// </summary>
+        static bool BakeNavigation()
+        {
+            try
+            {
+                // 同步烘焙（UnityEditor.AI 的 legacy 入口）：返回即完成，可直接校验。
+                // 谁参与烘焙由搭建阶段的 isStatic 决定（地面/掩体=静态，角色=非静态），
+                // 不再临时停用物体——那条路径在烘焙抛异常时会把物体留在停用状态。
+                UnityEditor.AI.NavMeshBuilder.BuildNavMesh();
+                var ok = VerifyDetour();
+                Debug.Log("[StealthSampleBuilder] 导航烘焙 "
+                          + (ok ? "完成并通过绕行校验，追击会绕开掩体" : "完成但绕行校验未通过"));
+                return ok;
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogWarning("[StealthSampleBuilder] 导航烘焙不可用，追击退回直线叠加：" + ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 校验：从南侧出生区到北侧撤离点的路径必须<b>比直线长</b>——
+        /// 掩体横在中间，直穿说明障碍没参与烘焙，那和没有导航一样（用户反馈的穿模）。
+        /// <para>每一步失败都<b>打日志说明原因</b>：5 个早退点若静默返回 false，
+        /// 就只能靠猜来定位（本轮实测教训）。</para>
+        /// </summary>
+        static bool VerifyDetour()
+        {
+            const string Tag = "[StealthSampleBuilder][Nav] ";
+
+            if (!UnityEngine.AI.NavMesh.SamplePosition(new Vector3(0f, 0.1f, -14f), out var start,
+                    4f, UnityEngine.AI.NavMesh.AllAreas))
+            {
+                Debug.LogWarning(Tag + "起点吸不到导航面 (0,-14)——导航网格可能没烘出来或地面未参与烘焙");
+                return false;
+            }
+            if (!UnityEngine.AI.NavMesh.SamplePosition(new Vector3(0f, 0.1f, 14f), out var goal,
+                    4f, UnityEngine.AI.NavMesh.AllAreas))
+            {
+                Debug.LogWarning(Tag + "终点吸不到导航面 (0,14)——撤离区一侧不可达");
+                return false;
+            }
+
+            var path = new UnityEngine.AI.NavMeshPath();
+            if (!UnityEngine.AI.NavMesh.CalculatePath(start.position, goal.position,
+                    UnityEngine.AI.NavMesh.AllAreas, path))
+            {
+                Debug.LogWarning(Tag + "CalculatePath 返回 false");
+                return false;
+            }
+            if (path.status != UnityEngine.AI.NavMeshPathStatus.PathComplete)
+            {
+                Debug.LogWarning(Tag + "路径状态=" + path.status + "（非 Complete，两点不连通）");
+                return false;
+            }
+
+            var corners = path.corners;
+            if (corners == null || corners.Length < 2)
+            {
+                Debug.LogWarning(Tag + "拐点数=" + (corners == null ? -1 : corners.Length));
+                return false;
+            }
+
+            var direct = Vector3.Distance(start.position, goal.position);
+            var along = 0f;
+            for (var i = 1; i < corners.Length; i++) along += Vector3.Distance(corners[i - 1], corners[i]);
+
+            // 判据用<b>横向偏离</b>而非总长增量：28m 路径绕开 1.1m 的掩体，总长只多 0.13m，
+            // 用它判定会把「已经绕行」误判成「没绕行」（本轮实测踩过）。
+            var line = goal.position - start.position;
+            var len = line.magnitude;
+            var maxLateral = 0f;
+            if (len > 1e-3f)
+            {
+                var dir = line / len;
+                for (var i = 1; i < corners.Length - 1; i++)   // 首尾不算
+                {
+                    var v = corners[i] - start.position;
+                    var along1 = Vector3.Dot(v, dir);
+                    var lateral = (v - dir * along1).magnitude;
+                    if (lateral > maxLateral) maxLateral = lateral;
+                }
+            }
+
+            Debug.Log(Tag + "起点=" + Fmt(start.position) + " 终点=" + Fmt(goal.position)
+                      + " 拐点=" + corners.Length + " 直线=" + direct.ToString("0.00")
+                      + " 路径=" + along.ToString("0.00")
+                      + " 最大横向偏离=" + maxLateral.ToString("0.00"));
+
+            // 拐点横向偏离 > 0.4m 才算真的绕开了（≈ 半个掩体宽 + 导航腐蚀）。
+            if (maxLateral <= 0.4f)
+            {
+                Debug.LogWarning(Tag + "路径未绕行（横向偏离过小）⇒ 掩体没成为障碍：检查掩体 isStatic 与碰撞体");
+                return false;
+            }
+            return true;
+        }
+
+        static string Fmt(Vector3 v)
+        {
+            return "(" + v.x.ToString("0.0") + "," + v.y.ToString("0.0") + "," + v.z.ToString("0.0") + ")";
+        }
+
+        /// <summary>
+        /// 标为静态：legacy 导航烘焙只收静态物体（地面=可行走面，掩体=障碍）。
+        /// 漏标会得到空导航网格 ⇒ 绕行校验静默不过、追击照旧穿模（本包实测踩过的坑）。
+        /// <c>GameObject.isStatic</c> 在编辑器侧即「全部静态位」，包含导航静态。
+        /// </summary>
+        static void SetNavStatic(GameObject go)
+        {
+            go.isStatic = true;
+        }
+
+        /// <summary>递归设置静态标记（角色层级含默认静态的图元子物体，必须整体关掉）。</summary>
+        static void SetNavStaticRecursively(GameObject go, bool value)
+        {
+            if (go == null) return;
+            go.isStatic = value;
+            for (var i = 0; i < go.transform.childCount; i++)
+            {
+                SetNavStaticRecursively(go.transform.GetChild(i).gameObject, value);
+            }
         }
 
         /// <summary>
@@ -228,6 +381,7 @@ namespace Collin.Stealth.EditorTooling
             cube.name = name;
             cube.transform.position = center;
             cube.transform.localScale = scale;
+            SetNavStatic(cube);
             Tint(cube, CoverColor);
         }
 

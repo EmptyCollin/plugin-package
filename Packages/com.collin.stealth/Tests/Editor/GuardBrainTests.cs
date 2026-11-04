@@ -317,9 +317,7 @@ namespace Collin.Stealth.Tests
             var brain = NewGuard(Vector3.zero, NewProfile(gain: 0.9f), out _);
             var player = NewPlayer(new Vector3(0f, 0f, 6f));
 
-            // 默认无导航实现：叠加目标 = 可疑点直线。
-            // dt 取 3：叠加按限速收敛（3.5m/s），一步只走 3.5m 时两种目标会被截成同一个值，
-            // 必须给足时间让偏移真正抵达目标，断言才有区分度。
+            // ① 默认无桥 ⇒ 直线叠加。dt=3 让限速（3.5m/s）足够抵达 6m 外的可疑点。
             Assert.False(Services.TryGet<IPathBridge>(out _), "NullPathBridge 不得默认注册");
             player.EvaluateOnce(1f);
             brain.Tick(3f, Vector3.zero, 1f);
@@ -327,29 +325,61 @@ namespace Collin.Stealth.Tests
             Assert.That(plain.z, Is.EqualTo(6f).Within(1e-3f), "未接桥时叠加应抵达可疑点");
             Assert.That(plainLook.Value.z, Is.EqualTo(6f).Within(1e-3f));
 
-            // 注册接缝后：目标经 TrySnap 改写（+4m），叠加必须落在吸附后的点上。
-            Services.Register<IPathBridge>(new ShiftBridge(new Vector3(0f, 0f, 4f)));
-            var brain2 = NewGuard(new Vector3(20f, 0f, 0f), NewProfile(gain: 0.9f), out _);
+            // ② 接桥 ⇒ 沿<b>绕行路径</b>推进。路径 (0,0,0)→拐点(5,0,0)→目标(0,0,6)。
+            //    dt=0.5（走 1.75m）：直线会往 +Z 去，沿路径必须先往 +X 绕——
+            //    两者的分量方向相反，这才是「穿模 vs 绕行」的可区分判据。
+            var bridge = new DetourBridge(new Vector3(5f, 0f, 0f));
+            Services.Register<IPathBridge>(bridge);
+            var brain2 = NewGuard(Vector3.zero, NewProfile(gain: 0.9f), out _);
             VisionRegistry.MarkDirty();   // EditMode 不跑 OnEnable，须手动让注册表重建
             DetectionRegistry.MarkDirty();
 
-            player.transform.position = new Vector3(20f, 0f, 6f);
             player.EvaluateOnce(1f);
-            brain2.Tick(3f, new Vector3(20f, 0f, 0f), 2f);
-            brain2.GetOverlay(out var snapped, out var snapLook);
-            Assert.That(snapped.z, Is.EqualTo(10f).Within(1e-3f),
-                        "注册 IPathBridge 后叠加目标必须被吸附改写（6 + 4）");
-            Assert.That(snapLook.Value.z, Is.EqualTo(10f).Within(1e-3f));
+            brain2.Tick(0.5f, Vector3.zero, 1f);
+            brain2.GetOverlay(out var detour, out _);
+            Assert.That(detour.x, Is.GreaterThan(1.0f), "沿路径推进应先朝拐点(+X)绕行");
+            Assert.That(detour.z, Is.LessThan(0.5f), "绕行阶段不应像直线那样直接冲向 +Z 目标");
+            Assert.That(bridge.Calls, Is.GreaterThan(0), "应实际调用寻路而非只做单点吸附");
+
+            // ③ 桥判定不可达 ⇒ 必须退回直线，而不是原地停住（否则 NPC 卡死更像 bug）。
+            Services.Clear();
+            var unreachable = new DetourBridge(new Vector3(5f, 0f, 0f)) { ReturnPath = false };
+            Services.Register<IPathBridge>(unreachable);
+            var brain3 = NewGuard(Vector3.zero, NewProfile(gain: 0.9f), out _);
+            VisionRegistry.MarkDirty();
+            DetectionRegistry.MarkDirty();
+
+            player.EvaluateOnce(1f);
+            brain3.Tick(0.5f, Vector3.zero, 1f);
+            brain3.GetOverlay(out var fallback, out _);
+            Assert.That(fallback.z, Is.EqualTo(1.75f).Within(1e-2f), "不可达时应退回直线叠加");
+            Assert.That(fallback.x, Is.EqualTo(0f).Within(1e-4f));
         }
 
-        private sealed class ShiftBridge : IPathBridge
+        /// <summary>测试用假桥：给出一条「先经拐点再到目标」的折线路径。</summary>
+        private sealed class DetourBridge : IPathBridge
         {
-            private readonly Vector3 _delta;
-            public ShiftBridge(Vector3 delta) { _delta = delta; }
+            private readonly Vector3[] _via;
+            public int Calls;
+            public bool ReturnPath = true;
+
+            public DetourBridge(params Vector3[] via) { _via = via; }
+
+            public bool TryFindPath(Vector3 fromWorld, Vector3 desiredWorld, List<Vector3> corners)
+            {
+                Calls++;
+                corners.Clear();
+                if (!ReturnPath) return false;
+                corners.Add(fromWorld);
+                for (var i = 0; i < _via.Length; i++) corners.Add(_via[i]);
+                corners.Add(desiredWorld);
+                return corners.Count >= 2;
+            }
+
             public bool TrySnap(Vector3 fromWorld, Vector3 desiredWorld, out Vector3 navWorld)
             {
-                navWorld = desiredWorld + _delta;
-                return true;
+                navWorld = desiredWorld;
+                return false;
             }
         }
 

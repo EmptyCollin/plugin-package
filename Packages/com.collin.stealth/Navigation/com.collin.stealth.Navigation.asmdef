@@ -1,0 +1,24 @@
+{
+  "name": "com.collin.stealth.Navigation",
+  "rootNamespace": "Collin.Stealth.Navigation",
+  "references": [
+    "com.collin.core",
+    "com.collin.stealth"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [
+    {
+      "name": "com.unity.modules.ai",
+      "expression": "1.0.0",
+      "define": "STEALTH_NAVMESH_AVAILABLE"
+    }
+  ],
+  "noEngineReferences": false,
+  "validateReferences": true
+}

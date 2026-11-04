@@ -40,6 +40,54 @@
 - 编辑器处于 Play 模式时执行 `test run`：TestRunner 因无法建/还原场景刷出一批
   `This cannot be used during play mode` error，**且 `Summary.Total` 返回 0**——不是「工程里没有测试」。
   跑门禁前先 `editor status` 确认 `playMode: stopped`。
+- `script eval_file` 在 **Play 模式下可能整体静默失败**（无 error 也无输出，本轮两次复现）：
+  Play 态取证要退回"日志插桩 + 事后读控制台"，不要依赖探针。
+
+> 以下同样记在 Unreleased：§6 演示视频未录，不收版本号（与文首说明一致）。
+
+### Added（导航网格 + 地面投影专用着色器，session stealth-nav-2026-11-04）
+- **可选子程序集 `com.collin.stealth.Navigation`**：基于**内置 `com.unity.modules.ai` 的 legacy NavMesh**
+  实装寻路（`NavMeshPathBridge`：`NavMesh.SamplePosition` 吸附起终点 + `NavMesh.CalculatePath` 出折线）。
+  **刻意不引入 `com.unity.ai.navigation`**（DESIGN D-06：付费 HAVOK、且其 Agent 按帧积分会摧毁位姿纯函数地基）；
+  只用**一次性几何查询**，不引入任何按帧移动组件。
+  - `NavMeshPathBridgeInstaller`：Play 态经 `RuntimeInitializeOnLoadMethod` 注册（幂等，先判存在不撞 core 冲突报错）；
+  - `Navigation/Editor/StealthNavEditorBootstrap`：`[InitializeOnLoad]` 补**编辑态**注册
+    ——注册点自带在可选程序集内，主包 Editor 不引用它，**删掉该目录主包零影响**（可选性成立）。
+- **绕行只作用于叠加层**（地基纪律）：`GuardBrain` 反应位移改为**沿导航折线逐段推进**
+  （`AdvanceAlongPath`），巡逻基线仍是纯函数结果；不可达/无桥时**退回直线叠加**，绝不原地停住。
+  重建路径时把追踪点**钉在当前位置**（否则每次重路由都会把 NPC 拽回路径起点 = 抖动/瞬移）；
+  目标移动 >0.6m 或超过 `_repathInterval` 才重路由（追击时玩家会跑、掩体会变）。
+- **`IPathBridge` 扩展为路径接口**（`TryFindPath(from,to,List<Vector3> corners)` + 保留 `TrySnap`），
+  并写明"corners[0] 必须是出发点"的锚点契约；`NullPathBridge` 同步实现。
+- **版本宏守卫补成真的**（自查）：asmdef 的 `versionDefines` 声明了 `STEALTH_NAVMESH_AVAILABLE`
+  但代码里**没有任何 `#if` 用到它**——宏是虚设的，真缺内置 AI 模块时该程序集会整体编译失败，
+  「可选」承诺失效。现改为 `#if` 包住 `using UnityEngine.AI` 与整个 NavMesh 实现，
+  并在 `#else` 提供同名**降级实现**（一律返回 false ⇒ 行为等同「没烘焙 NavMesh」，退回直线叠加）。
+- `Resources/StealthGroundProjection.shader`：**地面投影专用半透着色器**
+  ——`Queue=Transparent` + `ZWrite Off` + `ZTest LEqual` + `Offset -1,-1` + `Blend SrcAlpha OneMinusSrcAlpha`。
+  `LightMode` 用 `SRPDefaultUnlit`（已在 `DrawObjectsPass.cs:87` 核实 URP 的 shaderTagIds 首位即它，非凭记忆）。
+- 示例场景接入导航：地面与三块掩体标 `isStatic`（烘焙只收静态物体），
+  玩家/两哨兵/时钟/信标**递归取消**静态（`CreatePrimitive` 的子物体默认是静态，不处理会把角色自己烘成障碍）。
+  烘焙流程 = 存盘 → `UnityEditor.AI.NavMeshBuilder.BuildNavMesh()` → 绕行校验 → **再存盘**，
+  产物 `Sample/Scenes/StealthSample/NavMesh.asset` 随场景入库。
+
+### Fixed
+- **NPC 追击穿掩体**（用户反馈）：反应位移改走导航折线，实测绕行成立（下条证据）。
+- **地面色块剧烈闪烁**（用户反馈「要么改 shader，要么半透 + Z 略高于地面」）：**两条一起做**。
+  根因是复用 `URP/Unlit`——它 `Queue=Geometry` + `ZWrite On`，即使 alpha<1 也没进透明队列，
+  与地面争深度；且多边形 y 与地面**完全共面**。修：专用着色器（透明队列 + 关深度写入 + 深度偏移）
+  **加** 可配 `_clearance`（默认 0.02m）抬升，二者叠加才稳定不闪。找不到专用着色器时兜底并**一次性警告**。
+- **绕行校验判据本身是错的**（自查）：原用「路径总长 > 直线 + 0.3m」。28m 直线绕 1.6m 宽的掩体，
+  几何上总长增量仅 0.13m ⇒ **该判据在物理上不可能满足**，把已经生效的导航误判为失败。
+  改用「拐点相对直线的**最大横向偏离** > 0.4m」。同时给 5 个早退分支各补**诊断日志**
+  （静默 false 只能靠猜定位，本轮实测教训）。
+
+### Verified（2026-11-04 18:13 实测，含宏守卫改动后复跑）
+- 绕行：`[Nav] 起点=(0.0,0.1,-14.0) 终点=(0.0,0.1,14.0) 拐点=4 直线=28.00 路径=28.13 最大横向偏离=1.17`
+  ⇒ 「导航烘焙 完成并通过绕行校验」；4 个拐点 + 1.17m 横向偏离即掩体已成障碍的直接证据。
+- 门禁三项全绿（末次 18:13，即宏守卫改动**之后**复跑）：编译 `failed:false`；`console clear` 后重跑 recompile + test run
+  → `consoleErrors:0 / consoleWarnings:0`；全量 **227/227**（CityMap 128 / **Stealth 99**）；
+  校验器 **结论: 绿灯**。
 
 ### Changed
 - 2026-11-03 用户拍板 Q-A1~Q-A5 后调整设计：新增 `com.unity.inputsystem` 依赖；路点改为相对坐标 + 预制件承载；**听觉/声音侦测移出本包范围**（最小可用子集），`StealthMask` 对应位改为预留位不启用；玩家移动控制器由「交给外部工程」改为「包内自带、拆箱即用」。

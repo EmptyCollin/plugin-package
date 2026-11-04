@@ -123,6 +123,7 @@ MonoBehaviour:
   _searchRadius: 4
   _alertRadius: 15
   _detectedChannel: {fileID: 0}
+  _repathInterval: 0.6
 --- !u!114 &5775241290749593633
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -139,6 +140,7 @@ MonoBehaviour:
   _groundY: 0
   _probeHeight: 0.95
   _fillOpacity: 0.22
+  _clearance: 0.02
 --- !u!1 &2319348326520676052
 GameObject:
   m_ObjectHideFlags: 0
