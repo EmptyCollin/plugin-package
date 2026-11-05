@@ -20,6 +20,10 @@ namespace Collin.StealthPlanner.EditorTooling
         const string SampleDir = "Packages/com.collin.stealthplanner/Sample";
         const string TablePath = SampleDir + "/VisibilityTable.asset";
         const string SettingsPath = SampleDir + "/PlannerBakeSettings.asset";
+        // 静态设计 4 导出目标：JSON 可 diff/版本化、SO 可进 Inspector（D-07 双形态）。
+        // 固定包内路径而非弹保存框——SaveFilePanel 同样是模态窗口，一样卡指令通道。
+        const string DatasetJsonPath = SampleDir + "/WaypointDataset.json";
+        const string DatasetAssetPath = SampleDir + "/PlayerRouteDataset.asset";
 
         /// <summary>可达传播用的人行速度（米/秒）：示例场景同量级。做成面板字段供调参。</summary>
         const float DefaultWalkSpeed = 3.2f;
@@ -53,6 +57,8 @@ namespace Collin.StealthPlanner.EditorTooling
         string _solveSummary;
         // 静态设计 4：前 M 条短解的结果文本（点「求前 M 条短解」后写入）
         string _routesSummary;
+        // 静态设计 4：导出结果文本（点「导出为路点数据集」后写入；非模态——§2.1.5 禁阻塞弹窗）
+        string _exportSummary;
         readonly System.Collections.Generic.List<PhaseKShortest.Route> _routeBuf
             = new System.Collections.Generic.List<PhaseKShortest.Route>();
 
@@ -157,6 +163,16 @@ namespace Collin.StealthPlanner.EditorTooling
             }
             if (!string.IsNullOrEmpty(_routesSummary))
                 EditorGUILayout.LabelField(_routesSummary, EditorStyles.wordWrappedMiniLabel);
+
+            // 静态设计 4 收口：把求得的 M 条动线导出为路点数据集（D-07 双形态）。
+            // 刻意「非模态」：AGENTS §2.1.5 禁 DisplayDialog/SaveFilePanel（阻塞主线程=卡死指令通道），
+            // 故固定导出到包内路径 + 按钮下方文本 + 日志读数三处确认，不弹任何对话框。
+            using (new EditorGUI.DisabledScope(_table == null || _routeBuf.Count == 0))
+            {
+                if (GUILayout.Button("导出为路点数据集（JSON + SO）")) ExportRoutesAsDataset();
+            }
+            if (!string.IsNullOrEmpty(_exportSummary))
+                EditorGUILayout.LabelField(_exportSummary, EditorStyles.wordWrappedMiniLabel);
 
             // 当前桶号在此统一取一次（泳道与状态行共用，避免两套 CurBucket 读数不同步）
             var bucket = CurBucket;
@@ -460,6 +476,80 @@ namespace Collin.StealthPlanner.EditorTooling
             }
             _routesSummary = sb.ToString();
             SceneView.RepaintAll();
+        }
+
+        /// <summary>
+        /// 点「导出为路点数据集」：把 <see cref="SolveRoutes"/> 求得的路线导出成 D-07 的双形态——
+        /// 包内固定路径的 <b>JSON</b>（可 diff、可版本化、注入器读这条）+ 同步生成的 <b>SO 资产</b>（进 Inspector）。
+        /// <para>⚠️ <b>刻意非模态</b>：DESIGN §3.2 原写「弹窗确认」，但 AGENTS.md §2.1.5 禁止
+        /// <c>DisplayDialog</c>（阻塞主线程 = 卡死所有会话共用的指令通道，校验器 channel-discipline 直接判红）。
+        /// 确认信息改为三处可见：按钮下方文本 + 本方法日志读数 + 落盘产物本身。该偏离已记 ACCEPTANCE。</para>
+        /// <para>SO 形态从<b>刚落盘的那份 JSON</b> 读回，而不是再复制一次内存对象——
+        /// 这样两形态必然同源，且顺带证明「导出的 JSON 真能被解析」。</para>
+        /// </summary>
+        void ExportRoutesAsDataset()
+        {
+            if (_table == null) { _exportSummary = "无表，先烘焙可见性表"; return; }
+            if (_routeBuf.Count == 0) { _exportSummary = "尚无路线：先点「求前 M 条短解」"; return; }
+
+            var scratch = ScriptableObject.CreateInstance<PlayerRouteDataset>();
+            try
+            {
+                if (!scratch.BuildFromRoutes(_table, _routeBuf))
+                {
+                    _exportSummary = "构建失败：路线集合为空";
+                    return;
+                }
+                var json = scratch.ToJson(out var whyJson);
+                if (!string.IsNullOrEmpty(whyJson) || string.IsNullOrEmpty(json))
+                {
+                    _exportSummary = "序列化失败：" + (whyJson ?? "JSON 为空");
+                    return;
+                }
+
+                try
+                {
+                    var absolute = System.IO.Path.GetFullPath(DatasetJsonPath);
+                    System.IO.File.WriteAllText(absolute, json);
+                }
+                catch (System.Exception e)
+                {
+                    _exportSummary = "写盘失败：" + e.Message;
+                    return;
+                }
+                AssetDatabase.ImportAsset(DatasetJsonPath, ImportAssetOptions.ForceUpdate);
+
+                var asset = AssetDatabase.LoadAssetAtPath<PlayerRouteDataset>(DatasetAssetPath);
+                var isNew = asset == null;
+                if (isNew)
+                {
+                    asset = ScriptableObject.CreateInstance<PlayerRouteDataset>();
+                    AssetDatabase.CreateAsset(asset, DatasetAssetPath);
+                }
+                if (!asset.FromJson(json, out var whyLoad))
+                {
+                    _exportSummary = "SO 资产读回失败：" + whyLoad;
+                    return;
+                }
+                EditorUtility.SetDirty(asset);
+                AssetDatabase.SaveAssets();
+
+                var bytes = new System.IO.FileInfo(System.IO.Path.GetFullPath(DatasetJsonPath)).Length;
+                _exportSummary = "✅ 已导出 " + scratch.Count + " 条路线 →\n  " + DatasetJsonPath
+                    + "（" + bytes + " 字节）\n  " + DatasetAssetPath
+                    + "（SO" + (isNew ? "：新建" : "：覆盖") + "，读回校验 " + asset.Count + " 条）";
+                Debug.Log("[StealthPlanner][Export] 路线=" + scratch.Count
+                    + " JSON字节=" + bytes + " SO读回=" + asset.Count
+                    + " 网格=" + _table.DimX + "x" + _table.DimZ
+                    + " 格长=" + _table.CellSize + " Δt=" + _table.TimeStep
+                    + " 版本=" + PlayerRouteDataset.SchemaVersion + " → " + DatasetJsonPath);
+                SceneView.RepaintAll();
+            }
+            finally
+            {
+                // 临时 SO 不销毁会跨帧残留并可能在域重载时打 warning（条目 27 同族教训）
+                if (scratch != null) Object.DestroyImmediate(scratch);
+            }
         }
 
         /// <summary>把「本桶可达」拷成掩码——只读 Field 的公开查询，不复制其内部位图布局。</summary>
