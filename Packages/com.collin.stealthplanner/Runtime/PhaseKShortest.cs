@@ -104,7 +104,11 @@ namespace Collin.StealthPlanner
             var dt = table.TimeStep;
             if (dt <= 0f) { failure = PhaseReachability.Failure.Fail("表的时间步长非法"); return; }
 
-            // ── 逐桶阻断掩码（与 M2/M3 同一 BuildBlockedMask 入口）预计算一次、多轮复用 ──
+            // ── 逐桶阻断掩码：按需构建 + 缓存（与 M2/M3 同一 BuildBlockedMask 入口）──
+            // ⚠️ 性能实测（2026-11-05 探针 perf_probe）：horizon=480 × 11664 格的<b>全量</b>预计算
+            //    要 562ms，而首条路线最早层通常远小于 horizon（示例场景 L*=55）——
+            //    预计算是在为根本走不到的层白付 88% 的成本。改为「用到第 b 层才建第 b 层」。
+            //    掩码构建失败只可能源于长度不匹配（对同一张表逐层恒同），故只在第 0 层验一次。
             var noData = new byte[n];
             if (!PhaseReachability.TryBuildNoData(table, noData)) noData = null;
 
@@ -116,14 +120,11 @@ namespace Collin.StealthPlanner
                     + MaxLayerCells.ToString("N0") + "，请减小相位轮数 N / 相位窗 P 或增大格长");
                 return;
             }
-            var masks = new byte[layerCells];   // masks[b*n + cell]，1=该桶该格不能站
+            var masks = new byte[layerCells];       // masks[b*n + cell]，1=该桶该格不能站
+            var built = new byte[horizonBuckets];   // 该层是否已构建（0 会被误当「构建好的全安全层」，必须另记）
             var row = new byte[n];
-            for (var b = 0; b < horizonBuckets; b++)
-            {
-                if (!PhaseReachability.BuildBlockedMask(table, b * dt, noData, row))
-                { failure = PhaseReachability.Failure.Fail("阻断掩码构造失败（表与缓冲长度不符）"); return; }
-                System.Array.Copy(row, 0, masks, (long)b * n, n);
-            }
+            if (!EnsureLayer(table, masks, built, row, 0, dt, n, noData))
+            { failure = PhaseReachability.Failure.Fail("阻断掩码构造失败（表与缓冲长度不符）"); return; }
 
             if (masks[startCell] != 0)
             {
@@ -153,8 +154,9 @@ namespace Collin.StealthPlanner
 
             while (output.Count < maxRoutes)
             {
-                var goalLayer = SearchEarliest(table, n, horizonBuckets, masks, startCell, goalCell,
-                                               stepCells, forbidden, parent, cur, next, maskHere, maskNext, buf);
+                var goalLayer = SearchEarliest(table, n, horizonBuckets, masks, built, row, noData, dt,
+                                               startCell, goalCell, stepCells, forbidden,
+                                               parent, cur, next, maskHere, maskNext, buf);
                 if (goalLayer < 0) break;          // 禁边后无可达路线 ⇒ 如实少于 M 条
 
                 var route = BuildRoute(n, startCell, goalCell, goalLayer, parent, dt);
@@ -165,11 +167,28 @@ namespace Collin.StealthPlanner
         }
 
         /// <summary>
+        /// 确保第 <paramref name="b"/> 层掩码已构建（按需、幂等）。已建则直接返回；未建才做一次
+        /// <see cref="PhaseReachability.BuildBlockedMask"/> 写进缓存。
+        /// <para>⚠️ 必须<b>另用 built 标记</b>判断「是否已建」：全安全层的内容本身也是全 0，
+        /// 若靠「缓存非零才算建过」会把已建好的全安全层误判成未建 ⇒ 每层反复重算，白丢这项优化。</para>
+        /// </summary>
+        static bool EnsureLayer(VisibilityTable table, byte[] masks, byte[] built, byte[] row,
+                                int b, float dt, int n, byte[] noData)
+        {
+            if (built[b] != 0) return true;
+            if (!PhaseReachability.BuildBlockedMask(table, b * dt, noData, row)) return false;
+            System.Array.Copy(row, 0, masks, (long)b * n, n);
+            built[b] = 1;
+            return true;
+        }
+
+        /// <summary>
         /// 一次「按层递增、逐层重建前沿」的单位代价分层 BFS。节点 (cell,layer) 由
         /// <c>parent[layer*n+cell]</c> 是否为 -1 判「本层该格是否已发现」——<b>同格可跨层各发现一次</b>
         /// （折返/等待变体）。首个把撤离点纳入前沿的层即最早到达，回填 parent 后返回该层；不可达返回 -1。
         /// </summary>
         static int SearchEarliest(VisibilityTable table, int n, int horizon, byte[] masks,
+                                  byte[] built, byte[] row, byte[] noData, float dt,
                                   int startCell, int goalCell, int stepCells, HashSet<long> forbidden,
                                   int[] parent, List<int> cur, List<int> next,
                                   byte[] maskHere, byte[] maskNext, int[] buf)
@@ -180,11 +199,13 @@ namespace Collin.StealthPlanner
             cur.Clear(); next.Clear();
             parent[startCell] = startCell;                        // 层 0 起点自指为「已发现」哨兵（回溯见 layer==0 停）
             cur.Add(startCell);
-            System.Array.Copy(masks, 0, maskHere, 0, n);         // 层 0 掩码
+            System.Array.Copy(masks, 0, maskHere, 0, n);         // 层 0 掩码（入口已确保建好）
 
             for (var b = 0; b <= horizon - 2; b++)
             {
-                System.Array.Copy(masks, (long)(b + 1) * n, maskNext, 0, n);   // 第 b+1 层掩码（每层重取，不交换）
+                // 按需建第 b+1 层（外层已保证成功率为 1：失败只源于长度不匹配，且第 0 层已验过）
+                if (!EnsureLayer(table, masks, built, row, b + 1, dt, n, noData)) return -1;
+                System.Array.Copy(masks, (long)(b + 1) * n, maskNext, 0, n);
                 next.Clear();
 
                 for (var fi = 0; fi < cur.Count; fi++)
