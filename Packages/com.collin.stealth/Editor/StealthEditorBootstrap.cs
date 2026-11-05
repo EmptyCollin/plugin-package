@@ -21,9 +21,27 @@ namespace Collin.Stealth.EditorTooling
         {
             StealthWorld.EnsureRegistered();
 
+            // U-8 收口：编辑态切换场景后，组件 OnDisable 不保证触发 ⇒ VisionRegistry / DetectionRegistry
+            // 的缓存可能滞留在已销毁对象上。Runtime 侧那道 HasDestroyed 自愈判据对「重建结果为空列表
+            // （切到没有视野体的场景）」这一路径判不出来 ⇒ 切回原场景会永远返回 0（实测复现）。
+            // 唯一可靠且不打扰烘焙热路径的补法：在<b>能拿到切场景事件的一侧（Editor）</b>订阅并置脏，
+            // 下次读取自然重建。刻意不放 Runtime —— 那会破 §0.1 原则 3（Runtime 禁引 UnityEditor）。
+            UnityEditor.SceneManagement.EditorSceneManager.activeSceneChangedInEditMode += OnEditorActiveSceneChanged;
+
             // Inspector 改完路点/速度后必须立刻见效（AGENTS.md §0.1 原则 1 所见即所得）。
             // 编辑态没有帧循环，所以由撤销回调主动推一次位姿，而不是等下一帧。
             Undo.postprocessModifications += OnModificationsApplied;
+        }
+
+        /// <summary>
+        /// 编辑态活动场景切换 ⇒ 两个注册表都置脏（下次读取重建）。
+        /// <para>参数不用取——事件本身即「场景里的视野体/察觉目标全换了一批」的信号。</para>
+        /// </summary>
+        static void OnEditorActiveSceneChanged(
+            UnityEngine.SceneManagement.Scene from, UnityEngine.SceneManagement.Scene to)
+        {
+            VisionRegistry.MarkDirty();
+            DetectionRegistry.MarkDirty();
         }
 
         static UndoPropertyModification[] OnModificationsApplied(UndoPropertyModification[] modifications)

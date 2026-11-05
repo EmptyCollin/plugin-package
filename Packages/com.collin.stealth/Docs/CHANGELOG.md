@@ -4,6 +4,41 @@
 
 ## [Unreleased]
 
+### Fixed（编辑态注册表缓存滞留，session stealth-u8fix-2026-11-05）
+- 🐛 **编辑态切换场景后 `IVisionWorld.Volumes` 静默返回 0**（巡逻单位数正常，唯独视野体为空）。
+  由 B 包（设计辅助台）在跨场景取证的探针里撞见并上报（其 ACCEPTANCE **U-8**）；本包侧根因已实测坐实：
+  - `VisionRegistry` 采「变更置脏 + 读时重建」的惰性缓存，但**编辑态切场景时组件 `OnDisable` 不保证触发**
+    ⇒ `_dirty` 停在 false，缓存里留着**上一场景已销毁对象的引用**。
+  - 上层 `StealthWorld.Volumes` 用 `if (v == null) continue;` 过滤死引用 ⇒ 过滤完恰好为空 ⇒
+    **不报错地交出 0 个视野体**。`Actors` 每次读都现扫（`RebuildActors()`）⇒ 不受影响，
+    这正是「单位=3、视野=0」这种诡异组合的来源。`DetectionRegistry` 与 `VisionRegistry` 逐字同构，同病。
+  - 实测读数（同一段脚本、修复前后各跑一次）：
+    修复前 `切走前 Registry=3 | 切到 TerrainTest 后 Registry=3 私有缓存条数=3 | 切回后 IVisionWorld=0`
+    修复后 `切走前 Registry=3 | 切到 TerrainTest 后 Registry=0 私有缓存条数=0 | 切回后 IVisionWorld=3`
+- **修法（两处对称 + 一个编辑器钩子，缺一不可）**：
+  1. `VisionRegistry.Volumes` / `DetectionRegistry.Targets` 的 getter 增加
+     `|| (!Application.isPlaying && HasDestroyed(缓存))` —— 缓存里混进已销毁引用就重建（便宜的 O(缓存长度) null 检查）。
+  2. `StealthEditorBootstrap` 订阅 `EditorSceneManager.activeSceneChangedInEditMode` ⇒ 切场景即 `MarkDirty()` 两张表。
+     **这一步才是真正闭合 U-8 的那一刀**：只靠 ① 会留一条漏网路径——若某次重建结果为**空列表**
+     （切到本来就没有视野体的场景，如 TerrainTest），之后 `HasDestroyed([])==false` 且 `_dirty==false`
+     ⇒ 永不重建 ⇒ 切回原场景仍返回 0。事件放 Editor 侧：Runtime 禁引 UnityEditor（§0.1 原则 3），
+     且事件置脏是 O(1)，完全不碰烘焙热路径。
+  3. 两个注册表**必须同步改**（历史缺陷正源于这套共享写法只被单侧修）。
+- ⚠️ **过程中的自我纠正（记下来防复发）**：第一版把自愈写成「非运行态每次读取都重扫」。看着最保险，
+  实为**性能炸弹**——`CanSeeAt → FindVolume → VisionRegistry.Volumes` 是烘焙热路径
+  （B 包实测一次烘焙 **1,970,540 次查询**），每次读取全场景 `FindObjectsByType` 会把 0.66s 的烘焙拖成不可用。
+  收敛到「便宜 null 检查 + 事件置脏」后，热路径成本与修复前同阶。
+- 事件名经**反射枚举**确认为 `activeSceneChangedInEditMode`（本版本无 `...InEditor`），
+  处理器签名亦经反射核实为 `UnityAction<Scene,Scene>`——不再靠猜 API。
+- 回归用例 2 条（`VisionDetectionTests`）：`VisionRegistry_StaleCacheAfterDestroy_SelfHeals`、
+  `DetectionRegistry_StaleCacheAfterDestroy_SelfHeals`。**刻意不调 `MarkDirty`/`ResetForTests`**——
+  手动置脏等于把 bug 掩掉（既有的 `Registries_DoNotLeakDestroyedObjects` 正因手动置脏而测不到本缺陷）。
+  断言按**引用查找**而非 `Count`，避免把场景基线物体数量当前提。
+- 本包用例 **121→123**；全量 **334/334**。门禁：`compilationFailed=false`、
+  `console clear` 后静默 70s `error=0 / warning=0`。
+  ⚠️ 校验器整体仍 FAIL 4，来源是另一会话新加的 `channel-discipline` 检查揪出 citymap / stretch 里的
+  历史 `EditorUtility.DisplayDialog`（§2.1.5）——**属他包，本会话未代修**；本包相关检查全 ok。
+
 ## [0.5.0] - 2026-11-04
 
 > **收版依据**：§6 两段式演示视频已由用户手动实录并入库

@@ -21,7 +21,17 @@ namespace Collin.Stealth
         {
             get
             {
-                if (_dirty)
+                // 除显式置脏外，加一道便宜的「死引用」自愈：编辑态切场景时组件 OnDisable 不保证触发
+                // （U-8 实测：切走再切回，_dirty 仍为 False、缓存里是 3 条已销毁引用 ⇒
+                //  上层 StealthWorld.Volumes 用 v==null 过滤后静默返回 0）。
+                // ⚠️ 判据必须是 O(缓存长度) 的 null 检查，**不能**「非运行态每次读取都重扫」——
+                //    CanSeeAt → FindVolume 是本包烘焙的热路径（实测一次烘焙 1,970,540 次查询），
+                //    每次读取重扫 = 每次一个全场景 FindObjectsByType ⇒ 0.66s 的烘焙会退化到不可用。
+                //    （本会话先写成「重扫」后实测发现是性能炸弹，故收回。）
+                // ⚠️ 该判据只在缓存「混有死引用」时触发；若重建结果为<b>空</b>（切到无视野体的场景），
+                //    HasDestroyed([])==false 就不会再重建 ⇒ 空缓存那条路必须靠 Editor 侧的
+                //    StealthEditorBootstrap 场景切换钩子置脏来兜（那里 O(1)、完全不碰本热路径）。
+                if (_dirty || (!Application.isPlaying && HasDestroyed(_volumes)))
                 {
                     _volumes.Clear();
                     _volumes.AddRange(UnityEngine.Object.FindObjectsByType<VisionVolume>(
@@ -30,6 +40,14 @@ namespace Collin.Stealth
                 }
                 return _volumes;
             }
+        }
+
+        /// <summary>缓存中是否混有已销毁（Unity <c>==null</c> 为真）的引用。空缓存返回 false。</summary>
+        static bool HasDestroyed(List<VisionVolume> list)
+        {
+            for (var i = 0; i < list.Count; i++)
+                if (list[i] == null) return true;
+            return false;
         }
 
         /// <summary>测试复位。</summary>

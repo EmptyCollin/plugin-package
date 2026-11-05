@@ -1,6 +1,10 @@
 # 交接单 — com.collin.stealth
 
 > 覆写式交接单（AGENTS §4）。最近更新：2026-11-04（会话 `stealth-video-2026-11-04`）
+> ⚠️ **其后有一次补丁轮（2026-11-05，会话 `stealth-u8fix-2026-11-05`，用户授权修 B 包上报的 U-8）**：
+> `VisionRegistry`/`DetectionRegistry` 编辑态缓存滞留已销毁引用 ⇒ 切场景后 `IVisionWorld.Volumes` 静默 0；
+> 修法＝getter 死引用自愈 + `StealthEditorBootstrap` 订阅 `activeSceneChangedInEditMode` 置脏；
+> 本包用例 121→123、全量 334/334。详见本包 ACCEPTANCE「注册表缓存自愈修复」小节 121~124 与 CHANGELOG [Unreleased]。
 > **包版本 0.5.0**（§6 两段式演示视频已由用户实录入库、`Showcase.json.video` 已填充 ⇒ M5 全部达成）。
 > 本轮：收版 + 展板接入 + **清理工程内所有手录原始视频**（释放约 157 MB，含已入库的两个，走 `git rm`）。
 > 上一轮（`stealth-ux-2026-11-04`）的四条成品修正见 §1「上一轮」与 CHANGELOG [0.5.0]。

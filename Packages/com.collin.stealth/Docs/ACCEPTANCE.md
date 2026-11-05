@@ -286,6 +286,15 @@
 | 119 | 地面警戒投影在新布局下仍正常 | 同上截图 | 11-04 21:04 | **通过**。画面右侧可见绿色扇形边界，未因新增墙体错位或消失 |
 | 120 | **交锁门禁三项** | recompile → `console clear` → 重跑 recompile + test run → `console status` → `verify_project.py` | 11-04 21:20 | **本包三项全绿**：编译 `failed:false`；`consoleErrors=0 / consoleWarnings=0`；全量 **250/250**（本包 121 = 99 + 新增 22，citymap 129，计数经逐文件 `grep -c "[Test]"` 实测）。校验器仍有一条 `assets-layout` FAIL，来源见 U-8（他包未跟踪文件，与本包改动无关） |
 
+## 注册表缓存自愈修复（2026-11-05，session stealth-u8fix-2026-11-05，验证者 qianwen-work-assistant · stealth-u8fix-2026-11-05）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 日期 | 结果与证据 |
+|---|---|---|---|---|
+| 121 | **编辑态切场景往返后 `IVisionWorld.Volumes` 不静默归 0**（U-8 收口，根因在 A 包注册表） | 探针 `diag_u8_switch.cs`：`OpenScene(StealthSample)→TerrainTest→StealthSample`（不触发域重载），读直接扫 vs `VisionRegistry.Volumes` vs `IVisionWorld.Volumes` | 11-05 | **通过** — 修复后 `[U8S] 切走前 Registry=3 \| 切到 TerrainTest 后 Registry=0 私有缓存条数=0 \| 切回 StealthSample 后 Registry=3 直接扫=3 **IVisionWorld=3**`（修复前同脚本末项 =0）。`Actors` 走现扫故一直=3，反证「单位正常、视野归 0」= 缓存滞留死引用 |
+| 122 | **两张注册表缓存混入已销毁引用时读时自愈**（不依赖事件可靠性） | EditMode `VisionRegistry_StaleCacheAfterDestroy_SelfHeals` + `DetectionRegistry_StaleCacheAfterDestroy_SelfHeals`（**刻意不手动 MarkDirty/ResetForTests**，否则掩掉 bug） | 11-05 | **通过** — 销毁旧物体 + 新建活体后不置脏，`Volumes` 仍纳入新活体、上层 `IVisionWorld.Volumes` 枚举得到；两表对称。⚠️ 既有 `Registries_DoNotLeakDestroyedObjects` 因手动 `MarkDirty` 测不到本缺陷（保留，二者覆盖面不同） |
+| 123 | **修复不得拖垮烘焙热路径**（自我纠正记录） | 走查 `CanSeeAt→FindVolume→VisionRegistry.Volumes`（B 包实测 1,970,540 次/烘焙） | 11-05 | **通过** — 第一版误写「非运行态每次读取全量重扫」= 每查询一次 `FindObjectsByType`，已收敛为「O(缓存长度) null 检查 + Editor 侧 `activeSceneChangedInEditMode` 事件 O(1) 置脏」，热路径成本与修复前同阶。事件名与委托签名 `UnityAction<Scene,Scene>` 均经反射核实（本版本无 `...InEditor`） |
+| 124 | **交锁门禁** | recompile → `test run` 全量 → `console clear` 静默 70s → `console status` → `verify_project.py` | 11-05 | 本包相关**全绿**：编译 `failed=false`；静默后 `consoleErrors=0/consoleWarnings=0`；全量 **334/334**（本包 123 = 121 + 2，StealthPlanner 70、CityMap 141）。⚠️ 校验器整体 FAIL 4，全是另一会话新增 `channel-discipline` 揪出 citymap/stretch 的历史 `DisplayDialog`（§2.1.5），**属他包未代修**；本包 `runtime-purity`（钩子只加在 Editor 侧）等检查 ok |
+
 ## 未通过项
 
 | # | 现象 | 复现步骤 | 状态 |

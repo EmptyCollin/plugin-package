@@ -481,6 +481,81 @@ namespace Collin.Stealth.Tests
         }
 
         [Test]
+        public void VisionRegistry_StaleCacheAfterDestroy_SelfHeals()
+        {
+            // U-8 回归。症状：编辑态切场景后辅助台读到 IVisionWorld.Volumes 恒 0（巡逻单位正常）。
+            // 根因＝缓存滞留已销毁引用且 _dirty 不再置真 ⇒ getter 永不重建。
+            // ⚠️ 本用例**刻意不调 MarkDirty / ResetForTests**：手动置脏等于把 bug 掩掉，
+            //    上一行那条用例正是靠手动置脏才通过的，它测不到这个缺陷。
+            var vA = NewVolume(NewProfile(), Vector3.zero);
+            Assert.True(ContainsVolume(VisionRegistry.Volumes, vA), "前置：活体应进缓存");
+
+            var goA = vA.gameObject;
+            _games.Remove(goA);                       // 交给下面显式销毁，避免 TearDown 二次销毁
+            Object.DestroyImmediate(goA, true);       // = 场景卸载时旧物体被销毁，钩子未跑
+
+            var vB = NewVolume(NewProfile(), new Vector3(3f, 0f, 0f));   // = 新场景里的活体
+
+            var after = VisionRegistry.Volumes;
+            Assert.True(ContainsVolume(after, vB),
+                "缓存里有已销毁引用时必须读时自愈并纳入新活体（修复前缓存停在旧引用 ⇒ 本断言红）");
+            Assert.False(HasDestroyedEntry(after), "自愈后不得残留已销毁引用");
+
+            StealthWorld.EnsureRegistered();
+            Assert.True(Services.TryGet<IVisionWorld>(out var world), "前置：IVisionWorld 须已注册");
+            var idB = StealthIds.Of(vB.gameObject);
+            var found = false;
+            var list = world.Volumes;                 // 上层用 v==null 过滤死引用 ⇒ 修复前这里恒空
+            for (var i = 0; i < list.Count; i++)
+                if (list[i].actorId == idB) { found = true; break; }
+            Assert.True(found, "上层 IVisionWorld.Volumes 必须枚举到新视野体（修复前此处静默为 0）");
+        }
+
+        [Test]
+        public void DetectionRegistry_StaleCacheAfterDestroy_SelfHeals()
+        {
+            // 与上条同构缺陷、同构修法（两个注册表逐字同构 ⇒ 必须对称修，否则 M5 实跑读察觉会再踩一次）。
+            var a = NewGo("targetA", Vector3.zero).AddComponent<DetectionState>();
+            Assert.True(ContainsTarget(DetectionRegistry.Targets, a), "前置：活目标应进缓存");
+
+            var goA = a.gameObject;
+            _games.Remove(goA);
+            Object.DestroyImmediate(goA, true);
+
+            var b = NewGo("targetB", new Vector3(3f, 0f, 0f)).AddComponent<DetectionState>();
+
+            var after = DetectionRegistry.Targets;
+            Assert.True(ContainsTarget(after, b), "察觉目标缓存滞留死引用时同样必须自愈");
+            Assert.False(HasDestroyedTarget(after), "自愈后不得残留已销毁引用");
+        }
+
+        // ── 自愈用例专用辅助：按引用查找（不能用 Count，场景基线数量不属于本用例前提）──
+
+        static bool ContainsVolume(IReadOnlyList<VisionVolume> list, VisionVolume v)
+        {
+            for (var i = 0; i < list.Count; i++) if (list[i] == v) return true;
+            return false;
+        }
+
+        static bool HasDestroyedEntry(IReadOnlyList<VisionVolume> list)
+        {
+            for (var i = 0; i < list.Count; i++) if (list[i] == null) return true;   // Unity == 视已销毁为 null
+            return false;
+        }
+
+        static bool ContainsTarget(IReadOnlyList<DetectionState> list, DetectionState t)
+        {
+            for (var i = 0; i < list.Count; i++) if (list[i] == t) return true;
+            return false;
+        }
+
+        static bool HasDestroyedTarget(IReadOnlyList<DetectionState> list)
+        {
+            for (var i = 0; i < list.Count; i++) if (list[i] == null) return true;
+            return false;
+        }
+
+        [Test]
         public void VisionWorld_IsRegisteredAndEnumeratesVolumes()
         {
             var profile = NewProfile(h: 100f, v: 50f, dist: 12f, eye: 2f);
