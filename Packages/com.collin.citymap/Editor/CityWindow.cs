@@ -19,12 +19,15 @@ namespace Collin.CityMap.EditorTooling
         public enum ToolMode { Inspect, TerrainSculpt, RiverBrush, RoadGraph, FieldPlace, Build }
 
         /// <summary>
-        /// 工作流相位（12 §1 三段式）：① 地图参数 → ② 雕山水 → ③ 平整出地表。
-        /// <para>**相位不是门禁**（00 A-24「任何阶段工具在任何时刻可用」）：点某相位只做"把该相位
-        /// 该有的状态设好"的便捷动作，其它工具仍随时可用。真实单一真源在
-        /// <see cref="CityTerrain.FlattenEnabled"/>（D-33 阶段闸门），本枚举只是驱动它 + 高亮当前相位。</para>
+        /// 工作流相位（12 §1 三段式 + 未接线的第四步占位）：① 定世界 → ② 雕山水 → ③ 平整出地表 → ④ 铺路网落建筑。
+        /// <para><b>相位是便捷动作、不是门禁</b>（00 A-24）：点一步只把该步该有的状态设好，
+        /// 其它工具与参数仍随时可用。真实单一真源在场景实例的序列化字段上
+        /// （<see cref="CityTerrain.FlattenEnabled"/> 与两个工具接管位，D-33／H-50／D-34），
+        /// 面板按它们回推当前相位，避免"面板显示第③步、数据里闸门还关着"的两套状态打架。</para>
+        /// <para>用户 2026-11-06 裁定：<b>每一步只显示该步的操作</b>，所以 OnGUI 按本枚举分支绘制，
+        /// 不再把所有区块无条件堆叠。</para>
         /// </summary>
-        public enum WorkflowStep { Params = 1, Sculpt = 2, Flatten = 3 }
+        public enum WorkflowStep { Params = 1, Sculpt = 2, Flatten = 3, Roads = 4 }
 
         private static CityWindow _instance;
 
@@ -48,9 +51,15 @@ namespace Collin.CityMap.EditorTooling
         /// <summary>当前工作流相位（步骤条高亮）。点相位时 EnterStep 会把闸门/模式设到该相位该有的状态。</summary>
         private WorkflowStep _step = WorkflowStep.Params;
 
-        public static CityProject ActiveProject => _instance != null ? _instance._project : null;
-        public static PipelineRunner ActiveRunner => _instance?._runner;
-        public static ToolMode CurrentMode => _instance != null ? _instance._mode : ToolMode.Inspect;
+        // ⚠️ 这里原先挂着三个 public 静态入口：ActiveProject / ActiveRunner / CurrentMode。
+        // 本轮全部删除，理由不是"没人用"这么轻：
+        // · CurrentMode 是 EditorWindow 的<b>实例字段的静态投影</b>，随域重载归零 ⇒
+        //   H-50 当年就是被它坑成「面板显示雕刻模式、笔刷按 Inspect 放行鼠标」（左键变框选+光圈消失）。
+        //   真源已在场景实例的序列化字段上（CityTerrain.SculptToolActive／WaterToolActive，D-34）。
+        //   只要这个属性还挂着，下一个人就会顺手读它 —— 删掉比注释警告更可靠。
+        // · ActiveProject 原先给水工具读海平面；海平面已按用户裁定删除，它再无消费者。
+        //   工具需要项目时一律即时读面板单源，不缓存（缓存会在换项目时过期，§0.1 原则2）。
+        // · ActiveRunner 零消费者。面板与 View 的接合只走 CityRuntime（提交序号），不开放 runner 引用。
 
         // 菜单收进 Tools 下（用户 2026-11-03 要求，工具栏不单开顶层 Collin；与 stretch 的 Tools/Collin/… 对齐）
         [MenuItem("Tools/Collin/CityMap/City Window")]
@@ -307,93 +316,212 @@ namespace Collin.CityMap.EditorTooling
         long _profileVersion;
         bool _profileKeyInit;
 
+        /// <summary>
+        /// 面板主结构（用户 2026-11-06 裁定重排）：
+        /// <para>① <b>步骤是唯一导航</b>：每步只画该步的控件。原版把「城市项目／地形参数」两块
+        /// <b>无条件</b>画在每一步下面（旧 329~331 行），于是雕山水时一整屏噪声与平整参数还挂着；
+        /// 而水体区块却挂在右上角<b>工具</b>选择上（旧 339 行）⇒ 在②里反而看不到水。两套轴互相抢方向盘，
+        /// 用户永远分不清该点哪个 —— 现在工具接管收进步骤②内部，右上角不再有工作流语义。</para>
+        /// <para>② <b>右上角＝分层显隐 + 该层实测统计</b>（用户裁定："应该是分层的统计信息，而非和工作流的功能按键耦合"）。</para>
+        /// <para>③ <b>流水线诊断默认收起</b>：脏集合/阶段耗时是信息不是主操作，原先常驻面板底部。</para>
+        /// <para>④ 撤销/重做是 Unity 全局快捷键，不需要面板按钮（原「新建城…」是空壳：按下只画一行
+        /// "M1 未实现"的 Label，却和真正能用的「重新生成」并排，观感上像坏掉 —— 已摘除）。</para>
+        /// </summary>
         private void OnGUI()
         {
+            var et = Event.current.type;
+            EditorGUI.BeginChangeCheck();
+
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
 
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
             {
-                if (GUILayout.Button("新建城…", EditorStyles.toolbarButton, GUILayout.Width(70f)))
-                    GUILayout.Label("（M1 未实现：见 08 §3.5，四重确认）");
                 if (GUILayout.Button("重新生成", EditorStyles.toolbarButton, GUILayout.Width(70f)))
                     Regenerate();
                 GUILayout.Space(6f);
-                _autoFollow = GUILayout.Toggle(_autoFollow, "自动跟随", EditorStyles.toolbarButton);
+                _autoFollow = GUILayout.Toggle(_autoFollow,
+                    new GUIContent("自动跟随", "关＝改动只挂起不生效（A-0-5，脏集合会显示未生效项）"),
+                    EditorStyles.toolbarButton);
                 GUILayout.FlexibleSpace();
-                DrawModeSelector();
+                DrawLayerStats();
             }
 
             EditorGUILayout.Space(4f);
-            DrawWorkflowStepBar();            // ① 参数 → ② 雕山水 → ③ 平整出地表（相位驱动，非门禁）
+            DrawWorkflowStepBar();
             EditorGUILayout.Space(4f);
-            DrawProjectField();
-            EditorGUILayout.Space(4f);
-            DrawTerrainProfile();
-            if (_mode == ToolMode.TerrainSculpt)
+
+            switch (_step)
             {
-                // 笔刷参数只在雕刻模式出现：常驻会挤占面板，且其它模式下改了也没作用
-                EditorGUILayout.Space(4f);
-                DrawSculptPanel();
+                case WorkflowStep.Sculpt: DrawSculptSection(); break;
+                case WorkflowStep.Flatten: DrawFlattenSection(); break;
+                case WorkflowStep.Roads: DrawRoadsPlaceholder(); break;
+                default:                   DrawParamsSection(); break;
             }
-            // 水体面板挂在「河流」模式下（02 改版：水＝低于水位的连通域，点一格加/移种子）
-            if (_mode == ToolMode.RiverBrush)
-            {
-                EditorGUILayout.Space(4f);
-                DrawWaterPanel();
-            }
+
             EditorGUILayout.Space(4f);
-            DrawStageTree();
+            DrawDiagnostics();
             EditorGUILayout.Space(4f);
             EditorGUILayout.LabelField(_statusLine, EditorStyles.miniBoldLabel);
             EditorGUILayout.LabelField(_lastRunLine, EditorStyles.miniLabel);
 
             EditorGUILayout.EndScrollView();
+
+            SettleOnInputEnd(et, EditorGUI.EndChangeCheck());
+        }
+
+        /// <summary>拖动中标志：松手那一帧要结算。</summary>
+        bool _settlingDrag;
+
+        /// <summary>
+        /// <b>输入动作一结束就结算</b>（用户反馈②「数值变更时没有及时重建」的修复点）。
+        /// <para>根因：<see cref="UndoHistoryTracker.MergeWindowMs"/>(250ms) 的本意是把<b>连续 Ctrl+Z</b>
+        /// 合成一次重算（A-17），但它对所有意图改动一视同仁；而 <c>Scan()</c> 每检出一个差异就把
+        /// 计时表拨回当下 ⇒ 拖滑条<b>全程</b>都处在"窗口内"，一次都不结算，只有手停满 250ms 才动一次。</para>
+        /// <para>规则：拖动期间不结算（那正是防卡顿的用途）；<b>松手立刻</b>结束窗口；
+        /// 键盘/失焦/勾选/按钮这类离散改动<b>当场</b>结束窗口。</para>
+        /// <para>只结束窗口、<b>不自己提交</b>：脏位仍由 <see cref="OnEditorUpdate"/> 的既有链路消费
+        /// （含 <c>LastDirtyBounds</c> 搬入）。另开提交口会与自动跟随叠成双跑，还绕过增量依据
+        /// 让重建退化成全图（M4-j 实测 289ms/笔 vs 0~2ms/笔）。</para>
+        /// </summary>
+        private void SettleOnInputEnd(EventType et, bool changed)
+        {
+            if (et == EventType.MouseDown || et == EventType.MouseDrag)
+            {
+                if (changed) _settlingDrag = true;
+                return;
+            }
+            if (et == EventType.MouseUp)
+            {
+                if (_settlingDrag || changed) UndoHistoryTracker.SettleNow();
+                _settlingDrag = false;
+                return;
+            }
+            // Layout 阶段 GUI.changed 不成立，跳过以免每帧重复拨表
+            if (changed && et != EventType.Layout && et != EventType.Repaint)
+                UndoHistoryTracker.SettleNow();
         }
 
         /// <summary>
-        /// 三步工作流步骤条（12 §1）。**相位是便捷动作、不是门禁**（00 A-24）：点一步只把
-        /// 该步该有的状态设好（② 关平整+进雕刻，③ 开平整+回检视），其它工具与参数仍随时可用。
-        /// <para>真实单一真源是 <see cref="CityTerrain.FlattenEnabled"/>（D-33），高亮由它与实际模式回推，
-        /// 避免"面板显示第③步、数据里闸门还关着"这种两套状态打架。</para>
+        /// 右上角分层统计。每层只报<b>实测派生量</b>，未实现的层直接写“—”，不留假数字。
+        /// <para>地表／水面／平整叠加三个芯片可点（纯显示态，不碰意图）；手绘与路/地块/建筑是只读读数 ——
+        /// 把“还没接线”伪装成可点按钮，比不展示更糟。</para>
+        /// </summary>
+        private void DrawLayerStats()
+        {
+            if (_terrain == null) _terrain = FindTerrainInstance();
+            if (_view == null && _terrain != null) _view = _terrain.GetComponent<CityTerrainView>();
+            if (_terrain == null || _view == null)
+            {
+                EditorGUILayout.LabelField("无显示层", EditorStyles.miniLabel, GUILayout.Width(56f));
+                return;
+            }
+
+            var g = _view.BoundGrid;
+            var terrOn = GUILayout.Toggle(_view.ShowTerrain, new GUIContent(
+                g.HasValue ? $"地表 {g.Value.Columns}²@{g.Value.CellSize:0}m" : "地表 —",
+                "地形显示开关（纯显隐，不改任何数据）。"),
+                EditorStyles.miniButton, GUILayout.Height(18f));
+            if (terrOn != _view.ShowTerrain) _view.SetShowTerrain(terrOn);
+
+            var wf = _view.BoundWater;
+            var waterTip = wf == null
+                ? "本轮没有水面派生：还没加水，或水都退干了。\n本芯片是水面显示开关。"
+                : $"淹水 {wf.WaterCells} 格 · 缓冲带 {wf.BufferCells} 格\n" +
+                  $"产水种子 {wf.ActiveSeeds}/{wf.TotalSeeds}\n" +
+                  $"水面高程 {LevelText(wf.MinWaterLevel)} ~ {LevelText(wf.MaxWaterLevel)}m";
+            var waterOn = GUILayout.Toggle(_view.ShowWater, new GUIContent(
+                wf == null ? "水 —" : $"水 {wf.ActiveSeeds}·{wf.WaterAreaRatio * 100f:0.##}%", waterTip),
+                EditorStyles.miniButton, GUILayout.Height(18f));
+            if (waterOn != _view.ShowWater) _view.SetShowWater(waterOn);
+
+            var d = _terrain.Delta;
+            EditorGUILayout.LabelField(new GUIContent(
+                d == null || d.IsEmpty ? "手绘 —" : $"手绘 {d.CountAdditiveCells()}格·±{d.MaxAbsDelta():0.#}m",
+                "雕刻意图层的实测改动（只读）。"),
+                EditorStyles.miniButton, GUILayout.Height(18f), GUILayout.Width(124f));
+
+            var st = _terrain.FilterState;
+            var fl = _terrain.FlattenFilter;
+            var cells = 0; var maxDelta = 0f;
+            if (fl != null) fl.Measure(out cells, out maxDelta);
+            var flatLabel = st == CityTerrain.BakeState.Never || fl == null
+                ? "平整 —"
+                : $"平整 {cells}格·削{maxDelta:0.#}m{(st == CityTerrain.BakeState.Stale ? "·旧" : string.Empty)}";
+            var flatOn = GUILayout.Toggle(_terrain.FlattenEnabled, new GUIContent(flatLabel,
+                "已烘焙平整滤镜的<b>叠加</b>开关（关＝只看手绘意图地表）。\n" +
+                "「旧」＝手绘或参数在烘焙之后又改过，画面挂的是上一次的结果。"),
+                EditorStyles.miniButton, GUILayout.Height(18f), GUILayout.Width(128f));
+            if (flatOn != _terrain.FlattenEnabled)
+            {
+                _terrain.SetFlattenEnabled(flatOn);
+                MarkTerrainSceneDirty();
+                UndoHistoryTracker.SettleNow();
+            }
+
+            EditorGUILayout.LabelField(new GUIContent("路 — 地块 — 建筑 —",
+                "S3 路网 / S4 地块 / S6 建筑尚未接线（下一里程碑）。"),
+                EditorStyles.miniLabel, GUILayout.Width(112f));
+        }
+
+        /// <summary>高程读数：-∞ = 没有水面，必须显示成“—”而不是“-∞”。</summary>
+        static string LevelText(float v)
+            => float.IsNegativeInfinity(v) || float.IsPositiveInfinity(v) ? "—" : v.ToString("0.#");
+
+        /// <summary>显示层引用（分层统计读它的派生量；面板不创建它）。</summary>
+        CityTerrainView _view;
+
+        /// <summary>
+        /// 工作流步骤条：① 定世界 → ② 雕山水 → ③ 平整出地表 → ④ 路网·建筑（未接线，灰置）。
+        /// <para>相位是便捷动作、<b>不是门禁</b>（00 A-24）。但每一步<b>只画该步的控件</b>
+        /// （用户 2026-11-06 裁定），所以这里决定的是"看什么"，不是"能用什么数据"。</para>
         /// </summary>
         private void DrawWorkflowStepBar()
         {
-            EditorGUILayout.LabelField("工作流（点一步＝把该步状态设好，不锁其它工具）", EditorStyles.miniBoldLabel);
+            EditorGUILayout.LabelField("工作流（每步只显示该步的操作）", EditorStyles.miniBoldLabel);
             if (_terrain == null) _terrain = FindTerrainInstance();
             SyncStepFromState();
 
             using (new EditorGUILayout.HorizontalScope())
             {
-                StepButton(WorkflowStep.Params, "① 地图参数",
-                    "调世界参数与地形噪声参数（噪声基底＝山与起伏）。\n这一步不改变你的雕刻，也不强制平整状态。");
-                StepButton(WorkflowStep.Sculpt, "② 雕山水",
-                    "关闭自动平整（D-33 闸门）并切到「雕刻」模式。\n此时抬/压即时保留在「噪声+雕刻」的意图地表上，"
-                  + "不会被城内 8× 强约束当场压回（这是反馈②「抬了没反应」的正解）。");
-                StepButton(WorkflowStep.Flatten, "③ 平整出地表",
-                    "打开自动平整：平整在②定稿的意图地表**之上**做整理，城内强约束此时才进场。");
+                StepButton(WorkflowStep.Params, "① 地图参数", true,
+                    "城市项目绑定、地形噪声基底（山与起伏）、城区范围（噪声压平的作用域）。\n" +
+                    "世界尺寸/格档位/随机种子在 CityProject 资产上改（Inspector），改完回来会自动重算。");
+                StepButton(WorkflowStep.Sculpt, "② 雕山水", true,
+                    "山水设计层：抬升/下压/平滑笔刷 + 水体种子。\n" +
+                    "进入本步会关掉平整闸门（D-33）——否则城内强约束会当场把抬起来的山压回去（反馈②「抬了没反应」的正解）。");
+                StepButton(WorkflowStep.Flatten, "③ 平整出地表", true,
+                    "在②定稿的意图地表<b>之上</b>做整理：可平整对象、自然化、求解参数与「烘焙平整」。\n" +
+                    "本步绝不改手绘层（D-41），关掉叠加就回到纯手绘。");
+                StepButton(WorkflowStep.Roads, "④ 路网·建筑", false,
+                    "尚未接线（S3 路网 / S4 地块 / S6 建筑）。当前平整只能用「自动试设地块」代演约束源。");
             }
 
             if (_terrain == null)
-                EditorGUILayout.HelpBox("还没有地形实例：先在下方「地形参数」区点「创建地形实例（含显示层）」。",
-                    MessageType.Info);
+                EditorGUILayout.HelpBox("还没有地形实例：在第①步点「创建地形实例（含显示层）」。", MessageType.Info);
         }
 
-        /// <summary>高亮由真源回推：在雕刻模式就是第②步；离开雕刻模式后按闸门状态归位。</summary>
+        /// <summary>
+        /// 真源只用来纠正<b>工具接管显示</b>（H-50：接管位在场景实例上，能跨域重载存活）。
+        /// <para><b>刻意不再用工具模式反推步骤</b>（用户反馈①「两组按钮互相抢方向盘」的根因）：
+        /// 原版是双向同步 —— 雕刻开着就把步骤强设成②，点步骤又反过来强改工具模式，
+        /// 于是"我在②雕山水，右上角却显示检视"这类矛盾必然出现。
+        /// 现在 <c>_mode</c> 只是步骤②内部的一个局部开关（左键归笔刷还是归水），
+        /// 步骤不再被它劫持；只在"闸门与步骤明显矛盾"时归位一次（用户在 Inspector 直改闸门的情形）。</para>
+        /// </summary>
         private void SyncStepFromState()
         {
-            // H-50：真源是场景实例上的 SculptToolActive（能跨域重载存活）。
-            // 面板的 _mode 每帧由它回推，域重载后 _mode 复位成 Inspect 也会被立刻纠正——
-            // 否则就会出现「面板显示雕刻模式、笔刷却按 Inspect 放行鼠标」。
-            // 注意**只在真源存在时才纠正**：场景里一个 CityTerrain 都没有时没有真源可依据，
-            // 强行弹回 Inspect 会让用户连"缺实例"的面板提示都看不到（等于把 UI 锁死）。
             var sculptOn = FindSculptActiveTerrain();
+            var waterOn = FindWaterActiveTerrain();
             if (sculptOn != null) _mode = ToolMode.TerrainSculpt;
-            else if (_mode == ToolMode.TerrainSculpt && HasAnyTerrainInstance()) _mode = ToolMode.Inspect;
+            else if (waterOn != null) _mode = ToolMode.RiverBrush;
+            else if (_mode == ToolMode.TerrainSculpt || _mode == ToolMode.RiverBrush)
+            {
+                if (HasAnyTerrainInstance()) _mode = ToolMode.Inspect;
+                // 场景里一个实例都没有时不纠正：否则用户连"缺实例"的提示都看不到（等于把 UI 锁死）
+            }
 
-            if (_mode == ToolMode.TerrainSculpt) { _step = WorkflowStep.Sculpt; return; }
             if (_step != WorkflowStep.Sculpt) return;
-            _step = _terrain != null && _terrain.FlattenEnabled
-                ? WorkflowStep.Flatten : WorkflowStep.Params;
+            if (_terrain != null && _terrain.FlattenEnabled) _step = WorkflowStep.Flatten;
         }
 
         /// <summary>场景里是否有把笔刷接管开关打开的地形实例（笔刷门禁的真源）。</summary>
@@ -403,6 +531,17 @@ namespace Collin.CityMap.EditorTooling
             {
                 var ct = t as CityTerrain;
                 if (ct != null && ct.enabled && ct.SculptToolActive) return ct;
+            }
+            return null;
+        }
+
+        /// <summary>场景里是否有把水工具接管开关打开的地形实例（同 D-34 真源）。</summary>
+        internal static CityTerrain FindWaterActiveTerrain()
+        {
+            foreach (var t in IntentRegistry.All)
+            {
+                var ct = t as CityTerrain;
+                if (ct != null && ct.enabled && ct.WaterToolActive) return ct;
             }
             return null;
         }
@@ -418,52 +557,49 @@ namespace Collin.CityMap.EditorTooling
             return false;
         }
 
-        private void StepButton(WorkflowStep s, string label, string tip)
+        private void StepButton(WorkflowStep s, string label, bool enabled, string tip)
         {
             var prev = GUI.backgroundColor;
             if (_step == s) GUI.backgroundColor = new Color(0.42f, 0.72f, 1f);
+            if (!enabled) GUI.enabled = false;
+            // 未接线的步骤必须**看得见但点不动**：藏起来会让用户以为流程只有三步，
+            // 而真实状态是"第四步还没做"——后者才是需要如实呈现的信息。
             if (GUILayout.Button(new GUIContent(label, tip), GUILayout.Height(24f))) EnterStep(s);
+            GUI.enabled = true;
             GUI.backgroundColor = prev;
         }
 
+        /// <summary>
+        /// 点一步＝把该步的状态设好（便捷动作，不是门禁）。
+        /// <para>写的一律是<b>场景实例的序列化真源</b>（H-50／D-34）：只改面板字段就会出现
+        /// "面板显示在雕刻模式、笔刷按 Inspect 放行鼠标"。</para>
+        /// </summary>
         private void EnterStep(WorkflowStep s)
         {
             _step = s;
             if (_terrain == null) _terrain = FindTerrainInstance();
+            if (_terrain == null) { Repaint(); return; }
 
             switch (s)
             {
                 case WorkflowStep.Sculpt:
-                    _mode = ToolMode.TerrainSculpt;
-                    // 判空用 != null 而非 `?.`：Unity 对已销毁对象的 == 有重载语义，
-                    // 对 MonoBehaviour 用 null 条件运算符会绕过这层保护。
-                    if (_terrain != null)
-                    {
-                        _terrain.SetFlattenEnabled(false);
-                        // H-50：接管权写进实例真源（跨域重载存活），不再只改面板静态字段。
-                        _terrain.SetSculptToolActive(true);
-                        EnsureDeltaLayer();          // H-51：没有雕刻层就自动建并绑，否则落笔必被 blocked
-                        MarkTerrainSceneDirty();
-                    }
+                    _terrain.SetFlattenEnabled(false);      // D-33 闸门：雕山水时不叠加自动整理
+                    _terrain.SetSculptToolActive(true);     // 默认把左键给笔刷；要加水在本步内切"加水种子"
+                    EnsureDeltaLayer();                     // H-51：没雕刻层落笔必被 blocked
                     break;
                 case WorkflowStep.Flatten:
-                    _mode = ToolMode.Inspect;
-                    if (_terrain != null)
-                    {
-                        _terrain.SetFlattenEnabled(true);
-                        _terrain.SetSculptToolActive(false);
-                        MarkTerrainSceneDirty();
-                    }
+                    _terrain.SetFlattenEnabled(true);
+                    _terrain.SetSculptToolActive(false);
+                    _terrain.SetWaterToolActive(false);     // 离开②必须收回左键，否则笔刷/水工具仍在抢
                     break;
-                default:
-                    _mode = ToolMode.Inspect;
-                    if (_terrain != null)
-                    {
-                        _terrain.SetSculptToolActive(false);
-                        MarkTerrainSceneDirty();
-                    }
+                default:                                     // ① 与未接线的④：不接管场景视图
+                    _terrain.SetSculptToolActive(false);
+                    _terrain.SetWaterToolActive(false);
                     break;
             }
+            _mode = ToolMode.Inspect;
+            MarkTerrainSceneDirty();
+            UndoHistoryTracker.SettleNow();                 // 闸门/接管是真改动，立刻见效
             Repaint();
         }
 
@@ -527,30 +663,27 @@ namespace Collin.CityMap.EditorTooling
 
         const string DeltaFolder = "Packages/com.collin.citymap/Sample/Sculpt";
 
-        private void DrawModeSelector()
+        bool _diagOpen;
+
+        /// <summary>
+        /// 流水线诊断（默认<b>收起</b>）：挂起脏集合、阶段命中与耗时。
+        /// <para>这些信息对开发者排查有用（A-0-5 要求"关跟随时有 N 项未生效"可见），
+        /// 但它不是用户的主操作；原先常驻面板底部把主操作挤成半屏。折叠后收起状态序列化在
+        /// 面板字段上即可（纯视图态，丢了只是重开默认收起，无数据风险）。</para>
+        /// </summary>
+        private void DrawDiagnostics()
         {
-            foreach (ToolMode m in Enum.GetValues(typeof(ToolMode)))
+            _diagOpen = EditorGUILayout.Foldout(_diagOpen, "流水线诊断（阶段 · 脏集合 · 耗时）", true);
+            if (!_diagOpen)
             {
-                var on = _mode == m;
-                var next = GUILayout.Toggle(on, Label(m), EditorStyles.toolbarButton);
-                if (next && !on)
-                {
-                    _mode = m;      // 单选：切换即互斥（00 §5.3）
-                    // H-50：工具栏切到「雕刻」同样要写实例真源，否则笔刷仍不接管。
-                    if (_terrain == null) _terrain = FindTerrainInstance();
-                    if (_terrain != null)
-                    {
-                        _terrain.SetSculptToolActive(m == ToolMode.TerrainSculpt);
-                        if (m == ToolMode.TerrainSculpt) EnsureDeltaLayer();
-                        // H-50 同族：切到「河流」同样必须写实例真源 waterToolActive，
-                        // 否则 _mode 是 EditorWindow 的字段、水工具读的是实例字段 ⇒ 面板显示在河流模式
-                        // 但点下去什么都没发生（笔刷当年就是这个症状）。
-                        _terrain.SetWaterToolActive(m == ToolMode.RiverBrush);
-                        if (m == ToolMode.RiverBrush) EnsureWaterAsset();
-                        MarkTerrainSceneDirty();
-                    }
-                }
+                // 收起时仍要呈现"有改动未生效"这一句（A-0-5 的底线）：
+                // 用户可能正因为关了自动跟随而看到旧画面，这句话不能藏进折叠里。
+                if (!_autoFollow && UndoHistoryTracker.PendingDirty != DirtyBits.None)
+                    EditorGUILayout.HelpBox($"自动跟随已关闭，有 {CountBits(UndoHistoryTracker.PendingDirty)} 项改动未生效（A-0-5）",
+                        MessageType.Warning);
+                return;
             }
+            DrawStageTree();
         }
 
         private static string Label(ToolMode m)
@@ -629,6 +762,16 @@ namespace Collin.CityMap.EditorTooling
         static int IndexOf(SculptAction a) => Array.IndexOf(_sculptActions, a);
         static SculptAction ActionAt(int i) => _sculptActions[i];
 
+        /// <summary>
+        /// 第①步上半：项目绑定 + 世界参数（尺寸/档位/外环/分块）。
+        /// <para>这些原先只能去 CityProject 的 Inspector 上改，而 §0.1 原则1 要求
+        /// "面板直接建在场景实例/参数对象上，不让用户跳去资产文件编辑"；
+        /// 写一律走 <see cref="CityProject.SetWorldParams"/> 唯一入口（内部 bump WorldParam 通道，
+        /// 会全量重算 —— 这是事实，不隐藏）。</para>
+        /// <para><b>随机种子刻意只读</b>：08 §6.2 规定改种子必须先过"影响预览 + 自动快照"，
+        /// 而那个预览面板还没实现。在没有预览的前提下给一个能一键毁掉整张图的按钮，
+        /// 比只读展示更糟。</para>
+        /// </summary>
         private void DrawProjectField()
         {
             using (new EditorGUILayout.HorizontalScope())
@@ -638,48 +781,90 @@ namespace Collin.CityMap.EditorTooling
                 if (!ReferenceEquals(next, _project)) Bind(next);
                 if (GUILayout.Button("创建", GUILayout.Width(50f))) CreateProject();
             }
+            if (_project == null)
+            {
+                EditorGUILayout.HelpBox("还没有城市项目：点「创建」或把已有 CityProject 资产拖进来。",
+                    MessageType.Info);
+                return;
+            }
 
-            // ── 海平面与水体基准（02 改版，用户裁定①默认 0）──
-            // 必须显示"水现在淹了多少"，否则拖滑条时用户无从判断范围（同城区生效值的口径）。
+            EditorGUILayout.Space(2f);
+            EditorGUILayout.LabelField("世界（改动 ⇒ 全量重算，含地形噪声）", EditorStyles.boldLabel);
+
+            var newSize = EditorGUILayout.FloatField(
+                new GUIContent("世界边长(m)", "2000=Sample 档，8000=正式档。\n改动会重建格网与掩码 ⇒ 全量重算。"),
+                _project.WorldSizeValue);
+            var scale = (WorldScale)EditorGUILayout.Popup(
+                new GUIContent("格档位", "Small=逻辑格 2m，Large=4m。\n档位决定精度与内存：8km@4m 是 2000² 格。"),
+                Mathf.Max(0, System.Array.IndexOf(_scaleLabels, _project.ScaleProfile.ToString())), _scaleLabels);
+            var inset = EditorGUILayout.FloatField(
+                new GUIContent("外环禁建带(m)", "让城边界渐隐成郊野，并规避边界半格问题。"),
+                _project.GetGrid().BuildableInset);
+
+            var chunk = EditorGUILayout.FloatField(
+                new GUIContent("计算分块(m)", "管线内部的逻辑 chunk 边长（必须是逻辑格整数倍）。"),
+                _project.GetGrid().ChunkSize);
+            var region = EditorGUILayout.FloatField(
+                new GUIContent("区域(m)", "脏区合并粒度：改动落在同一 region 内就一起重算。"),
+                _project.GetGrid().RegionSize);
+            var sceneChunk = EditorGUILayout.FloatField(
+                new GUIContent("导出切块(m)", "交付期切块尺寸（Q-12），必须也是逻辑格整数倍。"),
+                _project.SceneChunkSize);
+
+            if (newSize != _project.WorldSizeValue || scale != _project.ScaleProfile
+                || !Mathf.Approximately(inset, _project.GetGrid().BuildableInset)
+                || !Mathf.Approximately(chunk, _project.GetGrid().ChunkSize)
+                || !Mathf.Approximately(region, _project.GetGrid().RegionSize)
+                || !Mathf.Approximately(sceneChunk, _project.SceneChunkSize))
+            {
+                // 参数非法会抛（A-0-7：非法档位必须呈现给用户，不得静默取整）
+                try
+                {
+                    Undo.RecordObject(_project, "改世界参数");
+                    if (_project.SetWorldParams(newSize, scale, inset, chunk, region, sceneChunk))
+                        MarkProjectDirty();
+                }
+                catch (System.Exception ex)
+                {
+                    _lastRunLine = "世界参数非法：" + ex.Message;
+                    Repaint();
+                }
+            }
+
+            EditorGUILayout.LabelField(new GUIContent(
+                $"  生效格网：{_project.CellSize:0}m 逻辑格 · {_project.DisplayStep:0}m 显示步 · 种子 {_project.Seed}",
+                "随机种子改一次全城重生成，需先过影响预览（未实现）⇒ 此处只读。\n" +
+                "要换种子请在 CityProject 资产上改。"), EditorStyles.miniLabel);
+
+            // ── 水体基准（02 二次改版：只剩缓冲带这一项全局参数）──
             if (_project != null)
             {
-                var sea = EditorGUILayout.Slider(new GUIContent("海平面(m)",
-                        "水 = 与某个水体种子连通、且低于该种子有效水位的格。\n" +
-                        "种子未设局部水位时就用这个值。\n" +
-                        "改它只重算水面与下游，<b>不会</b>重跑地形噪声（走 River 通道）。"),
-                    _project.SeaLevel, -20f, 120f);
-                if (!Mathf.Approximately(sea, _project.SeaLevel))
-                {
-                    _project.SetSeaLevel(sea);
-                    MarkProjectDirty();
-                }
-
                 var wb = EditorGUILayout.Slider(new GUIContent("水缓冲带(m)",
-                        "水域外扩的不可建筑带宽度。0 = 不设带。\n" +
+                        "每片水外扩的不可建筑带宽度。0 = 不设带。\n" +
                         "换算成格时<b>向上取整</b>（宁多不一格漏）。"),
                     _project.WaterBufferMeters, 0f, 60f);
                 if (!Mathf.Approximately(wb, _project.WaterBufferMeters))
                 {
-                    _project.SetWaterBuffer(wb);
-                    MarkProjectDirty();
+                    if (_project.SetWaterBuffer(wb)) MarkProjectDirty();
                 }
             }
         }
 
+        static readonly string[] _scaleLabels = { "Small2km", "Large8km" };
+
         /// <summary>
-        /// 水体面板（02 改版）：加/移水的模式、陆上水体参数，以及<b>种子列表编辑</b>
-        /// （用户裁定第 4 条：坐标、高度均可调，也可手动添加）。
-        /// <para>面板必须显示"当前有几片水、淹了多少格"——水界面是派生量，
-        /// 只报种子数会让用户以为"有种子就有水"（实际可能全退干了）。</para>
-        /// </summary>
-        /// <summary>
-        /// 工具栏选「河流」＝进入水工具。<b>只在切换时设接管态</b>：
-        /// 若每帧重设，用户在场景里改完种子、面板一刷新就被重置 ⇒ 又变成两套状态打架（H-50 同族）。
+        /// 水体面板（02 <b>二次改版</b>）：加/移水的模式、新种子默认参数、<b>种子列表编辑</b>
+        /// （坐标、水面高程、扩散半径均可调，也可手动添加、启停、删除）。
+        /// <para>面板必须显示"淹了多少格"——水面是派生量，只报种子数会让用户以为
+        /// "有种子就有水"（实际可能种子所在格已高于自己的水面高程、水退干了）。</para>
+        /// <para>已删除的整套东西（用户 2026-11-05 裁定"海平面不用单独做了"）：
+        /// 全局海平面滑条、「高处点击先询问」开关、陆上水体待确认内联条、局部水位复选框与 +∞ 哨兵。
+        /// 现在点一格就是一条完整的水：高程 = 地面 + 水深、范围 = 扩散半径，不问、不猜、没有隐式基准。</para>
         /// </summary>
         private void DrawWaterPanel()
         {
             if (_terrain == null) _terrain = FindTerrainInstance();
-            EditorGUILayout.LabelField("水体（水 = 低于水位的连通域）", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("水体（水 = 种子高程以下、半径以内的连通域）", EditorStyles.boldLabel);
             if (_terrain == null)
             {
                 EditorGUILayout.HelpBox("先「创建地形实例」才能加水：水面按实例逐格派生。", MessageType.Info);
@@ -689,11 +874,12 @@ namespace Collin.CityMap.EditorTooling
             using (new EditorGUILayout.HorizontalScope())
             {
                 var add = GUILayout.Toggle(_terrain.WaterMode == CityTerrain.WaterToolMode.Add,
-                    new GUIContent("添加水", "点场景一格：低于海平面直接成水；"
-                        + "高于海平面会先问是否生成陆上水体。"),
+                    new GUIContent("加水种子", "点场景一格：在该格建一颗种子。\n"
+                        + "水面高程 = 该格地面 + 下面的默认水深，向外扩散受默认半径限制。\n"
+                        + "点山脊也只会得到一个小天池，不会淹掉整个山谷。"),
                     EditorStyles.toolbarButton);
                 var rm = GUILayout.Toggle(_terrain.WaterMode == CityTerrain.WaterToolMode.Remove,
-                    new GUIContent("移除水", "点掉种子：删最近的一个（最多 16 格内）。"),
+                    new GUIContent("移除种子", "点场景一格：删掉最近的种子（16 格内）。"),
                     EditorStyles.toolbarButton);
                 var want = add ? CityTerrain.WaterToolMode.Add : CityTerrain.WaterToolMode.Remove;
                 if (want != _terrain.WaterMode)
@@ -702,40 +888,32 @@ namespace Collin.CityMap.EditorTooling
                     MarkTerrainSceneDirty();
                 }
             }
-            if (!_terrain.WaterToolActive)
-                EditorGUILayout.HelpBox("水工具未接管场景视图：点顶部工具栏「河流」才会接管左键。",
-                    MessageType.Info);
 
-            var ask = EditorGUILayout.Toggle("高处点击先询问", _terrain.AskBeforeLandlocked);
-            if (ask != _terrain.AskBeforeLandlocked) _terrain.SetAskBeforeLandlocked(ask);
-            var depth = EditorGUILayout.Slider("陆上水体默认水深(m)", _terrain.LandlockedDepth, 0.5f, 60f);
-            if (!Mathf.Approximately(depth, _terrain.LandlockedDepth)) _terrain.SetLandlockedDepth(depth);
-
-            // ── 陆上水体内联确认（用户裁定的第 2、3 步；<b>不用模态框</b>，AGENTS §2.1.5 禁阻塞弹窗）──
-            if (WaterBrushTool.HasPending)
+            // 接管权收进步骤②（不再依赖右上角工具按钮）：读写都落在场景实例的序列化真源上（H-50／D-34）。
+            var take = EditorGUILayout.ToggleLeft(
+                new GUIContent("左键接管场景视图（点一格加水／删种子）",
+                    "开＝场景视图左键归水工具；与雕刻笔刷<b>互斥</b>（写入侧互相清掉）。\n" +
+                    "关＝左键还给编辑器默认工具，此时只能在本面板编辑种子列表。"),
+                _terrain.WaterToolActive);
+            if (take != _terrain.WaterToolActive)
             {
-                var pd = WaterBrushTool.Pending;
-                EditorGUILayout.HelpBox(
-                    $"点在格 ({pd.cx},{pd.cz})：高程 {pd.height:0.##}m 高于海平面 {pd.sea:0.##}m。" +
-                    $"\n确认将生成带局部水位 {pd.height + _terrain.LandlockedDepth:0.##}m" +
-                    $"（水深 {_terrain.LandlockedDepth:0.#}m）的陆上水体；取消则什么都不建。",
-                    // MessageType 只有 None/Info/Warning/Error（无 Question，臆造会编译失败）。
-                    // 用 Warning：这是等用户决策的中间态，比 Info 更醒目、又不是错误。
-                    MessageType.Warning);
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    if (GUILayout.Button("生成陆上水体", GUILayout.Height(24f)))
-                    {
-                        WaterBrushTool.ConfirmPending();
-                        Repaint();             // CommitSeed 内部已存盘 + bump 一次，这里<b>不再</b> TouchWaterAsset（会二次标脏白跑洪泛）
-                    }
-                    if (GUILayout.Button("取消", GUILayout.Width(70f), GUILayout.Height(24f)))
-                    {
-                        WaterBrushTool.CancelPending();
-                        Repaint();
-                    }
-                }
+                _terrain.SetWaterToolActive(take);
+                if (take) _mode = ToolMode.RiverBrush;
+                MarkTerrainSceneDirty();
             }
+
+            var depth = EditorGUILayout.Slider(
+                new GUIContent("新种子默认水深(m)",
+                    "水面高程 = 点击点地面高程 + 此值。\n只影响<b>新建</b>的种子；已有种子在列表里各自可调。"),
+                _terrain.WaterDepth, 0.1f, 60f);
+            if (!Mathf.Approximately(depth, _terrain.WaterDepth)) _terrain.SetWaterDepth(depth);
+
+            var rad = EditorGUILayout.Slider(
+                new GUIContent("新种子默认半径(m)",
+                    "水沿谷扩散的最大步数（换算成格、向上取整）。\n" +
+                    "0 = 不限，用来做海湾/大湖；\n小值防止「点山脊 → 顺坡淹掉整个山谷」。\n只影响<b>新建</b>的种子。"),
+                _terrain.WaterSeedRadius, 0f, 2000f);
+            if (!Mathf.Approximately(rad, _terrain.WaterSeedRadius)) _terrain.SetWaterSeedRadius(rad);
 
             if (!string.IsNullOrEmpty(WaterBrushTool.BlockReason))
                 EditorGUILayout.HelpBox(WaterBrushTool.BlockReason, MessageType.Warning);
@@ -752,7 +930,7 @@ namespace Collin.CityMap.EditorTooling
 
             EditorGUILayout.Space(2f);
             EditorGUILayout.LabelField($"种子列表（{water.Count} 个）", EditorStyles.miniBoldLabel);
-            var grid = _ctx != null ? _ctx.Grid : (_terrain.GetComponent<CityTerrainView>()?.BoundGrid ?? default);
+            var grid = _ctx != null ? _ctx.Grid : (_view != null ? _view.BoundGrid ?? default : default);
             string toRemove = null;
 
             for (var i = 0; i < water.Count; i++)
@@ -760,82 +938,108 @@ namespace Collin.CityMap.EditorTooling
                 var s = water[i];
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    var en = EditorGUILayout.Toggle(s.enabled, GUILayout.Width(16f));
-                    if (en != s.enabled) { water.SetSeedEnabled(s.stableId, en); TouchWaterAsset(); }
+                    var en = EditorGUILayout.Toggle(
+                        new GUIContent("启", "启用位：关掉≠删除，保留参数便于反复试验。"),
+                        s.enabled, GUILayout.Width(20f));
+                    if (en != s.enabled && water.SetSeedEnabled(s.stableId, en))
+                        TouchWaterAsset(grid, s.cx, s.cz);
 
-                    var px = EditorGUILayout.Vector2Field(GUIContent.none,
-                        new Vector2(s.cx, s.cz), GUILayout.Width(110f));
+                    var px = EditorGUILayout.Vector2Field(new GUIContent("格", "种子所在<b>逻辑格号</b>（不是世界米）：\n"
+                            + "换 worldSize / 格档位时米坐标会漂，格号不会。"),
+                        new Vector2(s.cx, s.cz), GUILayout.Width(96f));
                     if ((int)px.x != s.cx || (int)px.y != s.cz)
                     {
                         if (!water.MoveSeed(s.stableId, (int)px.x, (int)px.y))
-                            EditorGUILayout.LabelField("目标格已被占", GUILayout.Width(96f));
-                        TouchWaterAsset();
+                            EditorGUILayout.LabelField(new GUIContent("占", "目标格已有另一颗种子 ⇒ 拒绝移动（同格两颗只会重复洪泛）"),
+                                GUILayout.Width(20f));
+                        TouchWaterAsset(grid, s.cx, s.cz);
                     }
 
-                    // 局部水位：复选框控制"是否覆盖全局海平面"，避免让用户去理解 +∞ 哨兵
-                    var hasLocal = !float.IsPositiveInfinity(s.localLevel);
-                    var hl = EditorGUILayout.ToggleLeft("局部", hasLocal, GUILayout.Width(44f));
-                    if (hl != hasLocal)
-                    {
-                        water.SetSeedLevel(s.stableId, hl ? 0f : WaterSeed.NoLocalLevel);
-                        TouchWaterAsset();
-                    }
-                    if (hl)
-                    {
-                        var lv = EditorGUILayout.FloatField(s.localLevel, GUILayout.Width(52f));
-                        if (!Mathf.Approximately(lv, s.localLevel))
-                        { water.SetSeedLevel(s.stableId, lv); TouchWaterAsset(); }
-                    }
-                    else EditorGUILayout.LabelField("—", GUILayout.Width(52f));
+                    var lv = EditorGUILayout.FloatField(new GUIContent("高程",
+                            "这片水的水面高度（米）。格必须<b>严格低于</b>它才算水。\n" +
+                            "抬地形/削高会让水自动退，改这里会让水涨落。"),
+                        s.level, GUILayout.Width(58f));
+                    if (!Mathf.Approximately(lv, s.level) && water.SetSeedLevel(s.stableId, lv))
+                        TouchWaterAsset(grid, s.cx, s.cz);
 
-                    if (GUILayout.Button("×", GUILayout.Width(20f))) toRemove = s.stableId;
+                    var rd = EditorGUILayout.FloatField(new GUIContent("半径",
+                            "沿谷扩散的最大步数（米，换算成格向上取整）。\n" +
+                            "0 = 不限，用来做海湾/大湖；小值只成一个小水塘。"),
+                        s.radiusMeters, GUILayout.Width(56f));
+                    if (!Mathf.Approximately(rd, s.radiusMeters) && water.SetSeedRadius(s.stableId, rd))
+                        TouchWaterAsset(grid, s.cx, s.cz);
+
+                    if (GUILayout.Button(new GUIContent("×", "删除这颗种子"), GUILayout.Width(18f)))
+                        toRemove = s.stableId;
                 }
             }
 
             if (!string.IsNullOrEmpty(toRemove))
             {
                 Undo.RecordObject(water, "移除水种子");
-                water.RemoveSeed(toRemove);
-                TouchWaterAsset();
-                _terrain.MarkWaterChanged();
+                if (water.TryGet(toRemove, out var gone))
+                {
+                    water.RemoveSeed(toRemove);
+                    TouchWaterAsset(grid, gone.cx, gone.cz);   // 单一提交点：内部只 bump 一次
+                }
+                else water.RemoveSeed(toRemove);               // id 已失效（撤销/他人删除）：不虚报改动
             }
 
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("手动加一个种子"))
+                if (GUILayout.Button(new GUIContent("手动加一个种子",
+                    "加在图幅中心格：水面高程 = 该处地面 + 默认水深，半径 = 默认半径。\n" +
+                    "加完在列表里调坐标与高程即可。"), GUILayout.Height(22f)))
                 {
                     Undo.RecordObject(water, "添加水种子");
                     var cc = grid.CellCount > 0 ? grid.Columns / 2 : 0;
                     var rr = grid.CellCount > 0 ? grid.Rows / 2 : 0;
-                    water.AddSeed(cc, rr, WaterSeed.NoLocalLevel, out _);
-                    TouchWaterAsset();      // 内部已含 MarkWaterChanged；此处不再重复 bump（会白跑一轮洪泛）
+                    var ground = GroundHeightAt(cc, rr);
+                    water.AddSeed(cc, rr, ground + _terrain.WaterDepth, _terrain.WaterSeedRadius, out _);
+                    TouchWaterAsset(grid, cc, rr);
                 }
-                var hf = WaterBrushTool.TryGetHover(out var hcell, out var hh);
-                if (hf)
+                if (WaterBrushTool.TryGetHover(out var hcell, out var hh))
                 {
-                    // 内插里的三元表达式必须加括号，否则 `:` 会被当成格式说明符分隔（CS8361）。
-                    // 这里直接先取局部变量，比嵌三元更易读。
-                    var seaNow = _project != null ? _project.SeaLevel : 0f;
                     EditorGUILayout.LabelField(
-                        $"光标：格({hcell.x},{hcell.y}) 高程 {hh:0.##}m 海平面 {seaNow:0.##}m",
-                        GUILayout.Width(170f));
+                        $"光标 格({hcell.x},{hcell.y}) 地面 {hh:0.##}m → 水面 {hh + _terrain.WaterDepth:0.##}m",
+                        GUILayout.Width(220f));
                 }
             }
         }
 
         /// <summary>
-        /// 水资产改动：存盘 + 触发一次水面重算。
-        /// <para>只 bump 通道（<see cref="CityTerrain.MarkWaterChanged"/>），脏区搬入与 Tick
-        /// 由既有的 <c>UndoHistoryTracker.Scan()</c> → <c>CommitAndNotify</c> 链路负责
-        /// （面板 253~269 行）。<b>不在这里手动 MarkDirty/Tick</b>：那样会与自动跟随叠成双跑，
-        /// 更要命的是绕过 <c>LastDirtyBounds</c> 的搬入，增量重建退化成全图。</para>
+        /// 某格的地面高程（手动加种子时算默认水面用）。
+        /// <para>取显示层的场 = <b>与画面同源</b>（同 H-53 纪律）：让工具自己去读
+        /// <c>CityRuntime.ActiveContext</c> 只覆盖面板驱动分支，自建路径下会拿到 null。
+        /// 取不到时退回 0 —— 用户随即能在列表里看到高程并改掉，比不画这颗种子更好（有反馈胜过静默）。</para>
         /// </summary>
-        private void TouchWaterAsset()
+        float GroundHeightAt(int cx, int cz)
         {
-            if (_terrain?.Water == null) return;
-            EditorUtility.SetDirty(_terrain.Water);
+            var g = _view != null ? _view.BoundGrid : (CityGrid?)null;
+            if (g == null && _ctx != null) g = _ctx.Grid;
+            if (g == null || g.Value.CellCount <= 0) return 0f;
+            var f = _view != null ? _view.BoundField : null;
+            if (f == null) return 0f;
+            var w = g.Value.CellCenterWorld(cx, cz);
+            return f.GetHeight(w.x, w.y);
+        }
+
+        /// <summary>
+        /// 种子改动：<b>唯一</b>提交点 —— 存盘 + 把脏位记在<b>种子资产</b>上 + 立刻结算 + 重绘。
+        /// <para>02 二次改版后不再调 <c>_terrain.MarkWaterChanged()</c>：撤销登记的对象是种子资产，
+        /// 脏位必须落在同一个对象上才会被 Tracker 看见（09 H-9 的纪律）；
+        /// 而旧代码这里同时 bump 实例与资产 ⇒ 白跑两次洪泛（用户反馈②里那类"重复计算"）。</para>
+        /// <para>这里<b>不</b>手动 MarkDirty/Tick：脏区搬入与 Tick 由 <see cref="OnEditorUpdate"/> 的
+        /// 既有链路负责，另开提交口会与自动跟随叠成双跑，还会绕过增量依据退化成全图。</para>
+        /// </summary>
+        private void TouchWaterAsset(in CityGrid grid, int cx, int cz)
+        {
+            var water = _terrain != null ? _terrain.Water : null;
+            if (water == null) return;
+            EditorUtility.SetDirty(water);
             AssetDatabase.SaveAssets();
-            _terrain.MarkWaterChanged();        // bump RiverStroke ⇒ Tracker 扫到 ⇒ 走 River 通道重洪泛
+            water.CommitChange(WaterNetworkAsset.SeedBounds(grid, cx, cz));
+            UndoHistoryTracker.SettleNow();     // 离散改动：不等 250ms 合并窗口
             Repaint();
         }
 
@@ -873,24 +1077,18 @@ namespace Collin.CityMap.EditorTooling
         }
 
         /// <summary>
-        /// 地形参数区（AGENTS §0.1 原则1「所见即所得」+ 原则2「Controller 只写 Model」）。
-        /// <para>控件一律走 <see cref="TerrainProfile"/> 的显式写入口（内部 <c>Touch()</c> bump 序列号），
-        /// 面板<b>不直接写序列化字段</b>：那样会绕过意图记账，改动只有靠值指纹第二检才兜得住。</para>
-        /// <para>拖动即重算：写入口 bump 后由 <see cref="OnEditorUpdate"/> 的 Tracker 链路消费
-        /// （250ms 合并窗口内多次拖动只算一次，A-17），松手即看到画面变化。</para>
+        /// 实例与 Profile 绑定区（各步共用的前置条件，返回 null = 调用方必须早退）。
+        /// <para>存在理由：②③都依赖 Profile 与实例，若不先绑定就什么都没得调；
+        /// 但把绑定控件<b>只</b>留在①会让②③变成"空白面板 + 无从归因"（H-51 同族教训）。</para>
         /// </summary>
-        private void DrawTerrainProfile()
+        private TerrainProfile DrawInstanceAndProfile()
         {
-            if (_project == null) return;
-
-            EditorGUILayout.LabelField("地形参数（S1a / S1b）", EditorStyles.boldLabel);
-
             if (_terrain == null) _terrain = FindTerrainInstance();
             if (_terrain == null)
             {
                 EditorGUILayout.HelpBox("场景里没有 CityTerrain 实例：地形无法计算与显示。", MessageType.Info);
                 if (GUILayout.Button("创建地形实例（含显示层）", GUILayout.Width(190f))) CreateTerrainInstance();
-                return;
+                return null;
             }
 
             var profile = _terrain.Profile;
@@ -909,10 +1107,29 @@ namespace Collin.CityMap.EditorTooling
             if (profile == null)
             {
                 EditorGUILayout.HelpBox("未绑定 TerrainProfile：S1a 缺参数，不会产出高度场。", MessageType.Warning);
-                return;
+                return null;
             }
+            if (_view == null) _view = _terrain.GetComponent<CityTerrainView>();
+            return profile;
+        }
 
-            // ── 低频基底 ──
+        /// <summary>
+        /// 第①步「地图参数」：世界参数 + 地形噪声基底 + 城区范围。
+        /// <para><b>压平内缘/外缘归本步</b>（用户反馈③的整改之一）：取证确认这两个比例在
+        /// 全工程<b>唯一</b>的消费者是 S1a 的噪声幅度衰减（TerrainBaseStage 的 smoothstep），
+        /// 与平整烘焙毫无关系。它们原先摆在"平整滤镜"里，是"改了半天画面不动"的直接来源。</para>
+        /// </summary>
+        private void DrawParamsSection()
+        {
+            EditorGUILayout.LabelField("① 地图参数（世界 · 噪声基底 · 城区范围）", EditorStyles.boldLabel);
+            DrawProjectField();
+            EditorGUILayout.Space(4f);
+
+            var profile = DrawInstanceAndProfile();
+            if (profile == null) return;
+
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("地形噪声基底（S1a：山与起伏）", EditorStyles.boldLabel);
             var amp = EditorGUILayout.Slider("起伏幅度(m)", profile.BaseAmplitude, 0f, 60f);
             var wave = EditorGUILayout.Slider("低频波长(m)", profile.BaseWavelength, 60f, 2000f);
             var octs = EditorGUILayout.IntSlider("八度", profile.Octaves, 1, 8);
@@ -923,25 +1140,21 @@ namespace Collin.CityMap.EditorTooling
                 || gn != profile.Gain || lac != profile.Lacunarity || warp != profile.DomainWarpAmp)
                 profile.SetBaseShape(amp, wave, octs, gn, lac, warp);
 
-            // ── 城市平整：用户的主旋钮（A-1-1 的实机面）──
-            var flat = EditorGUILayout.Slider("城内平整度(0平 1起伏)", profile.UrbanFlatness, 0f, 1f);
+            var flat = EditorGUILayout.Slider(
+                new GUIContent("城内平整度(0平 1起伏)", "噪声在城市范围内被压平的比例（S1a 的衰减核，不是烘焙）。"),
+                profile.UrbanFlatness, 0f, 1f);
             if (!Mathf.Approximately(flat, profile.UrbanFlatness)) profile.SetUrbanFlatness(flat);
 
-            // ── 平整约束求解 ──
-            var slope = EditorGUILayout.Slider("地块最大坡度(°)", profile.MaxParcelSlope, 0.5f, 20f);
-            var freeW = EditorGUILayout.Slider("自由权重(保留自然度)", profile.FreeWeight, 0f, 3f);
-            var inner = EditorGUILayout.Slider("核心内切(m)", profile.ConstraintInner, 0f, 40f);
-            var extend = EditorGUILayout.Slider("过渡带外延(m)", profile.ConstraintExtend, 0.5f, 40f);
-            if (slope != profile.MaxParcelSlope || !Mathf.Approximately(freeW, profile.FreeWeight)
-                || !Mathf.Approximately(inner, profile.ConstraintInner)
-                || !Mathf.Approximately(extend, profile.ConstraintExtend))
-                profile.SetFlattenSolve(slope, freeW, inner, extend, profile.TargetPlaneMaxSlope);
+            var lockDetail = EditorGUILayout.Toggle(
+                new GUIContent("冻结细节(只看规划)", "锁住高频细节便于只看大体形（作用于 S1a 噪声，不是烘焙开关）。"),
+                profile.RoughnessLock);
+            if (lockDetail != profile.RoughnessLock) profile.SetRoughnessLock(lockDetail);
 
-            // ── 城区范围（M4-o：用户裁定「城区的设计参数需要允许用户在面板里调整」）──
+            // ── 城区范围：噪声压平的作用域 ──
             // 「生效值」必须显式呈现：城心/半径都走「锚点→Profile回退→图幅中心/0.45×图幅」三层解析，
-            // 只摆输入框会让用户以为 0 就是「城在 (0,0)、半径 0」——上一轮「开平整没变化」的困惑正源于此。
+            // 只摆输入框会让用户以为 0 就是「城在 (0,0)、半径 0」（上一轮「开平整没变化」的困惑正源于此）。
             EditorGUILayout.Space(4f);
-            EditorGUILayout.LabelField("城区范围（压平噪声的作用域）", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("城区范围（噪声压平的作用域）", EditorStyles.boldLabel);
             var gNow = _ctx != null ? _ctx.Grid : default;
             var effC = profile.ResolveUrbanCenter(_project, gNow);
             var effR = profile.ResolveUrbanRadius(_project, gNow);
@@ -955,40 +1168,130 @@ namespace Collin.CityMap.EditorTooling
                 || !Mathf.Approximately(ur, profile.UrbanRadiusValue))
                 profile.SetUrbanGeometry(new Vector2(ucx, ucz), ur);
 
-            var inE = EditorGUILayout.Slider("压平内缘（u≤ 完全压平）", profile.FlatnessInnerEdge, 0.1f, 1.45f);
-            var outE = EditorGUILayout.Slider("放开外缘（u≥ 满幅野性）", profile.FlatnessOuterEdge, 0.2f, 2f);
+            var inE = EditorGUILayout.Slider(
+                new GUIContent("压平内缘（u≤ 完全压平）", "u = 到城心的距离 / 城区半径。\n" +
+                    "u ≤ 本值：噪声被完全压平。\n<b>这是 S1a 噪声的参数，与③的烘焙无关。</b>"),
+                profile.FlatnessInnerEdge, 0.1f, 1.45f);
+            var outE = EditorGUILayout.Slider(
+                new GUIContent("放开外缘（u≥ 满幅野性）", "u ≥ 本值：噪声满幅野性。\n<b>同样属于 S1a。</b>"),
+                profile.FlatnessOuterEdge, 0.2f, 2f);
             if (!Mathf.Approximately(inE, profile.FlatnessInnerEdge) || !Mathf.Approximately(outE, profile.FlatnessOuterEdge))
                 profile.SetUrbanEdgeRatio(inE, outE);
             if (profile.FlatnessOuterEdge <= profile.FlatnessInnerEdge)
                 EditorGUILayout.HelpBox("外缘必须大于内缘，否则过渡带消失、城界成为硬折线。", MessageType.Warning);
+            EditorGUILayout.LabelField($"  换算：{effR * profile.FlatnessInnerEdge:0}m 内完全压平 · " +
+                                      $"{effR * profile.FlatnessOuterEdge:0}m 外满幅野性", EditorStyles.miniLabel);
+        }
 
-            // ── 自然化（M4-o / D-41：用户原话「消除明显的手绘痕迹」）──
+        /// <summary>
+        /// 第②步「雕山水」：左键接管切换 + 雕刻笔刷 + 水体种子。
+        /// <para>工具接管原先挂在右上角（<c>ToolMode</c>），而右上角现在是分层统计 ——
+        /// 所以这里给出显式的接管开关，读写仍在场景实例序列化真源上（H-50／D-34）。</para>
+        /// </summary>
+        private void DrawSculptSection()
+        {
+            EditorGUILayout.LabelField("② 雕山水（笔刷雕刻 · 水体种子）", EditorStyles.boldLabel);
+            var profile = DrawInstanceAndProfile();
+            if (profile == null) return;
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                var sculpt = GUILayout.Toggle(_terrain.SculptToolActive,
+                    new GUIContent("雕刻笔刷", "左键由山水笔刷接管（拖动落笔）。与「加水种子」互斥。"),
+                    EditorStyles.toolbarButton);
+                var water = GUILayout.Toggle(_terrain.WaterToolActive,
+                    new GUIContent("加水种子", "左键由水工具接管（点一格加/删种子）。与「雕刻笔刷」互斥。"),
+                    EditorStyles.toolbarButton);
+                if (sculpt != _terrain.SculptToolActive || water != _terrain.WaterToolActive)
+                {
+                    // 互斥由写入侧保证（两个 Set 都会清对方）；这里按"最后被点的"决定归属
+                    if (sculpt) _terrain.SetSculptToolActive(true);
+                    else if (water) { _terrain.SetWaterToolActive(true); EnsureWaterAsset(); }
+                    else { _terrain.SetSculptToolActive(false); _terrain.SetWaterToolActive(false); }
+                    MarkTerrainSceneDirty();
+                    _mode = _terrain.SculptToolActive ? ToolMode.TerrainSculpt
+                          : _terrain.WaterToolActive ? ToolMode.RiverBrush : ToolMode.Inspect;
+                }
+            }
+            if (!_terrain.SculptToolActive && !_terrain.WaterToolActive)
+                EditorGUILayout.HelpBox("左键当前归编辑器默认工具：要雕山或加水请点上面对应的接管开关。",
+                    MessageType.Info);
+
+            EditorGUILayout.Space(4f);
+            DrawSculptPanel();
+            EditorGUILayout.Space(6f);
+            DrawWaterPanel();
+        }
+
+        /// <summary>
+        /// 第③步「平整出地表」：可平整对象 + 自然化 + 求解参数 + 烘焙。
+        /// </summary>
+        private void DrawFlattenSection()
+        {
+            EditorGUILayout.LabelField("③ 平整出地表（烘焙式，不实时计算）", EditorStyles.boldLabel);
+            var profile = DrawInstanceAndProfile();
+            if (profile == null) return;
+
+            // ── 可平整对象（M2 代演品；S4 落地后由真实地块/路网供数）──
+            EditorGUILayout.LabelField("可平整对象", EditorStyles.boldLabel);
+            var auto = EditorGUILayout.Toggle(
+                new GUIContent("自动试设地块", "以城心为锚铺 N×N 个试设地块当约束源。\n" +
+                    "⚠️ 它只拿城区半径定街距、<b>不受半径裁剪</b>：N=8 时能铺满整张图，把山削成水平台阶。\n" +
+                    "默认关闭；确需批量找平再开，并配合下面的陡坡保护。"),
+                _terrain.AutoFlattenAtCenter);
+            var tiles = EditorGUILayout.IntSlider("地块数(N×N)", _terrain.AutoTileCount, 1, 12);
+            if (auto != _terrain.AutoFlattenAtCenter || tiles != _terrain.AutoTileCount)
+            {
+                _terrain.SetAutoFlatten(auto, tiles);
+                MarkTerrainSceneDirty();
+            }
+            var zones = _terrain.ManualZones;
+            EditorGUILayout.LabelField($"  人工平整区：{zones.Count} 个" +
+                (zones.Count == 0 ? "（面板暂不提供圈定，可在实例 Inspector 上加）" : string.Empty),
+                EditorStyles.miniLabel);
+
+            // ── 自然化（D-41：用户原话「消除明显的手绘痕迹」）──
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("自然化（只软化人工层，不碰 S1a 噪声）", EditorStyles.boldLabel);
             var nr = EditorGUILayout.Slider("软化核半径(m)", profile.NaturalizeRadius, 4f, 400f);
             var na = EditorGUILayout.Slider("软化强度（1=折痕全消）", profile.NaturalizeAmount, 0f, 1f);
             if (!Mathf.Approximately(nr, profile.NaturalizeRadius) || !Mathf.Approximately(na, profile.NaturalizeAmount))
                 profile.SetNaturalize(nr, na);
 
-            // ── 可平整对象（M2 代演品；M5 起由真实地块/路网供数）──
-            var auto = EditorGUILayout.Toggle("自动试设地块", _terrain.AutoFlattenAtCenter);
-            var tiles = EditorGUILayout.IntSlider("地块数(N×N)", _terrain.AutoTileCount, 1, 12);
-            if (auto != _terrain.AutoFlattenAtCenter || tiles != _terrain.AutoTileCount)
-                _terrain.SetAutoFlatten(auto, tiles);
-
-            var lockDetail = EditorGUILayout.Toggle("冻结细节(只看规划)", profile.RoughnessLock);
-            if (lockDetail != profile.RoughnessLock) profile.SetRoughnessLock(lockDetail);
-
-            // ── 平整滤镜：烘焙式（M4-o / D-41）——用户裁定「不要实时算，点烘焙才算」──
+            // ── 平整约束求解 ──
             EditorGUILayout.Space(4f);
-            EditorGUILayout.LabelField("③ 平整滤镜（烘焙式，不实时计算）", EditorStyles.boldLabel);
-            var flattenOn = EditorGUILayout.ToggleLeft(
-                new GUIContent("叠加已烘焙的平整层（关＝只显示手绘意图地表）",
-                    "开关只做「叠 / 不叠」，不触发任何求解。\n" +
-                    "关＝你看到的就是「噪声基底 + 手绘雕刻」的原始意图地表；\n" +
-                    "开＝在其上叠加『上一次点烘焙』算出的修正层。\n" +
-                    "改完手绘或参数不会自动重算，需重按烘焙（避免每拖一下都卡、也避免结果意外覆盖设计）。"),
-                _terrain.FlattenEnabled);
-            if (flattenOn != _terrain.FlattenEnabled) _terrain.SetFlattenEnabled(flattenOn);
+            EditorGUILayout.LabelField("约束求解", EditorStyles.boldLabel);
+            var slope = EditorGUILayout.Slider(
+                new GUIContent("地块最大坡度(°)", "拟合面坡度超过它 ⇒ 退化为水平中位数面。"),
+                profile.MaxParcelSlope, 0.5f, 20f);
+            var freeW = EditorGUILayout.Slider(
+                new GUIContent("自由权重(保留自然度)", "融合式里原始高程的权重：越大越贴原样、越小越贴目标平面。"),
+                profile.FreeWeight, 0f, 3f);
+            var inner = EditorGUILayout.Slider("核心内切(m)", profile.ConstraintInner, 0f, 40f);
+            var extend = EditorGUILayout.Slider("过渡带外延(m)", profile.ConstraintExtend, 0.5f, 40f);
+            if (slope != profile.MaxParcelSlope || !Mathf.Approximately(freeW, profile.FreeWeight)
+                || !Mathf.Approximately(inner, profile.ConstraintInner)
+                || !Mathf.Approximately(extend, profile.ConstraintExtend))
+                profile.SetFlattenSolve(slope, freeW, inner, extend, profile.TargetPlaneMaxSlope);
 
+            var steep = EditorGUILayout.Slider(
+                new GUIContent("陡坡保护阈值(°)", "原始地面坡度超过本值的格<b>不参与压平</b>（D-32 的退让档）。\n" +
+                    "这是「不把山削成水平台阶」的关键保护；调大＝更敢削山，调小＝更保守。"),
+                profile.SteepProtectSlope, 0f, 60f);
+            if (!Mathf.Approximately(steep, profile.SteepProtectSlope)) profile.SetSteepProtect(steep);
+
+            var keepHand = EditorGUILayout.Toggle(
+                new GUIContent("保留手绘格", "被雕刻笔刷碰过的格<b>不被滤镜改动</b>（人工优先于自动的结构化落实）。\n" +
+                    "关掉才允许自动层覆盖手绘 —— 默认必须开。"),
+                _terrain.ProtectHandCarved);
+            if (keepHand != _terrain.ProtectHandCarved)
+            {
+                _terrain.SetProtectHandCarved(keepHand);
+                MarkTerrainSceneDirty();
+            }
+
+            // ── 烘焙（D-41：用户裁定「不要实时算，点烘焙才算」）──
+            EditorGUILayout.Space(4f);
             _terrain.SetBakeProjectProbe(_project);
             var bakeState = _terrain.FilterState;
             using (new EditorGUILayout.HorizontalScope())
@@ -1004,6 +1307,17 @@ namespace Collin.CityMap.EditorTooling
                 if (bakeState != CityTerrain.BakeState.Never
                     && GUILayout.Button("清空滤镜", GUILayout.Width(72f))) ClearFlattenFilter();
             }
+
+            var flattenOn = EditorGUILayout.ToggleLeft(
+                new GUIContent("叠加已烘焙的平整层（关＝只显示手绘意图地表）",
+                    "开关只做「叠 / 不叠」，不触发任何求解。"),
+                _terrain.FlattenEnabled);
+            if (flattenOn != _terrain.FlattenEnabled)
+            {
+                _terrain.SetFlattenEnabled(flattenOn);
+                MarkTerrainSceneDirty();
+            }
+
             if (bakeState == CityTerrain.BakeState.Never)
                 EditorGUILayout.HelpBox("尚未烘焙过 ⇒ 开关开/关看起来一样（没有可叠加的内容）。" +
                     "先勾「自动试设地块」或添加人工平整区，再点上面「烘焙平整」。", MessageType.Info);
@@ -1013,10 +1327,22 @@ namespace Collin.CityMap.EditorTooling
             if (!string.IsNullOrEmpty(_terrain.FlattenHint))
                 EditorGUILayout.HelpBox(_terrain.FlattenHint, MessageType.Warning);
 
-            if (_terrain.LastConstraints > 0)
-                EditorGUILayout.LabelField($"S1b：约束 {_terrain.LastConstraints} 条 · 改动 {_terrain.LastCells} 格" +
-                    (_terrain.LastRejectedConstraints > 0 ? $" · 跳过 {_terrain.LastRejectedConstraints}" : string.Empty),
+            // 烘焙反馈（用户反馈③「简直是灾难」的整改：改了多少必须报出来，不能只靠肉眼发现山没了）
+            if (_terrain.LastConstraints > 0 || _terrain.LastCells > 0)
+                EditorGUILayout.LabelField(
+                    $"上次烘焙：约束 {_terrain.LastConstraints} 条 · 改动 {_terrain.LastCells} 格 · " +
+                    $"跳过 {_terrain.LastRejectedConstraints} 条 · 最大削平 {_terrain.LastBakeMaxDelta:0.#}m",
                     EditorStyles.miniLabel);
+        }
+
+        /// <summary>第④步：路网与建筑尚未接线，如实呈现（灰置按钮进不来，这里兜底说明）。</summary>
+        private void DrawRoadsPlaceholder()
+        {
+            EditorGUILayout.LabelField("④ 路网 · 场域 · 建筑", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(
+                "尚未实现（下一里程碑 S3 路网）。它也是平整的前置：设计文档要求的约束源是" +
+                "真实地块与道路带（「路横平、纵缓坡」），现在的「自动试设地块」只是代演品。",
+                MessageType.Info);
         }
 
         /// <summary>
@@ -1058,7 +1384,8 @@ namespace Collin.CityMap.EditorTooling
             // 烘焙会整表重写滤镜层 ⇒ 必须可撤销：先登记 undo，让用户按一次 Ctrl+Z 就能退回上一版滤镜
             //（不可撤销的重计算 = 用户不敢点，等于把功能锁死）。
             Undo.RecordObject(filter, "烘焙平整");
-            var res = new FlattenSolveStage(prof, _terrain).Bake(_ctx, filter);
+            var stage = new FlattenSolveStage(prof, _terrain);
+            var res = stage.Bake(_ctx, filter);
             if (!res.Success) { _lastRunLine = "烘焙失败：" + res.Message; return; }
 
             EditorUtility.SetDirty(filter);
@@ -1067,7 +1394,14 @@ namespace Collin.CityMap.EditorTooling
             _terrain.RecordBake(_project);              // 快照版本+手绘序列 ⇒ 之后改手绘/参数才判过期
             Undo.RecordObject(_terrain, "烘焙平整");
             EditorUtility.SetDirty(_terrain);
-            _lastRunLine = $"烘焙平整完成：约束 {res.Outputs} 条 · 写入滤镜 {res.CellsTouched} 格";
+
+            // ★ 反馈（用户反馈③「简直是灾难」的整改核心）：改了多少、保住了多少，必须当场报出来。
+            //   原先这里只写"约束 N 条 / 写入 M 格"，用户看不出它把山削了 60m，只能靠肉眼发现"山没了"。
+            var ps = stage.LastProtectStats;
+            _terrain.ReportBakeAmplitude(stage.LastMaxDelta);
+            _lastRunLine = $"烘焙完成：改动 {res.CellsTouched} 格 · 最大高差 {stage.LastMaxDelta:0.#}m · " +
+                           $"保护跳过 陡坡 {ps.steep} / 手绘 {ps.hand} / 水体 {ps.water} 格" +
+                           (res.Warnings > 0 ? $" · 作废约束 {res.Warnings} 条" : string.Empty);
             Repaint();
         }
 

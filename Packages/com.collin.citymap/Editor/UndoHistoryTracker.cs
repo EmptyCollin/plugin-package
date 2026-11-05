@@ -82,6 +82,22 @@ namespace Collin.CityMap.EditorTooling
         /// <summary>外部提交点显式上报（工具 Commit 后调用；与自动扫描互为冗余，不冲突）。</summary>
         public static void MarkChanged() => _lastChangeTick = Environment.TickCount;
 
+        /// <summary>
+        /// <b>立即结束合并窗口</b>（面板在"一次输入动作收尾"时调用：滑条松手、输入框失焦/回车、
+        /// 点一下建种子这类离散点击）。
+        /// <para>存在理由（用户 2026-11-06 反馈②「数值变更时没有及时重建」的根因）：
+        /// <see cref="MergeWindowMs"/> 的本意是把<b>连续 Ctrl+Z</b> 合成一次重算（A-17），
+        /// 但它对所有意图改动一视同仁 —— 而 <see cref="Scan"/> 每检出一个差异就重新拨表，
+        /// 于是拖滑条期间<b>一次都不会结算</b>，只有手停下来满 250ms 之后才动一次。
+        /// 数值输入必须"结束动作就看到画面"（§0.1 原则1 所见即所得），所以这条路上需要一个显式结算口。</para>
+        /// <para><b>只拨表、不取脏、不自己提交</b>：脏位仍由宿主按既有链路
+        /// <c>ConsumeDirty → MarkDirty → CommitAndNotify</c> 消费。
+        /// 这里若直接提交就会出现第二个提交点，与面板的自动跟随叠成双跑
+        /// （更要命的是绕过 <c>LastDirtyBounds</c> 的搬入，增量重建退化成全图，见 M4-j）。</para>
+        /// <para>撤销链路仍走合并窗口：那是 A-17 的契约，不是本入口的目标。</para>
+        /// </summary>
+        public static void SettleNow() => _lastChangeTick = -100000;
+
         private static void Update()
         {
             Scan();

@@ -1,73 +1,92 @@
-# Modules/02 — 水体：海平面 + 种子洪泛（水 = 低于水位的连通域）
+# Modules/02 — 水体：种子水面高程 + 扩散半径（水 = 低于该种子高程、半径内的连通域）
 
 > 依赖：Modules/00（掩码位）、01（高度重放次序）。消费方：03（桥/涵洞）、04（水缓冲边界）、
-> 05（WaterProximity 派生场）、06/07（临水偏好）、01（下切参与重放第 2 层）。
-> 对应里程碑：M3（水体全套）。**状态：已批准并实现（2026-11-05，DESIGN D-42）**。
+> 05（WaterProximity 派生场）、06/07（临水偏好）。
+> 对应里程碑：M5 首次实现（D-42）→ M6 二次简化（**D-43**）。
+> **状态：已批准并实现（2026-11-06，DESIGN D-43 / D-44 / D-46 / D-47）**。
 >
-> ⚠️ **本文档 v2 重写了定义**。v1 草案走的是"画河线 → 剖面下切 → D8 填洼/汇流阈值/Strahler"
-> 的水文推导路线，**已被用户 2026-11-05 的裁定整体取代**：那套机制解决的是"手绘的线如何变成
-> 合理水系"的正确性问题，而**洪泛定义让那类问题不可能发生**，因此整套删除而非降级保留。
-> 删除清单与理由见 §7；v1 独有的算法细节（填洼、Strahler 递推、剖面曲线公式）不再在本包内维护。
+> ⚠️ **本文档 v3 再次改写定义**。v2 保留的「全局海平面 + 种子局部水位 + 高处点击先询问」三要素
+> 已被用户 2026-11-05 的裁定（「海平面可以不用单独做了，加一个高度略低于常规地面的水体种子就可以了」）
+> 整体删除，改为**每颗种子自带水面高程 + 扩散半径**。仍然成立的部分：洪泛定义本身、只存种子、
+> 水面纯派生、4 邻接洪泛 + 8 邻接缓冲、`RiverStroke` 通道、S2 认领 `Flatten`、只铺四角全水 quad、
+> 距离场惰性、缓冲逐轮 BFS。v1 的水文推导路线（D8 填洼 / 汇流阈值 / Strahler / 剖面下切）
+> 在 v2 就已整体删除，删除清单见 §7.1，**勿在后续会话里"顺手补回来"**。
 
 ## 1. 定义与需求定位
 
-**水 = 与某个「水体种子」4 邻接连通、且低于该种子有效水位的逻辑格。**
-种子有效水位 = `种子局部水位 ?? 全局海平面`。
+**水 = 从某颗「水体种子」出发 4 邻接连通、地面严格低于<b>该种子自己的水面高程</b>、
+且沿谷洪泛步数不超过该种子半径的逻辑格。** 多种子的结果取**并集**。
 
-三条推论（这就是本定义的全部正确性来源）：
+四条推论（本定义的全部正确性来源）：
 
-1. **水是派生量，不是逐格属性**。抬地形 ⇒ 水自动退；降海平面 ⇒ 水自动涨；烘焙滤镜把洼地填高 ⇒
+1. **水是派生量，不是逐格属性**。抬地形 ⇒ 水自动退；改种子高程 ⇒ 水涨落；烘焙滤镜把洼地填高 ⇒
    水跟着萎缩。"水与地形不一致"（悬在坡上的半截河）在数学上不可能出现。
-2. **河与湖是同一个概念**：都是"低于水位的连通域"。不做分支、不需要"河口终止"这类特例。
+2. **河与湖是同一个概念**：都是"低于水面高程的连通域"。不做分支、不需要"河口终止"这类特例。
 3. **必须有种子**：低洼不会自动成水。这保住"用户意图"边界 —— 否则改一次噪声参数就可能凭空长出湖。
+4. **没有全局基准 ⇒ 没有"高/低之分"** ⇒ 不需要"这颗算河还是算湖"的判定，也不需要任何询问分支。
+   点在山脊上就是一口天池，点在谷底就是一摊水，同一套代码。
 
-真实需求三件事（v1 提出、v2 仍然成立，只是实现方式变了）：**画得出**（点一格即可）、
-**下得去**（水界与生效地表严格一致）、**断不了**（本定义天然满足，见推论 1）。
+真实需求三件事（v1 提出、至今成立，只是实现方式变了）：**画得出**（点一格即可）、
+**下得去**（水界与生效地表严格一致）、**断不了**（推论 1 天然满足）。
 
-三种模式（v1 的 A/B/C 分法在 v2 下退化为一条）：用户点的线/面**就是**水体的种子，
-水的形状由地形决定。程序自动生成支流（v1 的 B/C 模式）不再是正确性前提，
-如将来需要，应作为"辅助生成种子"的独立工具实现，而不是水体的定义路径。
+程序自动生成支流（v1 的 B/C 模式）不是正确性前提；如将来需要，应作为"辅助生成种子"的独立工具，
+而不是水体的定义路径。
 
 ## 2. 数据模型
 
-### 2.1 Model：`CityProject`（全局水体基准，与图幅/城心同层）
+### 2.1 Model：`CityProject`（只剩一项全局水体参数）
 
 | 字段 | 默认 | 语义 | 脏通道 |
 |---|---|---|---|
-| `seaLevel` | **0** | 全局海平面（米）。种子未设局部水位时的有效水位 | `RiverStroke` |
 | `waterBuffer` | 10m | 水域外扩的不可建筑带；换算成格**向上取整**（宁多不一格漏）；0=不设带 | `RiverStroke` |
 
-**海平面刻意走 `RiverStroke` 而不是 `WorldParam`**：`WorldParam ⇒ Seed|World ⇒ Expand(All)`
-（00 §3.2 传播表首行）⇒ 重跑 S1a 噪声（M4-j 实测 **4860ms**）。而改海平面完全不改变地形本身。
-`Expand(River)` = `Road|Parcel|Field|Building|Flatten` —— 正是"水界变了要波及下游"的正确闭包，且不含 `Terrain`。
-判据：`Sea_Level_Change_Uses_River_Channel_And_Never_Reruns_Noise`。
+**v2 的 `seaLevel` / `SetSeaLevel` / `WaterField.SeaLevelUsed` 已全部删除**（D-43）。理由：
+有了"每颗种子一个高程"，全局基准就是冗余的**第二份状态**，而它正是"点高处要不要问"这整块复杂度的
+唯一来源。缓冲带仍是全局参数 —— 它表达的是"水画好之后往岸上扩多宽禁建带"，与水位无关。
 
-### 2.2 人工层：`WaterNetworkAsset`（SO，持久化，入库）
+**水体参数刻意走 `RiverStroke` 而不是 `WorldParam`**：`WorldParam ⇒ Seed|World ⇒ Expand(All)`
+（00 §3.2 传播表首行）⇒ 重跑 S1a 噪声（M4-j 实测 **4860ms**），而改缓冲带完全不改变地形本身。
+`Expand(River)` = `Road|Parcel|Field|Building|Flatten` —— 正是"水界变了要波及下游"的正确闭包，且不含 `Terrain`。
+判据：`Water_Changes_Use_River_Channel_And_Never_Rerun_Noise`。
+
+### 2.2 人工层：`WaterNetworkAsset`（SO，持久化，入库，**自带意图账本**）
 
 只存**种子**（用户意图的最小表达）。逐格水属性、水面 mesh、距离场一律不入库（§6）。
 
 ```csharp
-struct WaterSeed { string stableId;        // 稳定 id（撤销/面板定位）
-                   int cx, cz;             // 逻辑格号（<b>不是世界米</b>：换 worldSize/档位时米坐标会漂）
-                   float localLevel;       // 局部水位；哨兵 NoLocalLevel = <b>+∞</b>（<b>不是 0</b>，0 是合法海平面值）
-                   bool enabled; }         // 关掉≠删除：保留坐标便于反复试验
+struct WaterSeed { string stableId;      // 稳定 id（撤销/面板定位）
+                   int cx, cz;           // 逻辑格号（<b>不是世界米</b>：换 worldSize/档位时米坐标会漂）
+                   float level;          // <b>本片水的水面高程</b>（米）。格必须严格低于它才算水
+                   float radiusMeters;   // 沿谷扩散半径（米）；<b>0 = 不限</b>
+                   bool enabled; }       // 关掉≠删除：保留参数便于反复试验
+
+class WaterNetworkAsset : ScriptableObject, IIntentTracked   // ← v3 新增接口，见 §6
+                        { string stableId; IntentChangeLedger ledger; List<WaterSeed> seeds; }
 ```
 
 - 同格再点 ⇒ **就地覆盖并沿用原 id**，不追加第二条（两条同格种子只会让水界重复、面板上还看不出差别）。
 - 移动到已被占的格 ⇒ 拒绝（同上理由）。
-- `ComputeValueKey()` 认内容（格号/局部水位/启用位）**不认 stableId** —— id 是身份不是内容，
-  算进指纹会让"删掉再原样加回"被当成改动。
+- **v2 的 `NoLocalLevel = +∞` 哨兵与 `ResolveLevel(globalSeaLevel)` 已删除**。哨兵是上一版最易出
+  隐性 bug 的地方：`Mathf.Approximately(∞,∞)` 走 `|a−b|<eps` ⇒ `∞−∞=NaN` ⇒ 返回 **false** ⇒
+  两个"无覆盖"被判成不相等 ⇒ 每次刷新都空重洪泛。现在每颗种子必然有一个真实高程，比较全走普通浮点。
+- `RadiusCells(cellSize)`：**NaN / 0 / 负 / 格宽非法 ⇒ `int.MaxValue`（不限）**。
+  不能用 `radius <= 0` 判：`NaN` 与任何数比较都是 false，会被放行到 `Mathf.CeilToInt(NaN)`，
+  而它的返回值不可依赖（实测可能 0 ⇒ 现象是"改了半径水整个消失"）。
+- `ComputeValueKey()` 认内容（格号 / **高程** / **半径** / 启用位）**不认 stableId** —— id 是身份不是内容，
+  算进指纹会让"删掉再原样加回"被当成改动。⚠️ 半径必须进指纹：漏掉会让"只改半径"不触发重算（＝改了没反应）。
 
 ### 2.3 派生层（内存，S2 槽位 `WaterField`）
 
 ```csharp
 class WaterField {
-  int   WaterCells, BufferCells;   // 淹水格数 / 缓冲格数（面板读数）
-  int   ActiveSeeds, TotalSeeds;   // <b>真正产水的</b>种子数：必须与总数分开报，
-                                   // 否则"3 个种子全退干"会被读成"有 3 片水"
-  float SeaLevelUsed;
-  bool  IsWater(cx,cz);  float WaterSurfaceAt(cx,cz);   // 非水格返回 <b>-∞</b>（0 是合法值，不能当哨兵）
-  float[] DistanceMeters { get; }                      // <b>按需构建</b>，见 §3.4
+  int   WaterCells, BufferCells;    // 淹水格数 / 缓冲格数
+  int   ActiveSeeds, TotalSeeds;    // <b>真正产水的</b>种子数：必须与总数分开报，
+                                    // 否则"3 个种子全退干"会被读成"有 3 片水"
+  float WaterAreaRatio;             // 水面覆盖比例（面板直接读，不让用户再换算）
+  float MinWaterLevel, MaxWaterLevel;   // 水面高程区间（<b>刷新判据 + 面板读数</b>，见 §3.3）
+  bool  IsWater(cx,cz);  float WaterSurfaceAt(cx,cz);   // 非水格返回 <b>-∞</b>（0 是合法高程，不能当哨兵）
+  float[] CellLevels { get; }       // 逐格水面高程（渲染按显示网格采样）
+  float[] DistanceMeters { get; }   // <b>按需构建</b>，见 §3.4
 }
 ```
 
@@ -75,22 +94,26 @@ class WaterField {
 
 ### 3.1 洪泛（S2 唯一的水界算法）
 
-每种子一次 BFS：`4 邻接`、遇 `surface >= 该种子有效水位` 停（=岸）、遇 `CellFlag.NoWater` **不得越过**、
-就地标记 visited。
+每种子一次**逐轮 BFS**：`4 邻接`、遇 `surface >= 该种子 level` 停（=岸）、遇 `CellFlag.NoWater` **不得越过**、
+跑满 `RadiusCells` 轮即停；visited 用逐种子 generation 标记并每轮清零。
 
-- **4 邻接而非 8**（用户裁定）：8 邻接会让两片隔着一道**对角山脊**的湖从角缝"渗"成一片，
+- **半径限的是洪泛轮数（沿连通域走几格），不是欧氏直线距离**。这是本次简化换来的**唯一**安全阀：
+  只判"低于高程"时，在山脊上点一下会**顺着单调下坡淹掉整个山谷** —— 没有任何东西能阻止水翻过山脊
+  （v2 的"先询问"只是警告，并不阻止这个结果）。默认半径 120m ⇒ 点哪里都只成一个小水塘；
+  想做湖/海湾把那颗种子半径设成 0（不限）。
+  ⚠️ 若按欧氏圆裁剪，**绕山而来的下游河会被错误截断**，所以必须按步数。
+  判据 `Radius_Counts_Flood_Steps_Not_Straight_Line_Distance`：欧氏 8.49 < 10 但步数 12 > 10 ⇒ 必须**不**成水；
+  并配"同方向族步数正好 10 ⇒ 必淹"的对照，否则分辨不出两种实现。
+- **4 邻接而非 8**（v2 裁定，保留）：8 邻接会让两片隔着一道**对角山脊**的湖从角缝"渗"成一片，
   现象是"我挖的两个湖自己合并了"，且只在角部相邻时发生、极难归因。
   判据 `Flood_Uses_4_Neighbors_And_Never_Leaks_Through_Diagonal_Ridge`（含"开 4 邻缺口必须贯通"的防恒真对照）。
-- **visited 必须是逐种子的 generation 标记并每轮清零**。我第一版拿掩码的 `Water` 位当 visited ⇒
-  低水位种子先淹过的格子挡住高水位种子向**更高处**扩展（"湖里有高地基"算错）；
-  只清掩码不清 visited ⇒ 第二次洪泛水面莫名缩小。判据 `Higher_Seed_Can_Spread_Past_Cells_Already_Wet_From_Lower_Seed`、
-  `Reflood_Produces_Identical_Area_Without_Stale_Visited_Marks`。
-- **种子本身不低于水位 ⇒ 本轮不产水，这是合法状态不是错误**（水退了）。计数里 `ActiveSeeds < TotalSeeds`
+  ⚠️ 连带结论：**半径 r 覆盖的格数 = 4 邻菱形 `2r²+2r+1`，不是方窗 `(2r+1)²`**（我写用例时按方窗算 ⇒ 红）。
+- **种子格自身不低于其高程 ⇒ 本轮不产水，这是合法状态不是错误**（水退了）。`ActiveSeeds < TotalSeeds`
   就是这个信号，面板必须区分显示。
 
 **判据用的地表 = 最终生效地表**（`base → delta → 已烘焙滤镜`，与 S1b 输出同口径；用户裁定"所见即所得"）。
-S2 在执行序里<b>先于</b> S1b（01 §3.2：base → delta → river → flatten），所以 `WaterStage`
-<b>自己组装</b>这份地表而非直接读槽位 —— 读槽位会让水界<b>滞后一轮</b>（烘焙填高洼地后水不退，再动一下才退）。
+S2 在执行序里**先于** S1b（01 §3.2：base → delta → river → flatten），所以 `WaterStage`
+**自己组装**这份地表而非直接读槽位 —— 读槽位会让水界**滞后一轮**（烘焙填高洼地后水不退，再动一下才退）。
 M4-o 之后 S1b 的 `Run` 只做复位+叠加，故该组装式恰好等于 S1b 输出。
 ⚠️ 若将来推翻 D-41 让 S1b 重新实时求解，此假设失效，水界必须改挂到 S1b 之后。
 
@@ -110,18 +133,30 @@ M4-o 之后 S1b 的 `Run` 只做复位+叠加，故该组装式恰好等于 S1b 
 
 与地形**同一套显示网格**（复用 `ChunkVertexRect` / `ApplyToMesh` / 同绕序 H-38）：
 若自造一套，两层 chunk 边界与顶点数会分叉，出现"水面与地形错位、边缘漏缝"，
-现象是"水面上有道斜缝"，几乎无法归因。顶点高度 = **该格的水面** + `SurfaceLift(0.02m)`（防 co-planar 闪面）。
+现象是"水面上有道斜缝"，几乎无法归因。顶点高度 = **该格的水面高程** + `SurfaceLift(0.02m)`（防 co-planar 闪面）。
 
-**只铺「四角全是水」的显示 quad**。⚠️ 这里有个必须知道的取舍：
+**只铺「四角全是水」的显示 quad**。⚠️ 必须知道的取舍：
 本包地形 shader 是**不透明**的（01 §3.3 单 pass 顶点色），所以不能拿顶点 alpha=0 表达"这里没水"——
 无水角会以**实心蓝**盖在地形上，用户看到的是"只要有点水，整片地都发蓝"（我第一版正是这样）。
-**代价：岸线误差 = 一个 `DisplayStep`（8km 档 16m）。**
+**代价：岸线误差 = 一个 `DisplayStep`（8km 档 16m）**；小于一格的水塘画不出来。
 要更细的岸线需引入透明 shader 或按逻辑格(4m)加密水面网格；届时**必须同步改**
 `WaterViewTests.Isolated_Single_Cell_Water_Produces_No_Quad`（它把这个代价写成了断言）。
 
-局部水位在这里是必需的：高原湖（局部水位 160m、海平面 0）若一律画在海平面，
-水面会整片埋进地形 ⇒ 用户读成"加了水但看不见水面"。故逐格水面高度由洪泛一并产出
-（多种子重叠时**取更高水位**：低于低水位的格必然也低于高水位，物理上就是高那片盖住低那片）。
+⚠️ **「算不算水顶点」与「取不取得到水面高程」必须是同一个判据**（v3 修的真 bug）：
+若第一遍只按掩码把格算成水顶点、第二遍填高程时才发现取不到而 `continue`，那个顶点会停在 **(0,0,0)**，
+而它所属的 quad 照样被画 ⇒ **水面上一条从世界原点射出的蓝带**（极难归因）。
+现在第一遍同时存下高程（`vertLevel`），第二遍直接取用、不再重算判据。
+判据 `Cell_Flagged_Water_But_Without_Surface_Height_Draws_No_Collapsed_Vertex` +
+`No_Vertex_Falls_Back_To_World_Origin`（后者刻意构造出"有面可验"的场景：全空几何会让逐顶点断言**空过**）。
+⚠️ 过程留痕：这个修复我**第一次提交并未真正生效** —— 新增的标记循环被下方**残留的旧循环覆盖**，
+老用例全绿、只有新用例红。教训：**替换判据时必须确认旧判据已删净**，"编译干净 + 老用例全绿"
+证明不了新语义生效。
+
+每颗种子自己的高程必须驱动顶点：天池（160m）与谷底水塘（20m）并存时，只有一位"有水/没水"
+就画不出正确高程 —— 天池会被画到 20m 甚至 0m，直接埋进地形里看不见。
+故逐格水面高程由洪泛一并产出（多种子重叠时**取更高值**：低于低水位的格必然也低于高水位，
+物理上就是高那片盖住低那片）。`MaxWaterLevel` 同时是视图的**重铺判据之一**：
+只改种子高程而面积不变（把水塘整体抬高 1m）时，对象引用与格数都不变 ⇒ 少这个判据就是"改了数值画面不动"。
 
 ### 3.4 到水距离场（`WaterProximity` 的输入）
 
@@ -146,67 +181,91 @@ v1 的 `LakeStamp`、"河在湖边终止（`isTidal`）"、"湖水面取最低�
 | 04 地块 | `WaterBuffer` 为不可建带；**水域边缘直接作为地块边界**（自然形成临水岸线，是城市形态可信度的关键） | 掩码 `Water/WaterBuffer` |
 | 05 场域 | 提供 `WaterProximity` **派生场**（距离衰减）。住宅/金融通常正相关、工业负相关 | `WaterField.DistanceMeters` |
 | 06/07 建筑 | 每行 `waterPreference` 参与打分；水边首排禁止背对水 | 同上 + `slot.frontEdgeKind=Waterfront` |
+| **01 平整烘焙** | **水域 + 缓冲带格禁压禁填**（D-47 的水感知保护）：烘焙必须读 S2 掩码，否则自动层会把刚点出来的河道直接填掉 | `ctx.Mask` 的 `Water\|WaterBuffer` 位 |
 | 01 地形 | 水界读最终生效地表；本阶段**不改任何高程**（纯派生） | 重放次序第 2 步之后 |
 | 洪水（预留） | `floodExtend` / `FloodRisk` 位预留，本版不实现 | — |
 
 ## 5. 操作与交互
 
-### 5.1 加水 / 移除水（`WaterBrushTool`，工具栏「河流」）
+### 5.1 加水 / 移除水（`WaterBrushTool`）
+
+**接管权收进步骤②「雕山水」内部**（D-44）：面板第②步里有一对互斥的接管开关
+（雕刻笔刷 / 加水种子），读写都落在场景实例的序列化真源上（H-50／D-34）。
+右上角不再是工具轴，改成分层显隐 + 实测统计。
 
 | 输入 | 行为 | 呈现 |
 |---|---|---|
-| 工具栏选「河流」 | 写实例序列化字段 `waterToolActive=true`（真源，D-34）并**自动建/绑 `WaterNetworkAsset`**；与雕刻笔刷**写入侧互斥** | 进入水工具 |
-| 场景点一格（低于海平面） | 建种子（局部水位 = 无覆盖 ⇒ 用全局海平面）⇒ bump `RiverStroke` ⇒ S2 重洪泛 | 水面立刻出现 |
-| 场景点一格（**高于**海平面） | **不直接建**：挂起待确认 ⇒ 面板出**内联确认条**（格号/高程/海平面/将生成的局部水位）⇒ 用户点「生成陆上水体」才落种子，「取消」则什么都不建 | 黄字确认条 + 两按钮 |
-| 移除水模式下点一格 | 删**最近的一个**种子（切比雪夫 ≤ 16 格，超出则黄字提示"请点到种子附近"）；删的是**数据**（不是关启停） | 水随重洪泛退去 |
-| 面板种子列表 | 逐行可改：启用位、**格坐标**、**局部水位**（勾「局部」才生效，取消勾选=回落海平面）；可手动加一个（落在图幅中心）、可删除 | 光标处显示格号/生效高程/海平面 |
+| 第②步勾「加水种子」 | 写实例序列化字段 `waterToolActive=true` 并**自动建/绑 `WaterNetworkAsset`**；与雕刻笔刷**写入侧互斥** | 进入水工具 |
+| 场景点一格 | **无条件直接建种子**：水面高程 = 该格生效地表 + 默认水深（`waterDepth`，默认 4m）、半径 = 默认半径（`waterSeedRadius`，默认 120m）。<br>**没有任何询问分支**（没有全局基准就不存在"高/低"之分） | 水面立刻出现 |
+| 移除模式点一格 | 删**最近的一个**种子（切比雪夫 ≤ 16 格，超出则黄字提示"请点到种子附近"）；删的是**数据**（不是关启停） | 水随重洪泛退去 |
+| 面板种子列表 | 逐行可改：启用位、**格坐标**、**水面高程**、**扩散半径**；可手动加一个（落在图幅中心、高程按该处地面 + 默认水深算）、可删除 | 光标处显示格号 / 地面高程 / 将生成的水面高程 |
 
-⚠️ **绝不用 `EditorUtility.DisplayDialog`**（AGENTS §2.1.5：阻塞主线程 = 卡死唯一指令通道，
-校验器 `channel-discipline` 判 FAIL）。"问过才建"的语义由**面板内联确认条**满足 ——
-与本包 H-51「不可用必须可见」的黄字提示同风格，且改用户输入语义的动作仍然不可静默（v1 D-02-5 不变）。
+⚠️ v2 的「高处点击先询问 + 内联确认条」整套已删（`askBeforeLandlocked` / `landlockedDepth` /
+`PendingLandlocked` / `ConfirmPending` / `CancelPending`）。删除它不是省 UI，而是**它的前提消失了**；
+而它原本要防的风险（点山脊淹山谷）改由**半径**兜住 —— 半径是真的阻止，询问只是警告。
 
-待确认态存在**工具静态字段**。这**不违反 D-34**：D-34 管的是"接管态必须跨域重载存活"，
-而它是一次点击的瞬时中间态 —— 域重载丢掉只是"这次确认作废、用户重点一次"，无数据风险；
-做成序列化字段反而会把"我刚点了哪格"持久化进场景、污染用户文件。
+仍然适用：**绝不用 `EditorUtility.DisplayDialog`**（AGENTS §2.1.5：阻塞主线程 = 卡死唯一指令通道，
+校验器 `channel-discipline` 判 FAIL）。工具受阻的原因一律走面板黄字（`BlockReason`，H-51 纪律：
+静默阻断＝把归因成本推给用户）。
 
-**海平面即时读 `CityWindow.ActiveProject` 单源，不自存副本**（我第一版自存了一个从没赋值的字段
-⇒ 海平面恒读 0 ⇒ 该问的不问、该建成湖的建成不了；编译干净也抓不到）。
+⚠️ 地面高程必须**即时读显示层的场**（与 S2 洪泛同口径，H-53 同源），**不得缓存到工具的静态字段**：
+我第一版自存过 `_project = CityWindow.ActiveProject` 且另立一个从未赋值的字段 ⇒ 判据恒读 0 ⇒ 编译干净也抓不到。
+（该静态入口已于 v3 连同 `CurrentMode`/`ActiveRunner` 一并删除。）
 
 ### 5.2 实时性与撤销
 
-- 点一下 = 一次 `MarkWaterChanged()`（bump 一次，不叠第二次；`TouchWaterAsset` 与 `CommitSeed` 各自只走一条路径）。
+- **一个提交点 = 一次 bump**：`CommitSeed` / `RemoveNearestSeed` / 面板每处种子改动都走 `TouchWaterAsset`，
+  内部 `SetDirty + SaveAssets + water.CommitChange(脏盒) + SettleNow()`。**不得再补 `_terrain.MarkWaterChanged()`**
+  ——那是"记在场景组件上"的旧写法，会叠成双跑白算一轮洪泛（v2 实测就存在这种双 bump）。
+- **即时结算（D-45）**：`SettleNow()` 让滑条**松手那一帧**、勾选/按钮/失焦**当场**结束 250ms 合并窗口。
+  该窗口本意只合成连续 Ctrl+Z（A-17），而 `Scan()` 每检出差异就重拨计时 ⇒ 拖滑条**全程**不结算，
+  正是用户反馈②「数值变更没有及时重建」的根因。撤销链路仍走窗口。
 - 实测成本（8km / 400 万格）：洪泛 **2~152ms**（随淹水比例）、缓冲 **2~9ms**、清位 2ms；距离场惰性 ⇒ 不在链路里。
   无种子时 `WaterStage` 早退，**不画水完全不影响手感**。
-- 一笔（一次点击）= 一条 `Undo`：`Undo.RecordObject(water)` + `SetDirty` + `SaveAssets` 都在唯一提交点 `CommitSeed` 内。
-
-### 5.3 陆上水体（用户裁定的四步）
-
-高于海平面的点 ⇒ 内联确认 ⇒ 以 `点击点高程 + 默认水深` 建局部水位种子。
-存在理由：只有全局单水位时，内陆高原上永远做不出湖（除非把盆底挖到低于全球海平面，那不合理）。
-默认水深可调（0.5~60m，默认 4m）；「高处点击先询问」可关（关 ⇒ 直接生成并打日志，不再静默做主但会留下痕迹）。
+- **一笔（一次点击）= 一条 Undo**，且**撤销必须能看见**：`Undo.RecordObject(water)` 之后写数据，
+  而脏位记在 `water` **自己的账本**上 ⇒ 撤销把内容与序列号一起还原 ⇒ Tracker 扫到差异 ⇒ 水面回退。
+  判据 `Undo_Restores_Water_Seeds_And_Their_Ledger`（见 §6 的 readonly 教训）。
 
 ## 6. 数据编辑与持久化
 
 | 数据 | 载体 | 入 git | 撤销 | 备注 |
 |---|---|---|---|---|
-| `seaLevel` / `waterBuffer` | `CityProject` | ✅ | ✅ | 走 `RiverStroke`，**不走** `WorldParam`（§2.1） |
-| 种子列表 | `WaterNetworkAsset` | ✅ | 单次点击级 | 固定路径 `Sample/Sculpt/WaterNetwork.asset`（D-35） |
-| 水掩码 / 缓冲 / 水面 mesh | ❌ 派生（内存 + `HideAndDontSave`） | — | — | 逐格属性入库会因改水位而失效，且资产膨胀（§2.2 理由） |
+| `waterBuffer` | `CityProject` | ✅ | ✅ | 走 `RiverStroke`，**不走** `WorldParam`（§2.1） |
+| 种子列表 + **账本** | `WaterNetworkAsset`（`IIntentTracked`） | ✅ | 单次点击级 | 固定路径 `Sample/Sculpt/WaterNetwork.asset`（D-35） |
+| 水掩码 / 缓冲 / 水面 mesh | ❌ 派生（内存 + `HideAndDontSave`） | — | — | 逐格属性入库会因改高程而失效，且资产膨胀 |
 | 距离场 | ❌ 内存，**惰性** | — | — | 只在有人读时构建（§3.4） |
 
-## 7. 模块内决策（v2）
+**两条必须守住的序列化纪律（都是本轮用真实缺陷换来的，登记 D-46）**：
+
+1. **列表字段禁止 `readonly`**。`[SerializeField] readonly List<T>` 会被 Unity 序列化管线**整字段跳过**，
+   磁盘 `.asset` 里连 `seeds:` 这一行都不存在（本轮实测：三张层资产全都只剩 `schemaVersion`）⇒
+   数据从不落盘。而且 `Undo.RecordObject` 的快照**就是序列化数据**，字段没序列化就进不了快照 ⇒
+   **撤销必然不生效**。所以"可序列化"不是卫生问题，是撤销能力的前置条件。
+2. **账本必须长在"会被撤销还原的那个对象"上**。本资产自带 `stableId + ledger` 并实现 `IIntentTracked`；
+   脏位记在自己账本上，Tracker 的通道检才能看到 Undo 的回滚。
+
+**探针纪律（判"是否入库"用哪个工具）**：用 `SerializedObject`（走的就是写 YAML 那条管线），
+或直接读**磁盘上的 .asset 文本**。
+⚠️ 两个反面教材：① `JsonUtility.ToJson` 同样看不到这些字段，但**它给出的"字段不见了"是真信号**——
+我一度把它**编造解释**成"JsonUtility 不可靠、实际入库正常"而把数据丢失级缺陷放过去；
+② **"存完再 `LoadAssetAtPath` 读回来比对"不构成落盘证据**：拿回的是同一个内存实例，值必然相等，
+对是否落盘零信息量（一眼像往返、实则恒真）。
+
+## 7. 模块内决策
 
 | 编号 | 决策 | 备选 | 理由 |
 |---|---|---|---|
-| **D-42**（升为 DESIGN 全局决策） | 水 = 低于水位的连通域；只存种子、水界全派生 | v1 的画线+下切+D8 推导 | 删掉一整套正确性负担；水与地形永不一致的问题不可能发生 |
-| D-02-1 | 只存种子，派生全重算 | 存逐格水属性 | 改水位/改地形都要重算才自洽；逐格属性入库必然与地形分叉 |
-| D-02-2 | 水体与雕刻 delta、平整滤镜**各自一物一资产** | 合用一个资产 | 撤销粒度与版本迁移互不污染（同 D-41 的分离逻辑） |
-| D-02-3 | 洪泛 4 邻接、缓冲 8 邻接 | 两者统一 | 连通性防对角泄漏 vs 距离带几何即方窗（各有一条独立参考实现断言） |
-| D-02-4 | `WaterProximity` 是**派生场**，不是场域类型 | 新增 `type=Water` | 场域表达用户意图、派生场表达客观事实；混一起用户会以为能用笔刷造湖并当意图编辑（v1 保留） |
-| D-02-5 | 改用户输入语义的动作（高处生成陆上水体）必须**问过才做**，可撤销 | 静默生成 | 仍是 v1 结论；实现形态从模态框改为面板内联（§2.1.5 禁阻塞） |
-| D-02-6 | 水面**只铺四角全水的 quad**，接受岸线误差 = 一个显示步 | 顶点 alpha 羽化 | 本包 shader 不透明 ⇒ 羽化会把无水角画成实心蓝盖住整片地（实测会犯的错） |
+| **D-42**（DESIGN） | 水 = 低于水位的连通域；只存种子、水界全派生 | v1 的画线+下切+D8 推导 | 删掉一整套正确性负担；水与地形不一致的问题不可能发生 |
+| **D-43**（DESIGN，**取代 D-42 的 ①②⑤**） | **每颗种子自带水面高程 + 扩散半径；删全局海平面、删 `+∞` 哨兵、删"高处先询问"整套** | 保留海平面 + 局部水位 + 询问 | 全局基准是冗余的第二份状态且是询问复杂度的唯一来源；半径才是真正阻止"点山脊淹山谷"的机制（询问只是警告） |
+| D-02-1 | 只存种子，派生全重算 | 存逐格水属性 | 改高程/改地形都要重算才自洽；逐格属性入库必然与地形分叉 |
+| D-02-2 | 水体与雕刻 delta、平整滤镜**各自一物一资产**，且**各自带账本** | 合用一个资产 / 账本记在场景组件 | 撤销粒度互不污染；账本不记在被撤销的对象上＝撤销不可见（本轮实测代价） |
+| D-02-3 | 洪泛 4 邻接（半径限**轮数**）、缓冲 8 邻接 | 两者统一 / 半径按欧氏圆 | 连通性防对角泄漏 vs 距离带几何即方窗；欧氏裁剪会截断绕山的下游河 |
+| D-02-4 | `WaterProximity` 是**派生场**，不是场域类型 | 新增 `type=Water` | 场域表达用户意图、派生场表达客观事实；混一起用户会以为能用笔刷造湖并当意图编辑 |
+| ~~D-02-5~~ | ~~改用户输入语义的动作必须问过才做~~ | — | **已被 D-43 撤销**：没有全局基准就没有"高/低"之分，询问的前提不成立；风险改由半径兜住 |
+| D-02-6 | 水面**只铺四角全水的 quad**，接受岸线误差 = 一个显示步 | 顶点 alpha 羽化 | 本包 shader 不透明 ⇒ 羽化会把无水角画成实心蓝盖住整片地 |
 | D-02-7 | 距离场**按需构建** | S2 每轮算 | 266ms 与淹水面积无关，而消费者 S5/S7 未实现 ⇒ 不能挂进每笔链路 |
 | D-02-8 | 缓冲带用**逐轮边界 BFS** | 每水格扫方窗 | 310ms → 2~9ms，且用逐格等价断言证明结果不变（改算法必须证明结果相同，不能只说更快） |
+| D-02-9（v3 新增） | 「算水顶点」与「取水面高程」**同一判据** | 第一遍按掩码、第二遍填高程时跳过 | 后者会留下停在 (0,0,0) 的顶点 ⇒ 水面上一条射向世界原点的蓝带 |
 
 ### 7.1 v1 → v2 删除清单（勿在后续会话里"顺手补回来"）
 
@@ -214,39 +273,54 @@ v1 的 `LakeStamp`、"河在湖边终止（`isTidal`）"、"湖水面取最低�
 |---|---|---|
 | D8 流向 + Planchon-Darboux 填洼 | **删** | 填洼是为"水往哪流"服务；洪泛不需要流向 |
 | 汇流累积 `accumulationThreshold=220格` | **删** | "成河阈值"是给自动提取用的；现在由用户点种子决定 |
-| Strahler 阶 + `effectiveWidth = bedWidth·0.75^…` | **删** | 宽度不再由阶驱动；水形状 = 地形 ∩ 水位 |
+| Strahler 阶 + `effectiveWidth = bedWidth·0.75^…` | **删** | 宽度不再由阶驱动；水形状 = 地形 ∩ 水面高程 ∩ 半径 |
 | 剖面下切（`bedWidth/depth/bankSlope/shoulderWidth/profileCurve`） | **删** | 河床形状由山水笔刷直接雕（v1 也是"先雕山水"工作流）；两套参数会互相覆盖 |
 | 沿线单调下降检查 + 强制补下游 + `role=Auto` 虚线 + 右键接受 | **删** | 洪泛定义下"断头河"不可能出现，整条补救链失去存在理由 |
 | 多边形 union / marching squares 岸线（v1 §9 的"工作量黑洞"） | **删** | 水面按显示网格铺 quad、边界由掩码给出，不做矢量多边形布尔 |
 | `WaterMask` 逐格入库（00 §2.4 的 Water 位仍是派生位） | 保持派生 | 掩码位照写，但**不入库**；`NoWater` 才是入库的意图位 |
 | `WaterMask` 掩码位 / `WaterBuffer` / `NoWater` | **保留** | 00 已登记的位语义不变，消费方接口不受影响 |
 
-## 8. 验收（v2 实测状态）
+### 7.2 v2 → v3 删除清单（同样勿补回）
+
+| v2 机制 | 处置 | 理由 |
+|---|---|---|
+| `CityProject.seaLevel` / `SetSeaLevel` / 面板海平面滑条 | **删** | 全局基准与"每种子一个高程"重复，是第二份状态（D-43） |
+| `WaterSeed.NoLocalLevel = +∞` / `ResolveLevel()` / 面板「局部」复选框 | **删** | 哨兵比较走 `Approximately` ⇒ `∞−∞=NaN` ⇒ 判不相等 ⇒ 空重洪泛 |
+| `askBeforeLandlocked` / `landlockedDepth` / `PendingLandlocked` / `ConfirmPending` / `CancelPending` / 内联确认条 | **删** | 无全局基准即无"高/低"之分；风险改由扩散半径兜住（真的阻止，而非警告） |
+| `WaterField.SeaLevelUsed` | **删** | 逐格高程已足够；视图重铺判据改用 `MaxWaterLevel` |
+| `_terrain.MarkWaterChanged()` 作为种子提交的 bump 入口 | **改为 `water.CommitChange()`** | 脏位必须记在被 Undo 还原的那个对象上（D-46） |
+
+## 8. 验收（v3 实测状态）
 
 | # | 事实 | 证据 | 状态 |
 |---|---|---|---|
-| A-2-1 | 点低洼处立刻出水；抬地形/降海平面 ⇒ 水自动退（无残留、无需手动清） | 隔离管线端到端：海平面 0→10m ⇒ 水 **21484 → 90000** 格；删唯一种子 ⇒ Water **0** | ✅ |
-| A-2-2 | 只有严格低于水位的格成水（等于不算）；无种子即无水 | `Flood_Marks_Only_Cells_Strictly_Below_Level`、`Empty_Seed_List_Produces_No_Water…` | ✅ |
+| A-2-1 | 点低洼处立刻出水；抬地形 ⇒ 水自动退（无残留、无需手动清） | 隔离管线端到端 + 面板即时结算（D-45）；⚠️ 涨落语义改由种子高程驱动，v2 的海平面扫描证据已随参数失效 | ✅ |
+| A-2-2 | 只有严格低于水面高程的格成水（等于不算）；无种子即无水 | `Flood_Marks_Only_Cells_Strictly_Below_Seed_Level`、`Empty_Seed_List_Produces_No_Water_Even_Where_Terrain_Is_Low` | ✅ |
 | A-2-3 | 4 邻接不对角泄漏（含"开缺口必贯通"对照） | `Flood_Uses_4_Neighbors_And_Never_Leaks_Through_Diagonal_Ridge` | ✅ |
-| A-2-4 | 局部水位支持高原湖：全局海平面下全图无水，带局部水位才成湖；水面按该格水位铺 | `Local_Level_Makes_Landlocked_Lake_Above_Sea_Level`、`Local_Level_Per_Cell_Drives_Surface_Height…` | ✅ |
-| A-2-5 | `NoWater` 挡住洪水且不越墙；清理派生位不动 `NoWater`/其余意图位 | `NoWater_Flag_Blocks_Flood_From_Crossing`、`ClearWaterMask_Keeps_Other_Intent_Bits` | ✅ |
-| A-2-6 | 缓冲带与朴素方窗参考实现**逐格等价**、水/缓冲互斥、不越禁水墙 | `Buffer_Matches_Naive_Square_Window_Reference`、`Buffer_Does_Not_Extend_Past_A_Water_Barrier` | ✅ |
-| A-2-7 | 重跑幂等（visited 每轮清零）；高水位种子可越过先淹的格扩展 | `Reflood_Produces_Identical_Area…`、`Higher_Seed_Can_Spread_Past…` | ✅ |
-| A-2-8 | 改海平面不重跑噪声：`DirtyOf(RiverStroke)=River`、`Expand` 不含 `Terrain/Seed/World`、同值与 NaN/∞ 不 bump | `Sea_Level_Change_Uses_River_Channel_And_Never_Reruns_Noise` | ✅ |
-| A-2-9 | 水面几何：绕序朝上、法线朝上、顶点=水位+抬升、无孤立顶点、增量二次写入不抛、无水即空几何 | `WaterViewTests` 10 条 | ✅ |
-| A-2-10 | 一次点击 = 一条 undo；Ctrl+Z 后种子与地形同时回滚 | 端到端已验证单次 bump；**实机 Ctrl+Z 待用户确认**（SceneView 交互无从 EditMode 断言） | ⏳ |
-| A-2-11 | 道路穿水域 100% 有桥/涵洞且桥面 ≥ 水面 + `bridgeClearance` | 依赖 S3 路网（未实现）⇒ 顺延 | ⏳ |
-| A-2-12 | `waterBuffer` 内无任何 slot/建筑 | 依赖 S4/S6（未实现）⇒ 顺延 | ⏳ |
-| A-2-13 | 拖动海平面滑条不产生资产写盘风暴（只重算水面） | 实测每笔链路洪泛 2~152ms、无种子早退；⚠️ **滑条连续拖动的合并窗口未单独量测** | ⏳ |
-| A-2-14 | 面板内联确认代替模态框（§2.1.5 合规）；本包 `DisplayDialog` 残留 = 0 | 校验器 `channel-discipline` 本包 0 条；ACCEPTANCE 条目 107 | ✅ |
+| A-2-4 | **半径限洪泛轮数**：默认小半径下点山脊只成小天池、不淹山谷；0=不限则淹满；半径按步数不按欧氏直线 | `Radius_Limits_Flood_Rounds_And_Unlimited_Spreads_Farther`（期望 2r²+2r+1）、`Default_Radius_Stops_Ridge_Seed_From_Drowning_The_Whole_Valley`、`Radius_Counts_Flood_Steps_Not_Straight_Line_Distance` | ✅ |
+| A-2-5 | 种子自带高程 ⇒ 高原盆地里直接成湖，**不需要任何全局基准** | `Plateau_Basin_Holds_Water_With_No_Global_Reference`、`Per_Cell_Surface_Height_Drives_Vertex_Not_Any_Global_Reference` | ✅ |
+| A-2-6 | `NoWater` 挡住洪水且不越墙；清理派生位不动 `NoWater`/其余意图位 | `NoWater_Flag_Blocks_Flood_From_Crossing`、`ClearWaterMask_Keeps_Other_Intent_Bits` | ✅ |
+| A-2-7 | 缓冲带与朴素方窗参考实现**逐格等价**、水/缓冲互斥、不越禁水墙；半径换算向上取整且 NaN/0/负=不限 | `Buffer_Matches_Naive_Square_Window_Reference`、`Buffer_Does_Not_Extend_Past_A_Water_Barrier`、`Radius_Cells_Converts_Up_And_Treats_NonPositive_As_Unlimited` | ✅ |
+| A-2-8 | 重跑幂等（visited 每轮清零）；高水位种子可越过先淹的格扩展；重叠格高程取更高值 | `Reflood_Produces_Identical_Area_Without_Stale_Visited_Marks`、`Higher_Seed_Can_Spread_Past_Cells_Already_Wet_From_Lower_Seed` | ✅ |
+| A-2-9 | 改水只脏 `River`：`Expand` 不含 `Terrain/Seed/World`、含 `Flatten`；S2 认领 `Flatten`；同值与 NaN/∞ 不 bump | `Water_Changes_Use_River_Channel_And_Never_Rerun_Noise` | ✅ |
+| A-2-10 | 水面几何：绕序朝上、法线朝上、顶点=该格高程+抬升、无孤立顶点、增量二次写入不抛、无水即空几何、**取不到高程不得留塌陷顶点** | `WaterViewTests` 14 条（含 `…Draws_No_Collapsed_Vertex` 与 `No_Vertex_Falls_Back_To_World_Origin`） | ✅ |
+| A-2-11 | **种子改动可撤销且撤销被扫描器看见**：内容与序列号一起回滚；列表与账本真的写进磁盘 `.asset` | `Undo_Restores_Water_Seeds_And_Their_Ledger`、`Water_Asset_Is_Intent_Registered_And_Its_Ledger_Carries_The_Dirty_Channel`、`Seed_And_Ledger_Actually_Write_Into_Asset_Yaml_On_Disk` | ✅ |
+| A-2-12 | 种子列表语义：同格覆盖非追加、目标被占拒移动、非法值拒收、指纹认内容且**含半径** | `Seed_List_Overwrites_Rejects_Invalid_And_Fingerprints_Content` | ✅ |
+| A-2-13 | 道路穿水域 100% 有桥/涵洞且桥面 ≥ 水面 + `bridgeClearance` | 依赖 S3 路网（未实现）⇒ 顺延 | ⏳ |
+| A-2-14 | `waterBuffer` 内无任何 slot/建筑 | 依赖 S4/S6（未实现）⇒ 顺延 | ⏳ |
+| A-2-15 | 本包无阻塞弹窗（§2.1.5 合规），`DisplayDialog` 残留 = 0 | 校验器 `channel-discipline` 本包 0 条；ACCEPTANCE 条目 107（v2 记录，本轮仍为 0） | ✅ |
+| A-2-16 | **实机手感**：点低洼立刻出水、抬地形水退、默认半径下点山脊只成小天池、拖滑条松手即刷新 | **必须用户实机确认**（SceneView 交互与观感无从 EditMode 断言） | ⏳ |
 
 ## 9. 风险与已知代价
 
 - **岸线粒度 = 显示步**（8km 档 16m）：D-02-6 的取舍。单格大小的水塘画不出来（四角凑不齐全水）。
-- **全局单水位的固有局限**已被局部水位缓解，但不等于真水文：山脊两侧的湖各自独立、互不"连通成河"，
-  需要用户自己点种子或把鞍部雕低。这是"所见即所得"的代价，不伪装成物理。
-- **不做真实水文**：无流量、无季节、无沉积、无汇流累积。水面高程是常数（每种子一个值），不是流场。
-- **烘焙滤镜与水的相互作用**：自然化软化会抬高洼地 ⇒ 水自动萎缩。这是**期望行为**（水跟生效地表走），
-  但用户可能觉得"烘焙把我的湖填掉了"；面板的水体计数（`WaterCells`）+「关滤镜看原样」是排查路径。
+- **默认半径会限制大水体**：想做海湾/大湖必须手动把那颗种子半径设成 0。这是"点哪里都不用问"换来的显式代价
+  （我在用户拍板前当面指出、被接受）。
+- **半径是"洪泛步数"不是现实水文学**：它不表达流量或汇水面积，只是一个刹车参数。不做真实水文：
+  无流量、无季节、无沉积、无汇流累积；水面高程是常数（每种子一个值），不是流场。
+- **山脊两侧的湖各自独立、互不"连通成河"**，需要用户自己点种子或把鞍部雕低。这是"所见即所得"的代价，不伪装成物理。
+- **烘焙滤镜与水的相互作用**（v3 起有保护，但仍需理解）：烘焙前 S2 的掩码会禁止压平水域与缓冲带（D-47），
+  所以"烘焙把我的湖填掉"不再会发生；但**自然化软化仍会避开手绘码只避水体码**这一口径若被改动，
+  水陆交界仍可能移动。排查路径：面板右上角「水」芯片的淹水格数 + 「平整」芯片的改动格数 + 关滤镜看原样。
 - **水界与 mesh 的一致性依赖 S2 自组装地表**（§3.1 尾注）：推翻 D-41 就必须同步改这里，否则水界滞后一轮。
-- **v1 的"人工 stroke 覆盖格强制成河 + 下游阈值降到 1"** 这套人工优先逻辑在 v2 下不需要：种子本身就是水体的定义源。
+- **v1 的"人工 stroke 覆盖格强制成河 + 下游阈值降到 1"** 这套人工优先逻辑在 v2/v3 下都不需要：种子本身就是水体的定义源。

@@ -36,23 +36,35 @@ namespace Collin.CityMap
             if (!TerrainView.ChunkVertexRect(in grid, chunk, effectiveChunkSize,
                                              out var i0, out var i1, out var j0, out var j1)) return g;
 
+            // 第一遍：标记哪些显示顶点是"水顶点"。判据是<b>两件事同时成立</b>：
+            // 该逻辑格是水、<b>且能取到水面高程</b>。绝不能只判 IsWater —— 若某个水顶点在后面填高程时
+            // 被跳过，它所属的 quad 仍会被画，结果是一个顶点落在世界原点的<b>塌陷三角形</b>
+            // （表现为水面上一条从原点射出的蓝带，极难归因）。两处判据必须是同一个表达式。
             var cols = i1 - i0 + 1;
             var rows = j1 - j0 + 1;
             var r = grid.DisplayStep;
             var do0 = TerrainView.DisplayOrigin(in grid);   // 与地形同一取样基准（H-40 同口径）
             var colsLogic = grid.Columns; var rowsLogic = grid.Rows;
 
-            // 第一遍：标记哪些显示顶点是"水顶点"（其所属逻辑格为水），并数出可铺的 quad
             var vertWater = new bool[cols * rows];
-            var quadOk = new bool[(cols - 1) * (rows - 1)];
-            var quadCount = 0;
+            var vertLevel = new float[cols * rows];          // 同步存下高程，第二遍直接取用（不再重算判据）
             for (var jj = 0; jj < rows; jj++)
             {
                 var cz = CellIndex(do0.y + (j0 + jj) * r, grid, true);
                 for (var ii = 0; ii < cols; ii++)
-                    vertWater[jj * cols + ii] = cz >= 0 && cz < rowsLogic
-                        && wf.IsWater(Clamp(CellIndex(do0.x + (i0 + ii) * r, grid, false), colsLogic), cz);
+                {
+                    var src = jj * cols + ii;
+                    if (cz < 0 || cz >= rowsLogic) continue;
+                    var cx = Clamp(CellIndex(do0.x + (i0 + ii) * r, grid, false), colsLogic);
+                    if (!wf.IsWater(cx, cz)) continue;
+                    var lv = wf.WaterSurfaceAt(cx, cz);
+                    if (float.IsNegativeInfinity(lv)) continue;   // 无水面的格：不算水顶点（见上）
+                    vertLevel[src] = lv;
+                    vertWater[src] = true;
+                }
             }
+            var quadOk = new bool[(cols - 1) * (rows - 1)];
+            var quadCount = 0;
             for (var jj = 0; jj < rows - 1; jj++)
                 for (var ii = 0; ii < cols - 1; ii++)
                 {
@@ -99,15 +111,11 @@ namespace Collin.CityMap
                     var src = jj * cols + ii;
                     if (remap[src] < 0) continue;
                     var wx = do0.x + (i0 + ii) * r;
-                    var cz = Clamp(CellIndex(wz, grid, true), rowsLogic);
-                    var cx = Clamp(CellIndex(wx, grid, false), colsLogic);
-                    // 水面高度取<b>该格的水面</b>（含局部水位）：高原湖必须画在自己的水位上，
-                    // 画到全局海平面就会埋进地形里看不见（用户会读成"加了水但没水面"）。
-                    var level = wf.WaterSurfaceAt(cx, cz);
-                    if (float.IsNegativeInfinity(level)) level = wf.SeaLevelUsed;
-
+                    // 水面高度取<b>该格自己的水面</b>（02 二次改版：每颗种子带自己的高程）：
+                    // 天池必须画在自己的高程上，一律画在同一平面就会埋进地形里看不见
+                    // （用户会读成"加了水但没水面"）。判据与 vertWater 同源（第一遍已存好高程）。
                     var idx = remap[src];
-                    g.Positions[idx] = new Vector3(wx, level + SurfaceLift, wz);
+                    g.Positions[idx] = new Vector3(wx, vertLevel[src] + SurfaceLift, wz);
                     g.Normals[idx] = Vector3.up;               // 水面恒水平（不跟地形法线，否则被染成坡形）
                     g.Uvs[idx] = new Vector2(wx / r, wz / r);
                     g.Colors[idx] = WaterColor;

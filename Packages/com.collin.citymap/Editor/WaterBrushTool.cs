@@ -36,15 +36,21 @@ namespace Collin.CityMap.EditorTooling
             SceneView.duringSceneGui += OnSceneGUI;
         }
 
-        /// <summary>水工具是否接管场景视图（真源=实例序列化字段，D-34，理由同笔刷 H-50）。</summary>
+        /// <summary>
+        /// 水工具是否接管场景视图（真源=实例序列化字段，D-34，理由同笔刷 H-50）。
+        /// <para>⚠️ 必须走 <see cref="IntentRegistry"/> 而非 <c>FindObjectsByType</c>，两个理由：
+        /// ① 带 <c>FindObjectsSortMode</c> 的重载在 Unity 6 已废弃（CS0618 ⇒ 自造 warning 顶爆 §1.6b 归零门禁）；
+        /// ② 更本质的是<b>与 <c>SculptBrushTool.ToolActive</c> 同一口径</b> —— 两个抢同一颗左键的工具
+        /// 若一个按注册表选、另一个按场景物体顺序选，多实例时会出现"面板显示 A 接管、笔刷操作 B"。
+        /// 注册表要求 <c>enabled</c>（不要求 activeInHierarchy）：编辑态下未打开的场景里的实例仍是有效意图对象。</para>
+        /// </summary>
         static bool ToolActive(out CityTerrain t)
         {
             t = null;
-            foreach (var cand in Object.FindObjectsByType<CityTerrain>(
-                         FindObjectsSortMode.None))          // Editor 里低频事件才跑，规模可接受
+            foreach (var o in IntentRegistry.All)
             {
-                if (cand == null || !cand.WaterToolActive) continue;
-                if (!cand.gameObject.activeInHierarchy) continue;
+                var cand = o as CityTerrain;
+                if (cand == null || !cand.enabled || !cand.WaterToolActive) continue;
                 t = cand;
                 return true;
             }
@@ -106,84 +112,33 @@ namespace Collin.CityMap.EditorTooling
                 return;
             }
 
-            // 海平面<b>即时</b>读面板单源：不缓存到本地字段。缓存会在"面板换了项目、
-            // 实例身份却没变"时过期（TryResolveGrid 只在实例身份变化时跑）⇒ 又是一处两份状态。
-            var proj = CityWindow.ActiveProject;
-            var sea = proj != null ? proj.SeaLevel : 0f;
+            // 02 二次改版（用户 2026-11-05 裁定「海平面不用单独做了」）：
+            // 点一格 = 建一颗"高程 = 该格地面 + 默认水深、带扩散半径"的种子，<b>什么都不问</b>。
+            // 原先那套"高于海平面先询问是否生成陆上水体 + 内联确认条"整块删除：
+            // ① 没有全局基准就没有"高/低"之分，询问的前提不成立；
+            // ② 半径已经把"点山脊淹山谷"这个风险兜住了，不需要再用警告来防。
             var h = EffectiveSurfaceHeight(cx, cz);
-
-            // 用户裁定四步：高于海平面 ⇒ 先问，不静默做主（改用户输入语义的高风险动作，同 D-02-5）。
-            // <b>但绝不能用 EditorUtility.DisplayDialog</b>（AGENTS §2.1.5：阻塞主线程 = 卡死指令通道，
-            // 校验器 channel-discipline 项直接判 FAIL）。改成<b>面板内联确认</b>：这里只把待确认内容挂起来，
-            // 由 CityWindow.DrawWaterPanel 画一条「生成陆上水体 / 取消」的确认条。
-            // 语义与用户裁定的第 2、3 步一致（仍是"问过才建"），只是 UI 形态从模态框换成面板内联 ——
-            // 与本包既有风格统一（H-51 的 BlockReason 黄字就是内联提示）。
-            if (h >= sea && _terrain.AskBeforeLandlocked)
-            {
-                // 新点击<b>作废</b>上一次的待确认（否则面板确认条会指向已经不是用户意图的旧格子）
-                Pending = new PendingLandlocked { cx = cx, cz = cz, height = h, sea = sea, Valid = true };
-                BlockReason = null;
-                return;                     // <b>不建种子</b>：等用户在面板确认
-            }
-
-            Pending = default;              // 这次是"直接建"或"取消询问"路径，清掉可能挂着的旧待确认
-            float localLevel = WaterSeed.NoLocalLevel;
-            if (h >= sea)
-            {
-                localLevel = h + _terrain.LandlockedDepth;
-                Debug.Log($"{PackageIdentity.LogPrefix} 高于海平面的点击按默认水深自动生成陆上水体" +
-                          $"（局部水位 {localLevel:0.##}m；面板可打开「高处点击先询问」改为手动确认）");
-            }
-            CommitSeed(water, cx, cz, localLevel, h);
-        }
-
-        /// <summary>待确认的陆上水体（点高处产生，用户在面板确认后才落种子）。</summary>
-        internal struct PendingLandlocked
-        {
-            public int cx, cz;
-            public float height, sea;
-            public bool Valid;
+            CommitSeed(water, cx, cz, h + _terrain.WaterDepth, _terrain.WaterSeedRadius, h);
         }
 
         /// <summary>
-        /// 待确认态存在<b>工具静态字段</b>。这<b>不违反 D-34</b>：D-34 管的是「接管态必须跨域重载存活」，
-        /// 而这里是一次点击的瞬时中间态 —— 域重载丢掉只是"这次确认作废、用户重点一次"，无数据风险。
-        /// 若把它做成序列化字段，反而会把"我刚点了哪格"持久化进场景，污染用户文件。
-        /// </summary>
-        internal static PendingLandlocked Pending;
-
-        internal static bool HasPending => Pending.Valid;
-
-        /// <summary>取消待确认（面板「取消」按钮 / 重新点击他处时调用）。</summary>
-        internal static void CancelPending() => Pending = default;
-
-        /// <summary>确认生成：以局部水位落种子（面板「生成陆上水体」按钮调用）。</summary>
-        internal static void ConfirmPending()
-        {
-            var p = Pending;
-            Pending = default;
-            if (!p.Valid || _terrain == null) return;
-            var water = _terrain.Water;
-            if (water == null) { BlockReason = "缺水体资产：点面板「新建水体种子列表」"; return; }
-            CommitSeed(water, p.cx, p.cz, p.height + _terrain.LandlockedDepth, p.height);
-        }
-
-        /// <summary>
-        /// 落种子的<b>唯一</b>提交点：撤销登记 → 写种子 → 存盘 → bump 一次 River。
+        /// 落种子的<b>唯一</b>提交点：撤销登记 → 写种子 → 存盘 → 提交一次脏位（记账落在<b>种子资产</b>上）。
         /// <para>存盘放这里而不是让调用方各自补：否则"场景里点了水、重开工程没了"与
         /// "面板按钮点了两遍 bump ⇒ 白跑一次全图洪泛"会同时出现（两条路径都曾有此问题）。</para>
+        /// <para><b>不再调 <c>_terrain.MarkWaterChanged()</c></b>：那是"记在场景组件上"的旧写法，
+        /// 撤销只还原本资产 ⇒ 组件账本不动 ⇒ Tracker 看不见。现在由
+        /// <see cref="WaterNetworkAsset.CommitChange"/> 直接把脏位记在被撤销的那个对象上。</para>
         /// </summary>
-        static void CommitSeed(WaterNetworkAsset water, int cx, int cz, float localLevel, float height)
+        static void CommitSeed(WaterNetworkAsset water, int cx, int cz, float level, float radiusMeters, float height)
         {
             Undo.RecordObject(water, "添加水");
-            water.AddSeed(cx, cz, localLevel, out _);
+            var added = water.AddSeed(cx, cz, level, radiusMeters, out _);
             EditorUtility.SetDirty(water);
             AssetDatabase.SaveAssets();
-            _terrain.MarkWaterChanged();              // bump River ⇒ S2 重洪泛（全程只此一次）
+            water.CommitChange(WaterNetworkAsset.SeedBounds(_grid, cx, cz));
             BlockReason = null;
-            Debug.Log($"{PackageIdentity.LogPrefix} 加水种子 ({cx},{cz}) 高程 {height:0.##}m" +
-                      (float.IsPositiveInfinity(localLevel)
-                          ? " 用全局海平面" : $" 局部水位 {localLevel:0.##}m（陆上水体）"));
+            Debug.Log($"{PackageIdentity.LogPrefix} {(added ? "加水" : "改水")}种子 ({cx},{cz})" +
+                      $" 地面 {height:0.##}m → 水面 {level:0.##}m 半径 {(radiusMeters <= 0f ? "不限" : radiusMeters.ToString("0.#") + "m")}");
         }
 
         static void RemoveNearestSeed(WaterNetworkAsset water, int cx, int cz)
@@ -204,12 +159,13 @@ namespace Collin.CityMap.EditorTooling
                 return;
             }
             Undo.RecordObject(water, "移除水");
+            var gone = water[best];
             water.RemoveSeed(bestId);
             EditorUtility.SetDirty(water);
             AssetDatabase.SaveAssets();                   // 与 CommitSeed 一致：只 SetDirty 不保证落盘
-            _terrain.MarkWaterChanged();
+            water.CommitChange(WaterNetworkAsset.SeedBounds(_grid, gone.cx, gone.cz));
             BlockReason = null;
-            Debug.Log($"{PackageIdentity.LogPrefix} 移除水种子（原格距 {bestD}）");
+            Debug.Log($"{PackageIdentity.LogPrefix} 移除水种子（原格 ({gone.cx},{gone.cz})，点处格距 {bestD}）");
         }
 
         // ───────────────────────── 取场与落点（与笔刷同口径） ─────────────────────────
@@ -245,10 +201,12 @@ namespace Collin.CityMap.EditorTooling
                     if (cg.CellCount > 0 && cg.CellSize > 1e-5f) { _grid = cg; _hasGrid = true; }
                 }
             }
-            // 海平面<b>不</b>在此缓存：项目只从面板的单一公开属性即时读（见 HandleClick）。
-            // 我第一版在这里存了 `_project = CityWindow.ActiveProject` 且另立了一个从未赋值的
-            // `ActiveProject` 字段 ⇒ 海平面恒读 0 ⇒ 该问的"陆上水体"不问。教训：
-            // 同一状态存两份必然分叉（§0.1），且 TryResolveGrid 只在实例身份变化时才跑，缓存会过期。
+            // ⚠️ 这里**不缓存任何项目/水位**（原注释记着上一版的教训，语义已随 02 二次改版变化，
+            // 但纪律本身不变，所以留下来）：我第一版在此存过 `_project = CityWindow.ActiveProject`，
+            // 而 TryResolveGrid 只在"实例身份变化"时跑 ⇒ 换项目后缓存过期，水工具读着旧基准做判断。
+            // 现在每颗种子自带水面高程，点击时只读<b>该格地面高程</b>（与 S2 同一口径，见 EffectiveSurfaceHeight），
+            // 不再需要任何全局基准 —— 也就没有第二份状态可以分叉（§0.1 原则2）。
+            // CityWindow.ActiveProject 这个静态入口已于 2026-11-06 删除，别加回来。
         }
 
         /// <summary>鼠标 → y=0 世界平面落点（纯几何，不依赖碰撞体，同笔刷 H-53 纪律）。</summary>

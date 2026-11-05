@@ -361,10 +361,16 @@ namespace Collin.CityMap
             // 正是我们刚在水面语义上立下的"改水位只重算水面与下游"承诺在自建路径被打破。
             var worldKey = WorldKey(proj);
             var profVer = profile.ManualVersion;
-            var terrVer = _terrain != null ? _terrain.ManualVersion : 0L;
+            // 手绘的账本在 delta 资产上（撤销还原的是那个资产，实例账本原地不动），
+            // 所以"地表是否变了"必须<b>同时</b>看实例与 delta 资产两处的序列号。
+            // 只看实例会让撤销在自建路径完全失效；只看资产会让 SetDelta/换 Profile 失效。
+            var ownDelta = _terrain != null ? _terrain.Delta : null;
+            var terrVer = unchecked((_terrain != null ? _terrain.ManualVersion : 0L)
+                                    ^ (ownDelta != null ? ownDelta.ManualVersion * 31L : 0L));
             var water = _terrain != null ? _terrain.Water : null;
+            // 水面输入 = 种子内容（坐标/高程/半径/启停）+ 全局缓冲带。
+            // 02 二次改版后<b>没有"全局海平面"这一项了</b>（原写法会引用已删字段而编译不过）。
             var waterKey = (water != null ? (long)water.ComputeValueKey() : 0L)
-                           ^ (long)(proj.SeaLevel * 1000f)          // 海平面也属于水面输入
                            ^ (long)(proj.WaterBufferMeters * 100f);
 
             var needCtx = _ownCtx == null
@@ -407,10 +413,15 @@ namespace Collin.CityMap
                                            : replayOnly ? DirtyBits.Flatten
                                                         : DirtyBits.River);   // 仅水体变：只重洪泛，不碰噪声/求解
             _ownRegion = null;
-            if (replayOnly && _terrain != null && _terrain.Ledger != null)
+            if (replayOnly)
             {
-                var b = _terrain.Ledger.BoundsOf(IntentKind.DeltaStroke);
-                if (b.size.x > 0f || b.size.z > 0f) _ownRegion = b;   // 只重建笔刷波及的 chunk
+                // 脏盒优先读 <b>delta 资产</b>的账本：撤销还原的就是它，实例那份不会回滚。
+                var led = ownDelta != null && ownDelta.Ledger != null ? ownDelta.Ledger : _terrain?.Ledger;
+                if (led != null)
+                {
+                    var b = led.BoundsOf(IntentKind.DeltaStroke);
+                    if (b.size.x > 0f || b.size.z > 0f) _ownRegion = b;   // 只重建笔刷波及的 chunk
+                }
             }
             _ownRunner.Tick(_ownCtx, RunMode.Commit);
 
@@ -531,14 +542,17 @@ namespace Collin.CityMap
                 return;
             }
             // 水掩码一变，S2 就交出一个<b>新的</b> WaterField 对象（见 WaterStage.Run），
-            // 所以"引用相同 ⇒ 内容相同"成立；再带上淹水格数与海平面，防同一对象被就地改写（探针/测试会）。
+            // 所以"引用相同 ⇒ 内容相同"成立；再带上淹水格数与<b>最高水面高程</b>兜底，
+            // 防同一对象被就地改写（探针/测试会）。
+            // ⚠️ 高程判据不可省：只改种子高程而面积不变（把水塘整体抬高 1m）时，
+            // 引用与格数都不变 ⇒ 画面会停在旧高程的水面上，正是"改了数值不刷新"的一类。
             if (!ReferenceEquals(_waterStamp, _water)
                 || _waterStampCells != _water.WaterCells
-                || !Mathf.Approximately(_waterStampLevel, _water.SeaLevelUsed))
+                || !Mathf.Approximately(_waterStampLevel, _water.MaxWaterLevel))
             {
                 _waterStamp = _water;
                 _waterStampCells = _water.WaterCells;
-                _waterStampLevel = _water.SeaLevelUsed;
+                _waterStampLevel = _water.MaxWaterLevel;
                 RebuildWaterAll();
             }
         }

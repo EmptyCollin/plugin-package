@@ -28,6 +28,43 @@ namespace Collin.CityMap
         byte[] _exact;
         int _scratchCells;
 
+        /// <summary>
+        /// 逐格「禁止平整」原因码（0 = 允许压平；1 陡坡 / 2 手绘 / 3 水体或缓冲带）。
+        /// <b>只在 Bake 里构建</b>，Run（重放）用不到。
+        /// <para>存在理由（用户 2026-11-06 反馈③「平整滤镜简直是灾难」）。取证确认的三个
+        /// "文档写了、代码一处落点都没有"的缺口，在这里一次补上：</para>
+        /// <para>① <b>陡坡退让</b>（Modules/12 §3／DESIGN <b>D-32</b> 的 hardRetreatSlope）：
+        /// 原始地面陡于阈值的格不参与压平。缺它时默认参数把雕出来的山<b>削顶填谷成水平台阶</b>
+        /// ——拟合面坡度超过 maxParcelSlope 就退化成水平中位数面，而地块核心贴合度实测 93%。</para>
+        /// <para>② <b>手绘豁免</b>（01 §3.4 的 ManualLocked）：被笔刷碰过的格不许被自动层覆盖。
+        /// D-01-1 反复强调"自动层不得毁掉人工层"，此前只靠"两个资产分开存"这条屏障 ——
+        /// 但结构分离只防"写坏数据"，防不了"叠加显示时把手绘磨平"，那才是用户看到的现象。</para>
+        /// <para>③ <b>水感知</b>：水域与缓冲带格禁压禁填。S2 免费交出掩码，此前烘焙与它零协商，
+        /// 能把刚点出来的河道直接填掉。</para>
+        /// <para>判据优先级 水 → 手绘 → 陡坡（互斥归因，统计才不会重复扣）。</para>
+        /// <para>⚠️ 本位图**只 gate 约束压平**。自然化（软化人工层）只对水体码避让：
+        /// "消除手绘痕迹"本来就是对手绘层动手，若把手绘格一起豁免，该功能会整块失效
+        /// ——那不是保护，是把用户明确要的旋钮关掉。</para>
+        /// </summary>
+        byte[] _forbid;
+
+        /// <summary>禁止平整的原因码（互斥，便于把"保住了多少"归因到具体保护）。</summary>
+        static class Forbid
+        {
+            public const byte None = 0, Steep = 1, Hand = 2, Water = 3;
+        }
+
+        /// <summary>本次烘焙因保护而被跳过的格数（按原因分列，仅统计确实落在约束权重内的格）。</summary>
+        int _skipSteep, _skipHand, _skipWater;
+
+        /// <summary>本次烘焙的最大绝对高差（米）——"这次削了多少山"必须报出来（用户反馈③）。</summary>
+        float _maxDelta;
+
+        /// <summary>最近一次烘焙的保护统计（面板读它呈现，不重算）。</summary>
+        public (int steep, int hand, int water) LastProtectStats => (_skipSteep, _skipHand, _skipWater);
+        /// <summary>最近一次烘焙的最大削平幅度（米）。</summary>
+        public float LastMaxDelta => _maxDelta;
+
         /// <summary>自然化用的整图积分图（(cols+1)×(rows+1)）。<b>实例级</b>同 scratch 纪律：
         /// 静态缓冲会被第二个城市上下文串用。</summary>
         float[] _natPrefix;
@@ -119,6 +156,10 @@ namespace Collin.CityMap
             var d0 = _terrain.Delta;
             if (d0 != null) d0.ApplyTo(field);
 
+            _skipSteep = _skipHand = _skipWater = 0;
+            _maxDelta = 0f;
+            BuildForbidMap(field, grid, ctx.Mask);
+
             // ① 自然化（M4-o / D-41，用户原话「消除明显的手绘痕迹」）：
             //    <b>只软化人工层 (Heights − BaseHeights)，绝不碰 S1a 自然噪声</b>。
             //    理由：自然碎纹是"地形本来该有的样子"，把它一起抹平用户看到的就是"整张图糊了"；
@@ -149,10 +190,19 @@ namespace Collin.CityMap
                         // 雕刻边界外那圈 a≈0 但 soft≠0 的格正是"把硬边抹开"要动的地方，
                         // 只按 a≈0 跳过会在笔刷轮廓上留一圈锐利硬环 = 用户要消除的手绘痕迹本身。
                         if (Mathf.Abs(a) <= 1e-4f && Mathf.Abs(soft) <= 1e-4f) continue;
+                        // 只避开<b>水体</b>格：见 _forbid 注释 —— 软化本来就是对人工层动手，
+                        // 若连手绘格一起避开，这个旋钮会整块失效（那是把用户要的功能关掉，不是保护）。
+                        if (_forbid != null && _forbid[i] == Forbid.Water) continue;
                         var nh = hs[i] - tNat * (a - soft);
                         var dfilt = nh - hs[i];
                         hs[i] = nh;
-                        if (dfilt != 0f) { outFilter.AddDelta(grid, cx, cz, dfilt); natCells++; }
+                        if (dfilt != 0f)
+                        {
+                            outFilter.AddDelta(grid, cx, cz, dfilt);
+                            natCells++;
+                            var ad = dfilt < 0f ? -dfilt : dfilt;
+                            if (ad > _maxDelta) _maxDelta = ad;
+                        }
                     }
                     if ((cz & 255) == 0 && ctx.CancelRequested) return StageResult.CancelledResult();
                 }
@@ -207,7 +257,10 @@ namespace Collin.CityMap
                 //   落不落格由 `SculptFilterAsset.AddDelta` 内部的 ZeroEps 决定（与 delta 层同口径），
                 //   求解器不得再自行设第二道阈值（M4-o 自查：我第一版在此写了 `>0.005f`，
                 //   被 A1_2 幂等断言抓出，最大偏差恰好等于该阈值）。
-                outFilter.AddDelta(grid, idx % cols, idx / cols, heights[idx] - before);
+                var dfuse = heights[idx] - before;
+                outFilter.AddDelta(grid, idx % cols, idx / cols, dfuse);
+                var adf = dfuse < 0f ? -dfuse : dfuse;
+                if (adf > _maxDelta) _maxDelta = adf;      // "这次削了多少山"（用户反馈③要求必须报数）
             }
 
             // 收口：全零条目一次性丢弃（剪枝放这里而非每次写入，理由见 Compact 注释 ——
@@ -239,6 +292,18 @@ namespace Collin.CityMap
                     if (w <= 0f) continue;
 
                     var idx = rowBase + cx;
+                    // ★ 保护闸门：被禁的格<b>连权重都不累加</b>，于是融合式里它保持原始高程，
+                    //   且过渡带会自然绕过去（不是"改了再改回来"）。放在权重判定之后：
+                    //   落在所有约束之外的格本来就不动，不计入保护数，统计才不会被全图格数灌爆。
+                    if (_forbid != null)
+                    {
+                        switch (_forbid[idx])
+                        {
+                            case Forbid.Steep: _skipSteep++; continue;
+                            case Forbid.Hand: _skipHand++; continue;
+                            case Forbid.Water: _skipWater++; continue;
+                        }
+                    }
                     var hTarget = con.HeightAt(wx, wz);
                     if (_den[idx] <= 0f) _touched.Add(idx);   // 首次进入：登记待复位
                     _num[idx] += w * hTarget;
@@ -248,6 +313,56 @@ namespace Collin.CityMap
                 }
             }
         }
+
+        /// <summary>
+        /// 构建逐格禁止平整的原因码。<b>三遍都是 O(图幅格数) 或更低</b>：
+        /// 手绘标记走稀疏条目（成本与实际覆盖格数成正比，见 <see cref="SculptDeltaAsset.MarkContentInto"/>），
+        /// 坡度与掩码各一遍线性扫。实测数据记在 ACCEPTANCE。
+        /// <para><b>坡度必须读"意图地表"</b>（此刻 <c>field.Heights</c> = base+delta，滤镜尚未叠）：
+        /// 用户刚抬起来的那座山也得算山。读 BaseHeights 会让雕刻出的陡坡被当成平地削掉（D-31 同口径）。</para>
+        /// <para>阈值 0 = 关闭陡坡保护；但<b>手绘豁免与水感知始终生效</b> —— 它们不是"可调强度"，
+        /// 而是"不许毁掉用户输入"的底线。</para>
+        /// </summary>
+        void BuildForbidMap(TerrainField field, CityGrid grid, ushort[] mask)
+        {
+            var cells = grid.CellCount;
+            if (_forbid == null || _forbid.Length != cells) _forbid = new byte[cells];
+            System.Array.Clear(_forbid, 0, cells);
+            if (cells <= 0) return;
+
+            var cols = grid.Columns; var rows = grid.Rows;
+
+            // ① 手绘标记：只扫被写过的稀疏条目
+            _handScratch ??= new bool[cells];
+            if (_handScratch.Length != cells) _handScratch = new bool[cells];
+            System.Array.Clear(_handScratch, 0, cells);
+            var hand = _terrain.ProtectHandCarved ? _terrain.Delta : null;
+            if (hand != null) hand.MarkContentInto(_handScratch, grid);
+
+            var steepLimit = _profile.SteepProtectSlope;
+            var waterBit = (ushort)(CellFlag.Water | CellFlag.WaterBuffer);
+
+            for (var cz = 0; cz < rows; cz++)
+            {
+                var rowBase = cz * cols;
+                for (var cx = 0; cx < cols; cx++)
+                {
+                    var i = rowBase + cx;
+
+                    // 优先级：水 → 手绘 → 陡坡（先保住"绝不能动"的，再谈"用户画的"，最后"太陡的"）
+                    if ((mask[i] & waterBit) != 0) { _forbid[i] = Forbid.Water; continue; }
+                    if (_handScratch[i]) { _forbid[i] = Forbid.Hand; continue; }
+                    if (steepLimit > 0f)
+                    {
+                        var w = grid.CellCenterWorld(cx, cz);
+                        if (field.GetSlopeDeg(w.x, w.y) >= steepLimit) _forbid[i] = Forbid.Steep;
+                    }
+                }
+            }
+        }
+
+        /// <summary>手绘标记的复用位图（实例级，同 scratch 纪律：静态会串两个城市上下文）。</summary>
+        bool[] _handScratch;
 
         /// <summary>
         /// 约束来源（M2）：
@@ -265,8 +380,17 @@ namespace Collin.CityMap
             if (terrain.AutoFlattenAtCenter)
             {
                 var localSkipped = 0;
+                // ★ 作用域裁剪（用户反馈③的第二个"削山"主因）：取证实测默认档位下
+                //   n=8 ⇒ 街距 900m、单块 846×846m，8×8 覆盖 7200×7200m ≈ <b>整张 8km 图</b>，
+                //   而布局只拿城区半径算街距、<b>从不按半径裁剪</b> —— 于是"城外也全是城市地块"。
+                //   现在中心超出「城区半径 + 一个地块半尺寸」的直接不收集：宁少压一片，也不毁掉郊野。
+                var urban = profile.ResolveUrbanRadius(ctx.Project, grid);
+                var urbanCenter = profile.ResolveUrbanCenter(ctx.Project, grid);
                 CityTerrain.EnumerateAutoTiles(terrain, profile, ctx.Project, grid, (c, half) =>
                 {
+                    var reach = urban + Mathf.Max(half.x, half.y);
+                    if (Mathf.Max(Mathf.Abs(c.x - urbanCenter.x), Mathf.Abs(c.y - urbanCenter.y)) > reach)
+                    { localSkipped++; return; }
                     if (!PlaneFitting.FitFromBase(field, c, half,
                             profile.MaxParcelSlope, profile.ConstraintInner,
                             profile.ConstraintExtend, 1f,

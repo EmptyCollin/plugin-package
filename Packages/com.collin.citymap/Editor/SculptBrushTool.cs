@@ -10,10 +10,13 @@ namespace Collin.CityMap.EditorTooling
     /// 再调 <see cref="CityTerrain.MarkDeltaChanged"/>。<b>不在这里重算地形或重建 mesh</b>：
     /// 落笔后由既有 D-31 链路（面板合并窗口 → S1b 重算 → 显示层按脏区增量重建）统一刷新，
     /// 保证"编辑态所见"与"重新生成所得"是同一条路径（§0.1 原则3）。</para>
-    /// <para>接管方式：<see cref="SceneView.duringSceneGui"/> 静态挂接，仅在
-    /// <see cref="CityWindow.CurrentMode"/> == <see cref="CityWindow.ToolMode.TerrainSculpt"/>
-    /// 时处理鼠标；其它模式一律原样放行。本轮只接**有输入来源**的动作（抬/压/平滑/定高到起笔点），
+    /// <para>接管方式：<see cref="SceneView.duringSceneGui"/> 静态挂接，判据读
+    /// <see cref="CityTerrain.SculptToolActive"/>（<b>场景实例的序列化字段</b>，H-50／D-34）；
+    /// 未接管时一律原样放行鼠标。本轮只接**有输入来源**的动作（抬/压/平滑/定高到起笔点），
     /// 反色/清除/定高到指定值需要先给面板数值框，留待后续，未接线动作会明确提示而非静默。</para>
+    /// <para>⚠️ 曾经的判据是 <c>CityWindow.CurrentMode</c>（EditorWindow 实例字段的静态投影），
+    /// 它随域重载归零 ⇒ 出现「面板显示雕刻模式、笔刷却按 Inspect 放行鼠标」，
+    /// 那个属性已于 2026-11-06 连同 ActiveProject／ActiveRunner 一起删除，<b>不要把它加回来</b>。</para>
     /// </summary>
     [InitializeOnLoad]
     internal static class SculptBrushTool

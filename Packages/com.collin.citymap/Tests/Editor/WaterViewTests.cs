@@ -7,10 +7,11 @@ namespace Collin.CityMap.Tests
 {
     /// <summary>
     /// 水面几何（<see cref="WaterView"/>）判据。<b>不重复测算法，只测"画出来对不对"</b>：
-    /// 水面画错的现象是"整片地被染蓝"或"加了水却看不见水面"，两者都不会报错、也不会被算法测试抓到。
+    /// 水面画错的现象是"整片地被染蓝""加了水却看不见水面"，或"水面上一条从原点射出的蓝带"，
+    /// 三者都不会报错、也不会被算法测试抓到。
     /// <para>期望值只用两类<b>与被测实现无关</b>的事实：
     /// ① 极端情形的纯网格算术（全水 ⇒ 顶点数 = 显示网格顶点数、quad 数 = 格数²；全不水 ⇒ 空）；
-    /// ② 几何自身的硬不变量（绕序朝上、高度 = 该格水位 + 抬升、索引合法、无孤立顶点）。
+    /// ② 几何自身的硬不变量（绕序朝上、高度 = 该格水面高程 + 抬升、索引合法、无孤立顶点）。
     /// <b>刻意不复刻"显示顶点 → 逻辑格"的映射来推期望值</b>——那是把被测代码再抄一遍，恒真。</para>
     /// </summary>
     public class WaterViewTests
@@ -54,7 +55,7 @@ namespace Collin.CityMap.Tests
                 cellLevel[i] = allWater ? level : float.NegativeInfinity;
             }
             return new WaterField(allWater ? mask.Length : 0, 0, allWater ? 1 : 0, 1,
-                                  0f, mask, cellLevel, _grid, null);
+                                  mask, cellLevel, _grid, null);
         }
 
         TerrainView.ChunkGeometry Build(WaterField wf)
@@ -90,7 +91,7 @@ namespace Collin.CityMap.Tests
             for (var i = 0; i < g.Positions.Length; i++)
             {
                 Assert.AreEqual(want, g.Positions[i].y, 1e-4f,
-                    $"顶点 {i} 高度必须是<b>该格水位</b>+抬升（实得 {g.Positions[i].y:0.###}）：" +
+                    $"顶点 {i} 高度必须是<b>该格水面高程</b>+抬升（实得 {g.Positions[i].y:0.###}）：" +
                     "取地形高度会让水面随坡度皱起来，取 0 会让它埋进地里看不见");
                 Assert.AreEqual(0f, g.Normals[i].x, 1e-5f);
                 Assert.AreEqual(1f, g.Normals[i].y, 1e-5f,
@@ -120,11 +121,11 @@ namespace Collin.CityMap.Tests
                 var a = g.Positions[i0]; var b = g.Positions[i1]; var c = g.Positions[i2];
                 // 三角形法线 = <b>Cross(v1-v0, v2-v0)</b>（右手定则）。
                 // 我第一版写成 Cross(c-a, b-a) ⇒ 符号相反，把<b>正确的</b>绕序判成"朝下"，
-                // 差点去改一个不存在的 bug（H-67 同族第四次：断言先红，先查自己口径）。
+                // 差点去改一个不存在的 bug（H-67 同族：断言先红，先查自己口径）。
                 var n = Vector3.Cross(b - a, c - a);
                 Assert.Greater(n.y, 0f,
-                    $"三角形 #{t / 3} 绕序朝下（Cross 的 y = {n.y:0.##}）⇒ 从天空看不到水面。"
-                  + "地形当年正是这个错导致整片消失（H-38），水面必须同口径。");
+                    $"三角形 #{t / 3} 绕序朝下（Cross 的 y = {n.y:0.##}）⇒ 从天空看不到水面。" +
+                    "地形当年正是这个错导致整片消失（H-38），水面必须同口径。");
             }
         }
 
@@ -140,8 +141,73 @@ namespace Collin.CityMap.Tests
             //    一个内部顶点会被引用最多 6 次。真正的不变量是"顶点数 == 被引用的不同索引数"。
             Assert.AreEqual(g.VertexCount, referenced.Count,
                 $"有孤立顶点：顶点数组 {g.VertexCount} 个、实际被引用 {referenced.Count} 个 " +
-                "⇒ 压缩索引时多留了，浪费上传带宽（且说明 keep 标记与 remap 不同步）");
+                "⇒ 压缩索引时多留了，浪费上传带宽（且说明 keep 标记与 remap 不同源）");
         }
+
+        // ─────────── 塌陷三角形防护（"算水顶点"与"取高程"必须同源） ───────────
+
+        /// <summary>
+        /// 掩码说是水、但<b>取不到水面高程</b>的格，绝不能留下一个落在世界原点的顶点。
+        /// <para>存在理由（本轮我自己写出来的一个真 bug，被这条用例逼住）：
+        /// 第一版把"跳过无高程顶点"的 <c>continue</c> 写在<b>填顶点</b>那一遍，
+        /// 而"是不是水顶点"在<b>第一遍</b>就已经按掩码定了 ⇒ 该顶点仍被算进 keep/remap 与 quad，
+        /// 结果 quad 里有一个顶点停在 (0,0,0) ⇒ <b>水面上射出一条通往世界原点的蓝带</b>。
+        /// 现在两遍用同一个判据（第一遍同时存下高程），所以这种顶点根本不成立。</para>
+        /// </summary>
+        [Test]
+        public void Cell_Flagged_Water_But_Without_Surface_Height_Draws_No_Collapsed_Vertex()
+        {
+            var mask = new ushort[_grid.CellCount];
+            var cellLevel = new float[_grid.CellCount];
+            for (var i = 0; i < cellLevel.Length; i++) cellLevel[i] = float.NegativeInfinity;
+
+            // 整张都标成水，但高程全取不到 ⇒ 必须一张都不铺（而不是铺出塌陷面）
+            for (var i = 0; i < mask.Length; i++) mask[i] |= (ushort)CellFlag.Water;
+            var wf = new WaterField(_grid.CellCount, 0, 1, 1, mask, cellLevel, _grid, null);
+
+            var g = Build(wf);
+            Assert.IsTrue(g.IsEmpty,
+                "取不到水面高程时必须是空几何：留顶点在 (0,0,0) 会画出一条射向世界原点的蓝带");
+
+            // 对照：同样全水、但高程取得到 ⇒ 必须铺满（证明上面那条不是"夹具本身画不出面"）
+            var ok = MakeField(true);
+            var g2 = Build(ok);
+            Assert.AreEqual(Quads * 6, g2.Triangles.Length,
+                "对照：有高程时必须铺满 49 个 quad，否则『空几何』那条是空过的");
+        }
+
+        /// <summary>
+        /// 半张有高程、半张取不到高程时，铺出来的每个顶点都必须停在水面高程上。
+        /// <para>这是上一条的"有面可验"版本：<c>Cell_Flagged_Water_But_Without_Surface_Height</c>
+        /// 构造出的是空几何，顶点数组为空 ⇒ 任何逐顶点断言都会<b>空过</b>（本包反复栽过的假绿）。
+        /// 所以这里刻意让部分 quad 四角全有高程 ⇒ 真有顶点可验，再逐个数落点。</para>
+        /// </summary>
+        [Test]
+        public void No_Vertex_Falls_Back_To_World_Origin()
+        {
+            var mask = new ushort[_grid.CellCount];
+            var cellLevel = new float[_grid.CellCount];
+            for (var i = 0; i < cellLevel.Length; i++)
+            {
+                mask[i] |= (ushort)CellFlag.Water;                 // 全图都是水
+                cellLevel[i] = float.NegativeInfinity;             // 但先都取不到高程
+            }
+            // 只给第一个显示 quad 的四角格高程（1,1)(3,1)(1,3)(3,3)，其余仍是"有水无高程"
+            foreach (var (px, pz) in new[] { (1, 1), (3, 1), (1, 3), (3, 3) })
+                cellLevel[pz * Cols + px] = Level;
+
+            var wf = new WaterField(_grid.CellCount, 0, 1, 1, mask, cellLevel, _grid, null);
+            var g = Build(wf);
+
+            Assert.AreEqual(6, g.Triangles.Length,
+                "四角有高程的那一个 quad 必须铺出来（其余取不到高程的 quad 必须不铺）");
+            Assert.AreEqual(4, g.VertexCount, "只留这 4 个顶点 ⇒ 多留任何一个就是塌陷面的来源");
+            for (var i = 0; i < g.Positions.Length; i++)
+                Assert.AreEqual(Level + WaterView.SurfaceLift, g.Positions[i].y, 1e-4f,
+                    $"顶点 {i} 的 y = {g.Positions[i].y:0.###}：停在原点量级说明有个「是水但没高程」的顶点被留下了");
+        }
+
+        // ───────────────────── 孤立单格水：岸线误差登记点 ─────────────────────
 
         /// <summary>
         /// 孤立单格水铺不出面 —— 这是"岸线误差 = 一个显示步"这一<b>刻意取舍</b>的登记点。
@@ -162,7 +228,7 @@ namespace Collin.CityMap.Tests
             const int s0 = 1, s1 = 3;                      // 相邻两个显示顶点的逻辑格
             mask[s0 * Cols + s0] = (ushort)CellFlag.Water;
             cellLevel[s0 * Cols + s0] = Level;
-            var wf = new WaterField(1, 0, 1, 1, 0f, mask, cellLevel, _grid, null);
+            var wf = new WaterField(1, 0, 1, 1, mask, cellLevel, _grid, null);
             Assert.IsTrue(wf.IsWater(s0, s0), "前提：该格确被判为水");
 
             var g = WaterView.BuildChunk(wf, _grid, Vector2Int.zero, World);
@@ -177,7 +243,7 @@ namespace Collin.CityMap.Tests
                 mask2[pz * Cols + px] = (ushort)CellFlag.Water;
                 lvl2[pz * Cols + px] = Level;
             }
-            var wf2 = new WaterField(4, 0, 1, 1, 0f, mask2, lvl2, _grid, null);
+            var wf2 = new WaterField(4, 0, 1, 1, mask2, lvl2, _grid, null);
             var g2 = WaterView.BuildChunk(wf2, _grid, Vector2Int.zero, World);
             Assert.IsFalse(g2.IsEmpty,
                 "一个显示 quad 的四角全水时必须铺出至少一个面 —— 否则上面那条『空几何』是空过的");
@@ -210,21 +276,49 @@ namespace Collin.CityMap.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
-        // ───────────────────── 局部水位（高原湖）必须被尊重 ─────────────────────
+        // ─────────── 每颗种子自己的水面高程必须被尊重（高原天池） ───────────
 
         [Test]
-        public void Local_Level_Per_Cell_Drives_Surface_Height_Not_Global_Sea_Level()
+        public void Per_Cell_Surface_Height_Drives_Vertex_Not_Any_Global_Reference()
         {
-            // 局部水位 160m、全局海平面 0m：画成 0m 就整片埋进地形，用户读成"加了水但没有水面"。
+            // 天池高程 160m：画成 0m 就整片埋进地形，用户读成"加了水但没有水面"。
             var wf = MakeField(true, 160f);
             Assert.AreEqual(160f, wf.WaterSurfaceAt(3, 3), 1e-4f,
-                "WaterSurfaceAt 必须返回<b>该格</b>的局部水位");
-            Assert.AreEqual(0f, wf.SeaLevelUsed, 1e-4f, "全局海平面不能被局部水位覆盖（两者是不同概念）");
+                "WaterSurfaceAt 必须返回<b>该格</b>的水面高程");
+            Assert.AreEqual(160f, wf.MaxWaterLevel, 1e-4f, "统计的最高水面高程必须与逐格值一致");
+            Assert.AreEqual(160f, wf.MinWaterLevel, 1e-4f);
 
             var g = Build(wf);
             Assert.Greater(g.VertexCount, 0, "前提：铺出了水面");
             Assert.AreEqual(160f + WaterView.SurfaceLift, g.Positions[0].y, 1e-3f,
-                "顶点必须按局部水位铺出，否则高原湖不可见");
+                "顶点必须按该格水面高程铺出，否则高原天池不可见");
+        }
+
+        /// <summary>
+        /// 水面高程区间与覆盖比例（右上角分层统计的读数来源）。
+        /// <para>刻意做成<b>可失败</b>的区间断言：只改种子高程而面积不变时，
+        /// 引用与格数都不变 —— 视图靠 MaxWaterLevel 才能发现"水面该重铺了"，
+        /// 所以这个读数不是装饰，是刷新判据的一部分。</para>
+        /// </summary>
+        [Test]
+        public void Water_Field_Reports_Level_Range_And_Area_Ratio()
+        {
+            var mask = new ushort[_grid.CellCount];
+            var cellLevel = new float[_grid.CellCount];
+            for (var i = 0; i < cellLevel.Length; i++) cellLevel[i] = float.NegativeInfinity;
+
+            var half = _grid.CellCount / 2;                    // 恰好一半格是水，面积比例可解析
+            for (var i = 0; i < half; i++)
+            {
+                mask[i] |= (ushort)CellFlag.Water;
+                cellLevel[i] = 10f + 20f * (i % 2);            // 10 或 30 ⇒ 区间 [10,30]
+            }
+            var wf = new WaterField(half, 0, 2, 2, mask, cellLevel, _grid, null);
+
+            Assert.AreEqual(10f, wf.MinWaterLevel, 1e-4f, "最低水面高程");
+            Assert.AreEqual(30f, wf.MaxWaterLevel, 1e-4f, "最高水面高程");
+            Assert.AreEqual(0.5f, wf.WaterAreaRatio, 1e-4f,
+                $"覆盖比例必须是 {half}/{_grid.CellCount}（面板直接读它，不容许再换算一遍）");
         }
 
         [Test]
@@ -233,11 +327,22 @@ namespace Collin.CityMap.Tests
             var mask = new ushort[_grid.CellCount];
             var cellLevel = new float[_grid.CellCount];
             for (var i = 0; i < cellLevel.Length; i++) cellLevel[i] = 0f;    // 故意全填 0
-            var wf = new WaterField(0, 0, 0, 1, 0f, mask, cellLevel, _grid, null);
+            var wf = new WaterField(0, 0, 0, 1, mask, cellLevel, _grid, null);
 
-            // 0 是<b>合法海平面值</b>，绝不能拿来当"没有水面"的哨兵（H-31 同族：0 当哨兵）。
+            // 0 是<b>合法水面高程</b>（谷底水塘就该是 0m），绝不能拿来当"没有水面"的哨兵（H-31 同族）。
             Assert.IsTrue(float.IsNegativeInfinity(wf.WaterSurfaceAt(5, 5)),
                 "非水格必须返回 -∞，不能返回 0 或 cellLevel 里的残留值");
+        }
+
+        /// <summary>没水时高程区间必须是"无值"而不是 ±∞ 量级，否则面板读数会显示成乱码。</summary>
+        [Test]
+        public void No_Water_Field_Reports_Invalid_Level_Range()
+        {
+            var wf = MakeField(false);
+            Assert.AreEqual(0, wf.WaterCells);
+            Assert.IsTrue(float.IsNegativeInfinity(wf.MinWaterLevel),
+                "无水时 Min 必须是 -∞（面板据此显示「—」，不能显示 -1.2e38）");
+            Assert.AreEqual(0f, wf.WaterAreaRatio, 1e-6f);
         }
 
         /// <summary>没跑出 S2（槽位 null）时不得抛，也不得画出任何几何。</summary>

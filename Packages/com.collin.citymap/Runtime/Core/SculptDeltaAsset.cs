@@ -12,9 +12,19 @@ namespace Collin.CityMap
     /// 重放即赋值目标高程。<b>本类只做数据 + 重放</b>，不含笔刷几何、不引用 UnityEditor。
     /// 管线接线已在 M4-c 完成（DESIGN **D-31** 批准"雕刻须触发 S1b 重算"）：
     /// S1b 起点复位后由 <c>FlattenSolveStage</c> 调 <see cref="ApplyTo"/> 叠加，故本类自身不碰任何阶段。
+    /// <para><b>本类同时是意图登记对象</b>（2026-11-06，用户反馈「笔刷撤销不生效」的正解）：
+    /// 落笔脏位原先只记在 <see cref="CityTerrain"/>（场景组件）的账本上，而
+    /// <c>Undo.RecordObject</c> 登记的是<b>本资产</b> ⇒ 撤销把 chunks 还原了、实例账本的序列号却原地不动 ⇒
+    /// Tracker 的两条检（通道序列号差 + 集合哈希）全都看不见 ⇒ 数据回到过去、画面停在未来。
+    /// 这正是 09 H-9 那条纪律的反面教材：<b>账本必须长在"会被撤销还原的那个对象"上</b>。
+    /// 现在 chunks 与 ledger 同属本资产，一次撤销同时还原二者 ⇒ 序列号与基线不等 ⇒ 自动复用整条脏传播链，
+    /// 撤销专用的恢复代码一行都不需要。</para>
+    /// <para>记账<b>双写</b>（本资产 + 实例）：实例那份必须留着，因为显示层按
+    /// <c>_terrain.Ledger.BoundsOf(DeltaStroke)</c> 取脏盒做增量重建（CityTerrainView 自建路径）；
+    /// 两者都是同一个 DeltaStroke 位，Tracker 按位并入挂起集合 ⇒ 不会跑两遍。</para>
     /// </summary>
     [CreateAssetMenu(menuName = "Collin/CityMap/Sculpt Delta", fileName = "SculptDelta")]
-    public sealed class SculptDeltaAsset : ScriptableObject
+    public sealed class SculptDeltaAsset : ScriptableObject, IIntentTracked
     {
         /// <summary>绝对高程"无值"哨兵。0 是合法高程，必须用 NaN 区分——
         /// 与 11 §2 的 heightValue 双义哨兵是同一类坑（拿 0 当哨兵会静默吞掉"用户就要 0m"）。</summary>
@@ -33,7 +43,10 @@ namespace Collin.CityMap
                                           // Additive: 增量（0=无）；Absolute: 目标高程或 NoTarget
         }
 
-        [SerializeField] readonly System.Collections.Generic.List<DeltaChunk> chunks
+        // ⚠️ **不能有 readonly**：Unity 序列化管线会跳过 readonly 字段（即便带 [SerializeField]）。
+        // 本轮在磁盘上取证：本资产保存后 YAML 里<b>只有 schemaVersion 一行</b>，chunks 整个消失
+        // ⇒ 用户雕的山重开工程就没了（与 WaterNetworkAsset 同一写法、同一后果，两处一起改）。
+        [SerializeField] System.Collections.Generic.List<DeltaChunk> chunks
             = new System.Collections.Generic.List<DeltaChunk>(16);
 
         // 增量清零容差：笔刷固定步长积分会累出 1e-8 级残差，超过就当"这格没内容"，触发稀疏剪枝。
@@ -173,6 +186,43 @@ namespace Collin.CityMap
             }
         }
 
+        /// <summary>
+        /// 把<b>有人工内容</b>的格写进标记位图（非零 Additive 增量或有绝对目标）。供平整烘焙做手绘豁免。
+        /// <para>口径刻意是"有任何写入痕迹"而非"改动量超过某阈值"：笔刷按衰减核写，边缘格的量
+        /// 小到 1e-7 也是用户划过的位置；拿阈值判会漏掉笔刷外圈，豁免区比实际笔划小一圈，
+        /// 表现就是"笔刷边缘被自动层啃掉一道"（与软化裙边同族）。</para>
+        /// <para><b>必须按稀疏条目枚举，绝不能反过来逐格调 HasContent</b>：后者是
+        /// O(图幅格数 × 条目数) —— 8km 档 400 万格乘上千条目会退化成分钟级；本写法成本
+        /// 与"实际覆盖格数"成正比（条目数 × 每块格数），与图幅无关。</para>
+        /// </summary>
+        public void MarkContentInto(bool[] flags, in CityGrid g)
+        {
+            if (flags == null) return;
+            var cpc = CellsPerChunk(g);
+            if (cpc <= 0) return;
+            for (var k = 0; k < chunks.Count; k++)
+            {
+                var c = chunks[k];
+                if (c.values == null) continue;
+                var additive = c.mode == DeltaMode.Additive;
+                var baseCx = c.chunkX * cpc;
+                var baseCz = c.chunkZ * cpc;
+                for (var lz = 0; lz < cpc; lz++)
+                {
+                    var gz = baseCz + lz;
+                    if (gz < 0 || gz >= g.Rows) continue;         // 边缘 chunk 越出图幅：跳过
+                    for (var lx = 0; lx < cpc; lx++)
+                    {
+                        var gx = baseCx + lx;
+                        if (gx < 0 || gx >= g.Columns) continue;
+                        var v = c.values[lz * cpc + lx];
+                        if (additive ? v != 0f : !float.IsNaN(v))
+                            flags[gz * g.Columns + gx] = true;
+                    }
+                }
+            }
+        }
+
         /// <summary>诊断（面板「压缩 delta」与工具截断提示用，01 §9）：非零 Additive 格数。</summary>
         public int CountAdditiveCells()
         {
@@ -196,5 +246,64 @@ namespace Collin.CityMap
         }
 
         public void ClearAll() => chunks.Clear();
+
+        // ───────────── 意图记账（撤销可见的真源，见类注释）─────────────
+
+        [Header("意图记账（不画进画面，但删掉它撤销就失效）")]
+        [SerializeField] string stableId;
+        [SerializeField] IntentChangeLedger ledger = new IntentChangeLedger();
+
+        public string StableId => stableId;
+        public IntentChangeLedger Ledger => ledger;
+        public long ManualVersion => ledger != null ? ledger.ManualVersion : 0L;
+
+        private void OnEnable() => EnsureRegistered();
+        private void OnDisable() => IntentRegistry.Unregister(this);
+
+        public void EnsureRegistered()
+        {
+            if (string.IsNullOrEmpty(stableId)) stableId = IntentRegistry.NewStableId("delta");
+            ledger ??= new IntentChangeLedger();      // 旧资产反序列化可能为 null（新增序列化字段）
+            IntentRegistry.Register(this);
+        }
+
+        /// <summary>
+        /// 一次手绘提交（<b>落笔抬键调一次</b>，不是每 tick；01 §5.2）。脏 DeltaStroke 通道并记影响面。
+        /// <para>零尺寸脏盒会被下游当"无脏区"丢掉 ⇒ 增量重建退化成全图，故兜底成最小盒（同 H-63 口径）。</para>
+        /// </summary>
+        public void CommitChange(Bounds affected)
+        {
+            EnsureRegistered();
+            var side = affected.size.x <= 0f && affected.size.z <= 0f
+                ? MinAffectedSide
+                : Mathf.Max(MinAffectedSide, Mathf.Max(affected.size.x, affected.size.z));
+            // 长笔划的包围盒是<b>长方形</b>：必须逐轴保留，取长轴当正方形会虚报一大片 chunk
+            // （SculptBrushTests 里那条"短轴不得被拉成方形"的断言就是钉这个的）。
+            var sx = affected.size.x > 0f ? Mathf.Max(MinAffectedSide, affected.size.x) : side;
+            var sz = affected.size.z > 0f ? Mathf.Max(MinAffectedSide, affected.size.z) : side;
+            ledger.Bump(IntentKind.DeltaStroke,
+                new Bounds(affected.center, new Vector3(sx, 1f, sz)));
+        }
+
+        const float MinAffectedSide = 32f;
+
+        /// <summary>
+        /// 人工层的最大绝对改动（米），面板「手绘 ±181m」用。
+        /// <para>只扫<b>已存的稀疏条目</b>（非全图），成本与雕刻面积成正比、与图幅无关。</para>
+        /// </summary>
+        public float MaxAbsDelta()
+        {
+            var max = 0f;
+            foreach (var c in chunks)
+            {
+                if (c.mode != DeltaMode.Additive || c.values == null) continue;
+                for (var i = 0; i < c.values.Length; i++)
+                {
+                    var v = Mathf.Abs(c.values[i]);
+                    if (v > max) max = v;
+                }
+            }
+            return max;
+        }
     }
 }

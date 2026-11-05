@@ -16,7 +16,7 @@ namespace Collin.CityMap
     /// 想更新内容必须点「烘焙」。这满足用户的三条裁定：滤镜不污染手绘层 / 不实时算 / 按钮驱动。</para>
     /// </summary>
     [CreateAssetMenu(menuName = "Collin/CityMap/Sculpt Filter", fileName = "SculptFilter")]
-    public sealed class SculptFilterAsset : ScriptableObject
+    public sealed class SculptFilterAsset : ScriptableObject, IIntentTracked
     {
         /// <summary>存盘格式版本（同 delta 资产口径：无版本则旧档误读无声，09 H-24）。</summary>
         [SerializeField] int schemaVersion = 1;
@@ -29,7 +29,11 @@ namespace Collin.CityMap
             public float[] values;    // 行主序，长度 = cellsPerChunk²；0 = 无修正
         }
 
-        [SerializeField] readonly System.Collections.Generic.List<FilterChunk> chunks
+        // ⚠️ **不能有 readonly**（同 SculptDeltaAsset／WaterNetworkAsset 三处一起改）：
+        // Unity 序列化管线跳过 readonly 字段，本资产在磁盘上的 YAML 里<b>只有 schemaVersion 一行</b>。
+        // 后果正是用户反馈③里最难归因的那条：「烘焙完画面不动 / 开关开与关看起来一样」——
+        // 滤镜内容从来没落过盘，任何一次重编译或重开场景都会把它清空。
+        [SerializeField] System.Collections.Generic.List<FilterChunk> chunks
             = new System.Collections.Generic.List<FilterChunk>(16);
 
         // 与 delta 层同容差：亚厘米残差落格只会让资产膨胀、视觉无感（01 §9）
@@ -192,6 +196,64 @@ namespace Collin.CityMap
             }
             _lastIdx = -1; _lastCcx = int.MinValue; _lastCcz = int.MinValue;
             _filledCache = -1;
+        }
+
+        // ───────────── 意图记账（撤销烘焙/清空后画面才会重放）─────────────
+
+        [Header("意图记账（不画进画面，但删掉它撤销烘焙就看不见）")]
+        [SerializeField] string stableId;
+        [SerializeField] IntentChangeLedger ledger = new IntentChangeLedger();
+
+        public string StableId => stableId;
+        public IntentChangeLedger Ledger => ledger;
+        public long ManualVersion => ledger != null ? ledger.ManualVersion : 0L;
+
+        private void OnEnable() => EnsureRegistered();
+        private void OnDisable() => IntentRegistry.Unregister(this);
+
+        public void EnsureRegistered()
+        {
+            if (string.IsNullOrEmpty(stableId)) stableId = IntentRegistry.NewStableId("filter");
+            ledger ??= new IntentChangeLedger();
+            IntentRegistry.Register(this);
+        }
+
+        /// <summary>
+        /// 烘焙或清空滤镜后提交一次：脏 <c>ParcelModel</c> 通道（S1b 的认领位），影响面为全图。
+        /// <para>为什么走 ParcelModel 而不是新开一个位：滤镜是"叠/不叠"的内容层，S1b 本就认领该位；
+        /// 而 S2 认领 <c>Flatten</c>（水界由终态地表决定），烘焙改了地表 ⇒ 水面必须跟着重算，
+        /// 这条传播链已在 02 二次改版里钉死，不得在此自造新位绕开。</para>
+        /// </summary>
+        public void CommitChange(float worldSize)
+        {
+            EnsureRegistered();
+            var w = Mathf.Max(64f, worldSize);
+            ledger.Bump(IntentKind.ParcelModel,
+                new Bounds(new Vector3(w * 0.5f, 0f, w * 0.5f), new Vector3(w, 1f, w)));
+        }
+
+        /// <summary>
+        /// 滤镜修正的最大绝对高差（米）+ 改动格数，面板「滤镜 削平最大 62m」用。
+        /// <para>存在理由（用户反馈③「平整滤镜简直是灾难」的根因之一）：烘焙完<b>一个数字都不报</b>，
+        /// 用户无从知道它削了多少山、填了多少谷，只能靠肉眼发现"山没了"。
+        /// 把改动幅度变成读数，才能让用户在烘焙完立刻判断合不合格，而不是事后归因。</para>
+        /// <para>只扫稀疏条目，成本与滤镜覆盖格数成正比、与图幅无关。</para>
+        /// </summary>
+        public void Measure(out int cells, out float maxAbsDelta)
+        {
+            cells = 0; maxAbsDelta = 0f;
+            foreach (var c in chunks)
+            {
+                if (c.values == null) continue;
+                for (var i = 0; i < c.values.Length; i++)
+                {
+                    var v = c.values[i];
+                    if (v == 0f) continue;
+                    cells++;
+                    var a = Mathf.Abs(v);
+                    if (a > maxAbsDelta) maxAbsDelta = a;
+                }
+            }
         }
     }
 }

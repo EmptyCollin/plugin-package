@@ -58,6 +58,17 @@ namespace Collin.CityMap
         [Tooltip("单个地块允许的最大目标坡度（度）：防止目标平面过陡时把地块角部翘起。0=不检查")]
         [SerializeField, Range(0f, 30f)] float targetPlaneMaxSlope = 12f;
 
+        /// <summary>
+        /// 陡坡保护阈值（度）：原始地面坡度超过本值的格<b>不接受平整约束</b>。
+        /// <para>这是 Modules/12 §3／DESIGN <b>D-32</b> 规定的"三档退让"里的第一档（hardRetreatSlope），
+        /// 设计文档写了、代码里一处落点都没有 —— 后果就是用户反馈③「平整滤镜简直是灾难」：
+        /// 8km 默认档下试设地块铺满全图、拟合坡度超限就退化成<b>水平中位数面</b>，
+        /// 雕出来的山被整片削顶填谷成 64 块水平台阶。</para>
+        /// <para>默认 18°：陡于 18° 视为"这是山，不该拿来盖房子"。0 = 关闭保护。</para>
+        /// </summary>
+        [Tooltip("陡坡保护(°)：原始地面坡度超过本值的格不参与压平。0=关闭。默认保住山体不被削成台阶。")]
+        [SerializeField, Range(0f, 60f)] float steepProtectSlope = 18f;
+
         [Header("调试")]
         [Tooltip("冻结细节噪声：只看规划形状（R-04 定位用）")]
         [SerializeField] bool roughnessLock = false;
@@ -85,6 +96,8 @@ namespace Collin.CityMap
         public float ConstraintInner => constraintInner;
         public float ConstraintExtend => constraintExtend;
         public float TargetPlaneMaxSlope => targetPlaneMaxSlope;
+        /// <summary>陡坡保护阈值（度），见字段注释（D-32 退让档落地）。</summary>
+        public float SteepProtectSlope => steepProtectSlope;
         public bool RoughnessLock => roughnessLock;
 
         /// <summary>城心（世界 XZ）：优先用 CityProject 锚点（01 §4.4，H-7 定稿：不实时读场域）。</summary>
@@ -240,6 +253,32 @@ namespace Collin.CityMap
         }
 
         /// <summary>
+        /// 陡坡保护阈值（唯一写入口）。<c>0</c> 是合法值（= 关闭保护），故<b>不</b>做">0 才算提供"的哨兵判断。
+        /// </summary>
+        public bool SetSteepProtect(float degrees)
+        {
+            var v = float.IsNaN(degrees) ? 18f : Mathf.Clamp(degrees, 0f, 60f);
+            if (Mathf.Approximately(v, steepProtectSlope)) return false;
+            steepProtectSlope = v;
+            Touch();
+            return true;
+        }
+
+        /// <summary>
+        /// 目标平面坡度上限（面板开放它，理由：<c>TargetPlaneAllowed</c> 会因它<b>整条丢弃</b>约束，
+        /// 丢弃又制造补丁状不齐 —— 一个会静默改变结果的参数不该只能改资产）。
+        /// <c>0</c> = 不检查，是合法值。
+        /// </summary>
+        public bool SetTargetPlaneMaxSlope(float degrees)
+        {
+            var v = float.IsNaN(degrees) ? 12f : Mathf.Clamp(degrees, 0f, 60f);
+            if (Mathf.Approximately(v, targetPlaneMaxSlope)) return false;
+            targetPlaneMaxSlope = v;
+            Touch();
+            return true;
+        }
+
+        /// <summary>
         /// 参数值指纹（顺序无关、与序列化字段一一对应）。
         /// <para>存在理由：面板控件走 <c>SetXxx()</c> 会 <see cref="Touch"/> bump 序列号，Tracker 看得见；
         /// 但用户**直接在 Inspector 改 SO 字段**（或 Ctrl+Z 回滚字段）不会调用任何 Set 方法 ⇒
@@ -271,6 +310,7 @@ namespace Collin.CityMap
                 h = CityRng.Mix(h, (ulong)Q(constraintInner));
                 h = CityRng.Mix(h, (ulong)Q(constraintExtend));
                 h = CityRng.Mix(h, (ulong)Q(targetPlaneMaxSlope));
+                h = CityRng.Mix(h, (ulong)Q(steepProtectSlope));   // 新可调字段必须并入（Value_Key_Covers_Every_Tunable_Field 会逐字段验）
                 h = CityRng.Mix(h, (ulong)Q(naturalizeRadius));
                 h = CityRng.Mix(h, (ulong)Q(naturalizeAmount));
                 h = CityRng.Mix(h, (ulong)(roughnessLock ? 1 : 0));

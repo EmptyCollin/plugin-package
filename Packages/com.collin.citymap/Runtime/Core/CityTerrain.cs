@@ -29,6 +29,27 @@ namespace Collin.CityMap
         [Header("实例态：人工平整区（意图层，存区域不存平面）")]
         [SerializeField] List<ManualFlattenZone> manualZones = new List<ManualFlattenZone>();
 
+        /// <summary>
+        /// 手绘格豁免（用户 2026-11-06 反馈③「平整滤镜简直是灾难」的整改之一）。
+        /// <para>开＝被雕刻笔刷碰过的格<b>不接受</b>平整约束；关＝允许自动层覆盖手绘。
+        /// 设计文档（Modules/01 §3.4 的 <c>ManualLocked</c>）本来就有这条承诺，实现里一直没有
+        /// （CHANGELOG 自己也承认过）。判据数据现成：delta 层该格有非零增量或绝对目标 = 被碰过。</para>
+        /// <para>默认<b>开</b>：自动层悄悄毁掉用户设计是 D-01-1 反复禁止的那类事故；
+        /// 宁可不自动，也不覆盖人工。</para>
+        /// </summary>
+        [Tooltip("开＝手绘过的格不被平整滤镜改动（人工优先于自动）。默认必须开。")]
+        [SerializeField] bool protectHandCarved = true;
+
+        public bool ProtectHandCarved => protectHandCarved;
+
+        /// <summary>改豁免=改「哪些格可平整」=改了可平整对象 ⇒ 必须作废旧滤镜。</summary>
+        public void SetProtectHandCarved(bool on)
+        {
+            if (on == protectHandCarved) return;
+            protectHandCarved = on;
+            BumpFlattenSource();
+        }
+
         [Header("实例态：山水雕刻人工层（01 §2.2/§2.3，实例差异不写 Model）")]
         [Tooltip("SculptDeltaAsset：笔刷增量与绝对压平目标；null = 无人工改动")]
         [SerializeField] SculptDeltaAsset delta;
@@ -87,20 +108,36 @@ namespace Collin.CityMap
 
         [SerializeField] WaterToolMode waterToolMode = WaterToolMode.Add;
 
-        /// <summary>点击点高于海平面时是否先问"是否生成陆上水体"（用户裁定第 2 步）。</summary>
-        [Tooltip("点在高处时先询问是否生成陆上水体（关掉＝直接生成并打日志）。")]
-        [SerializeField] bool askBeforeLandlocked = true;
+        /// <summary>
+        /// 新建种子的默认水深（米）：种子水面高度 = 点击点地面高程 + 本值。
+        /// <para>02 二次改版后它取代了原来的「陆上水体水深」：没有全局海平面可退之后，
+        /// <b>每次点击都要算一个高程</b>，所以这是所有水种子的默认量，不再特指"陆地上的"。
+        /// 连带删掉的是「高处点击先询问」开关与整套内联确认条 —— 水不会再莫名其妙淹掉山谷，
+        /// 因为下面那个半径兜住了。</para>
+        /// </summary>
+        [Tooltip("点一格建种子时，水面高度 = 该格高程 + 此水深(m)。")]
+        [SerializeField] float waterDepth = 4f;
 
-        /// <summary>陆上水体的默认水深（米）：局部水位 = 点击点高程 + 本值。</summary>
-        [Tooltip("陆上水体的默认水深(m)：局部水位取点击点高程 + 此值。")]
-        [SerializeField] float landlockedDepth = 4f;
+        /// <summary>
+        /// 新建种子的默认扩散半径（米）。<b>0 = 不限</b>。
+        /// <para>存在理由（用户 2026-11-05 裁定要简化交互，代价我上一轮已当面指出并被接受）：
+        /// 只留"低于种子高程"这一个判据时，在山脊上点一下会顺着单调下坡把<b>整个山谷</b>淹掉 ——
+        /// 没有任何东西能阻止水翻过山脊。默认给个小值 ⇒ 点哪里都只成一个小水塘；
+        /// 想做湖或海湾，在种子列表里把那颗种子的半径设成 0。</para>
+        /// </summary>
+        [Tooltip("种子沿谷扩散的半径(m)。0 = 不限（做湖/海湾）。默认小值防止点山脊淹掉整个山谷。")]
+        [SerializeField] float waterSeedRadius = 120f;
 
         public enum WaterToolMode { Add = 0, Remove = 1 }
 
         public bool WaterToolActive => waterToolActive;
         public WaterToolMode WaterMode => waterToolMode;
-        public bool AskBeforeLandlocked => askBeforeLandlocked;
-        public float LandlockedDepth => landlockedDepth;
+        public float WaterDepth => waterDepth;
+        public float WaterSeedRadius => waterSeedRadius;
+        public void SetWaterDepth(float meters)
+            => waterDepth = Mathf.Clamp(meters, 0.1f, 200f);
+        public void SetWaterSeedRadius(float meters)
+            => waterSeedRadius = float.IsNaN(meters) ? 0f : Mathf.Max(0f, meters);
 
         [Header("身份")]
         [SerializeField] string stableId;
@@ -110,6 +147,13 @@ namespace Collin.CityMap
         /// 生成统计（<b>故意不序列化</b>：S1b 在编辑期回写，若为序列化字段会因 ExecuteAlways
         /// 把场景标脏 ⇒ 用户什么都没改却要保存场景。呈现用，重启后归零无影响）。</summary>
         int lastConstraints, lastCells, lastRejectedConstraints;
+
+        /// <summary>
+        /// 上一次烘焙的<b>最大绝对高差</b>（米，同上不序列化）。
+        /// <para>存在理由（用户反馈③）：烘焙完<b>一个数字都不报</b>，用户无从知道它削了多少山、
+        /// 填了多少谷，只能靠肉眼发现"山没了"。把改动幅度变成读数，才能在烘完立刻判断合不合格。</para>
+        /// </summary>
+        float lastBakeMaxDelta;
 
         /// <summary>平整相关的<b>呈现用</b>提示（同上不序列化）：为空 = 无需提示。</summary>
         string flattenHint;
@@ -130,6 +174,8 @@ namespace Collin.CityMap
         public int LastConstraints => lastConstraints;
         public int LastCells => lastCells;
         public int LastRejectedConstraints => lastRejectedConstraints;
+        /// <summary>上一次烘焙的最大绝对高差（米）。见 <see cref="lastBakeMaxDelta"/> 的存在理由。</summary>
+        public float LastBakeMaxDelta => lastBakeMaxDelta;
         public string FlattenHint => flattenHint;
         public long BakeProfileVersion => bakeProfileVersion;
         public long BakeProjectVersion => bakeProjectVersion;
@@ -162,8 +208,16 @@ namespace Collin.CityMap
             }
         }
 
-        /// <summary>手绘（落笔）通道的序列号 —— 内容变化的唯一连续判据。</summary>
-        long DeltaSequence => ledger != null ? ledger.SequenceOf(IntentKind.DeltaStroke) : 0L;
+        /// <summary>
+        /// 手绘（落笔）通道的序列号 —— 内容变化的唯一连续判据。
+        /// <para><b>优先读 delta 资产的那份账本</b>（2026-11-06）：撤销还原的正是那个资产，
+        /// 实例侧序列号原地不动 ⇒ 若读实例，"撤销掉烘焙之后的那一笔"会被判成 Fresh，
+        /// 画面挂着按旧地形算出的滤镜却毫无提示。资产缺失（未绑定）时退回实例那份兜底。</para>
+        /// </summary>
+        long DeltaSequence
+            => delta != null && delta.Ledger != null
+                ? delta.Ledger.SequenceOf(IntentKind.DeltaStroke)
+                : (ledger != null ? ledger.SequenceOf(IntentKind.DeltaStroke) : 0L);
 
         /// <summary>烘焙判据需要项目版本，但实例不持有项目引用（项目由面板/上下文供给）。</summary>
         [System.NonSerialized] CityProject _bakeProjectProbe;
@@ -195,8 +249,13 @@ namespace Collin.CityMap
 
         /// <summary>
         /// 烘焙完成后由面板调用：bump 一次让画面重放新滤镜（求解已在 Bake 里做完，这里只是叠加刷新）。
+        /// <para><b>双写滤镜资产账本</b>：撤销登记在滤镜资产上，脏位必须同处才看得见（同 H-9 纪律）。</para>
         /// </summary>
-        public void MarkFilterBaked() => Bump(IntentKind.ParcelModel);
+        public void MarkFilterBaked()
+        {
+            Bump(IntentKind.ParcelModel);
+            flattenFilter?.CommitChange(_bakeProjectProbe != null ? _bakeProjectProbe.WorldSizeValue : 0f);
+        }
 
         /// <summary>
         /// 换滤镜资产。走 <see cref="IntentKind.ParcelModel"/> 通道：换层必须触发一次 S1b <b>重放</b>
@@ -207,6 +266,7 @@ namespace Collin.CityMap
             if (ReferenceEquals(f, flattenFilter)) return;
             flattenFilter = f;
             Bump(IntentKind.ParcelModel);
+            if (f != null) f.CommitChange(_bakeProjectProbe != null ? _bakeProjectProbe.WorldSizeValue : 0f);
         }
 
         /// <summary>
@@ -252,9 +312,6 @@ namespace Collin.CityMap
         }
 
         public void SetWaterToolMode(WaterToolMode mode) => waterToolMode = mode;
-        public void SetAskBeforeLandlocked(bool on) => askBeforeLandlocked = on;
-        public void SetLandlockedDepth(float meters)
-            => landlockedDepth = Mathf.Clamp(meters, 0.5f, 200f);
 
         /// <summary>
         /// 改「可平整对象」的写入口统一走这里：bump 地块通道 + <b>点名作废旧滤镜</b>。
@@ -329,6 +386,9 @@ namespace Collin.CityMap
             lastConstraints = constraints; lastCells = cells; lastRejectedConstraints = rejected;
         }
 
+        /// <summary>由烘焙入口回填本次最大削平幅度（呈现用，不参与任何判定）。</summary>
+        public void ReportBakeAmplitude(float maxDelta) => lastBakeMaxDelta = maxDelta;
+
         public void EnsureStableId()
         {
             if (string.IsNullOrEmpty(stableId)) stableId = IntentRegistry.NewStableId("terrainInst");
@@ -348,15 +408,15 @@ namespace Collin.CityMap
         /// 增量重建找错块，表现为"雕了别处、画面不动"（与 H-42 同族：算错影响范围）。</para>
         /// <para>影响面按用户裁定 = Flatten + Building（01 §5，DESIGN **D-31** 推翻旧「仅脏 S6」）：
         /// S1b 重算受波及地块的目标平面，S6 重排落位；<b>不含 Terrain</b> ⇒ 不重跑噪声基底（A-2）。</para>
+        /// <para><b>双写账本</b>（2026-11-06 用户反馈「笔刷撤销不生效」）：既记实例账本（显示层按它取脏盒做
+        /// 增量重建），又记 <see cref="SculptDeltaAsset"/> 账本（撤销还原的是那个资产，账本必须同处才能被看见）。
+        /// 两处都是 DeltaStroke 位 ⇒ Tracker 按位并入，<b>不会跑两遍</b>。</para>
         /// </summary>
         public void MarkDeltaChanged(Vector2 centerWorld, float brushRadius)
         {
-            EnsureStableId();
-            ledger ??= new IntentChangeLedger();
             var r = Mathf.Max(MinAffectedRadius, brushRadius * 2f);   // 笔刷外扩一档，覆盖过渡带波及
-            ledger.Bump(IntentKind.DeltaStroke,
-                new Bounds(new Vector3(centerWorld.x, 0f, centerWorld.y),
-                           new Vector3(r * 2f, 1f, r * 2f)));
+            BumpDelta(new Bounds(new Vector3(centerWorld.x, 0f, centerWorld.y),
+                                 new Vector3(r * 2f, 1f, r * 2f)));
         }
 
         /// <summary>
@@ -375,14 +435,24 @@ namespace Collin.CityMap
         /// </summary>
         public void MarkDeltaChanged(Bounds strokeExtent, float perSideMargin = 0f)
         {
-            EnsureStableId();
-            ledger ??= new IntentChangeLedger();
             var grow = Mathf.Max(0f, perSideMargin) * 2f;
             // 零/负尺寸会被 PipelineContext.AddDirtyBound 当"无脏区"丢掉 ⇒ 与圆心口径同样兜底成最小盒
             var side = Mathf.Max(MinAffectedRadius * 2f, strokeExtent.size.x + grow);
             var front = Mathf.Max(MinAffectedRadius * 2f, strokeExtent.size.z + grow);
-            ledger.Bump(IntentKind.DeltaStroke,
-                new Bounds(strokeExtent.center, new Vector3(side, 1f, front)));
+            BumpDelta(new Bounds(strokeExtent.center, new Vector3(side, 1f, front)));
+        }
+
+        /// <summary>手绘脏位的<b>唯一</b>双写点（两个重载共用，保证两处账本永远同值）。</summary>
+        void BumpDelta(Bounds box)
+        {
+            EnsureStableId();
+            ledger ??= new IntentChangeLedger();
+            ledger.Bump(IntentKind.DeltaStroke, box);
+            if (delta != null)
+            {
+                delta.EnsureRegistered();
+                delta.Ledger.Bump(IntentKind.DeltaStroke, box);
+            }
         }
 
         /// <summary>换 delta 资产：实例引用变了，按当前生效笔刷区域重新提交一次。</summary>
@@ -407,24 +477,27 @@ namespace Collin.CityMap
         /// 水相关意图变化（种子增删改）⇒ bump <see cref="IntentKind.RiverStroke"/> 让 S2 重洪泛。
         /// <para>脏集合走 River 位：展开成 `Road|Parcel|Field|Building|Flatten`——
         /// 水界变了确实波及地块边界与临水打分，<b>绝不含 Terrain</b>（不得重跑噪声基底）。</para>
+        /// <para><b>双写账本</b>（同 <see cref="MarkDeltaChanged"/> 的理由）：撤销登记在
+        /// <see cref="WaterNetworkAsset"/> 上，故脏位必须也落在那份账本，否则"撤掉一个种子"
+        /// 数据回去了、水面不回。此处保留实例记账是因为地表变了（烘焙/开关滤镜）也要走这个位，
+        /// 而那种改动与 water 资产无关。</para>
         /// </summary>
         public void MarkWaterChanged()
         {
+            var box = new Bounds(new Vector3(transform.position.x, 0f, transform.position.z),
+                                 Vector3.one * MinAffectedRadius);
             EnsureStableId();
             ledger ??= new IntentChangeLedger();
-            ledger.Bump(IntentKind.RiverStroke,
-                new Bounds(new Vector3(transform.position.x, 0f, transform.position.z),
-                           Vector3.one * MinAffectedRadius));
+            ledger.Bump(IntentKind.RiverStroke, box);
+            water?.CommitChange(box);
         }
 
-        /// <summary>
-        /// 生效地表变了（烘焙完／开关滤镜）⇒ 水面必须跟着重算。
-        /// <para>存在理由：水界由"地表是否低于水位"决定。烘焙把洼地填高、或关掉滤镜让洼地露出，
-        /// 水面都该随之变化；不 bump 就会留下<b>水悬在半坡</b>——正是洪泛定义承诺不可能出现的东西。
-        /// 显式点名而非靠 `Flatten ⇒ River` 传播规则：后者会让每次 S1b 重放都触发全图重洪泛，
-        /// 而"重放"未必代表地表真的变了（同 D-39/D-41 的"显式作废优于嗅探"口径）。</para>
-        /// </summary>
-        public void MarkSurfaceChanged() => MarkWaterChanged();
+        // 原先这里还有一个 `MarkSurfaceChanged() => MarkWaterChanged()`（"地表变了要重算水面"的显式点名）。
+        // 已删除：取证确认它<b>零消费者</b>，而且这条链已由传播表完整覆盖 ——
+        // 烘焙/开关滤镜走 ParcelModel ⇒ Expand 带出 Flatten ⇒ S2 认领 Flatten ⇒ 水面自动重算
+        // （见 StageClaims 的 S2 注释与 02 §3）。留一个没人调的显式入口，只会诱导下一个人
+        // 以为"必须点名才生效"而绕过单一真源。若将来这条链被改动，AssetPersistenceTests 与
+        // 02 的验收条目会当场红。
 
         /// <summary>
         /// 实例变化的影响范围（保守上界）。

@@ -75,26 +75,26 @@ namespace Collin.CityMap
             if (_terrain.FlattenEnabled && f != null && !f.IsEmpty) f.ApplyTo(field);
             System.Array.Copy(field.Heights, surface, grid.CellCount);
 
-            var sea = _project != null ? _project.SeaLevel : 0f;
             var buffer = _project != null ? _project.WaterBufferCells(grid) : 0;
 
             EnsureScratch(grid);       // 漏了这一行 ⇒ 首次洪泛拿到 null 队列直接 NRE（自查抓到）
-            // 逐格<b>水面高度</b>：渲染必须要它。多种子各有局部水位时（高原湖 160m 与海平面 0 并存），
-            // 只有"有水/没水"一个位就画不出正确高程 —— 湖会被画到 0m，直接埋进地形里看不见。
+            // 逐格<b>水面高度</b>：渲染必须要它。多种子各有水面高度时（天池 160m 与谷底水塘 20m 并存），
+            // 只有"有水/没水"一个位就画不出正确高程 —— 天池会被画到 0m，直接埋进地形里看不见。
             var cellLevel = EnsureCellLevel(grid.CellCount);
             for (var i = 0; i < grid.CellCount; i++) cellLevel[i] = float.NegativeInfinity;
-            var cells = WaterFlood.Flood(water, grid, surface, mask, sea, _queue, _visited,
+            var cells = WaterFlood.Flood(water, grid, surface, mask, _queue, _visited,
                                          out var seedsFlooded, cellLevel);
             if (cells == 0)
-                return StageResult.Ok(0, 0);      // 种子都在水位之上 = 水退干了，合法
+                return StageResult.Ok(0, 0);      // 种子都在水面高度之上 = 水退干了，合法
 
             var buffered = WaterFlood.ApplyBuffer(mask, grid, buffer, _queue);
 
             // 距离场<b>不在这里建</b>（实测与淹水面积无关，固定 170~266ms：两遍全图扫描）——
             // 它的消费者是 S5 场域与 S7 建筑临水偏好，两者目前都还没实现。
             // 每笔雕刻都为"没人读的东西"付 266ms，等于把 M4-j 换来的 4ms 手感直接毁掉。
-            // 改为按需：谁要用谁调 WaterField.EnsureDistance（首次才付钱，之后复用）。
-            LastField = new WaterField(cells, buffered, seedsFlooded, water.Count, sea,
+            // 改为按需：谁要用谁调 WaterField.DistanceMeters（首次才付钱，之后复用）。
+            // 面板统计要的"最大/最小水面高度"同样是 O(格数) 的遍历，放在这里<b>只在产水时</b>算一次。
+            LastField = new WaterField(cells, buffered, seedsFlooded, water.Count,
                                        mask, cellLevel, grid, this);
             ctx.SetSlot(StageId.S2_River, LastField);
 
@@ -149,21 +149,53 @@ namespace Collin.CityMap
         /// 否则"3 个种子全退干"会被读成"有 3 片水"。</summary>
         public int ActiveSeeds { get; }
         public int TotalSeeds { get; }
-        public float SeaLevelUsed { get; }
+
+        /// <summary>水面覆盖比例（0~1）。面板分层统计直接读它，不再让用户自己换算格数。</summary>
+        public float WaterAreaRatio { get; }
+        /// <summary>本轮<b>最低</b>水面高度（米）。无水时为 <see cref="float.NegativeInfinity"/>。</summary>
+        public float MinWaterLevel { get; private set; }
+        /// <summary>本轮<b>最高</b>水面高度（米）。无水时为 <see cref="float.NegativeInfinity"/>。</summary>
+        public float MaxWaterLevel { get; private set; }
 
         readonly ushort[] _mask;
-        readonly float[] _cellLevel;      // 每格水面高度（局部水位水体的关键：不能一律画在海平面）
+        readonly float[] _cellLevel;      // 每格水面高度（多种子各有高程的关键：不能一律画在同一平面上）
         readonly CityGrid _grid;
         readonly WaterStage _owner;
         float[] _distance;          // 惰性：首次被真要用的消费者才建（见 DistanceMeters）
 
         public WaterField(int waterCells, int bufferCells, int activeSeeds, int totalSeeds,
-                          float seaLevelUsed, ushort[] mask, float[] cellLevel,
+                          ushort[] mask, float[] cellLevel,
                           in CityGrid grid, WaterStage owner)
         {
             WaterCells = waterCells; BufferCells = bufferCells; ActiveSeeds = activeSeeds;
-            TotalSeeds = totalSeeds; SeaLevelUsed = seaLevelUsed;
+            TotalSeeds = totalSeeds;
             _mask = mask; _cellLevel = cellLevel; _grid = grid; _owner = owner;
+            WaterAreaRatio = grid.CellCount > 0 ? (float)waterCells / grid.CellCount : 0f;
+            MeasureLevels();
+        }
+
+        /// <summary>
+        /// 统计水面高程区间（面板"水 3片·12.4%·18~160m"用）。
+        /// <para>代价：一次 O(图幅格数) 扫描。只在<b>确有水</b>时构造本对象（S2 里 cells==0 早退），
+        /// 所以无水场景一分钱不花；有水时与洪泛本身同量级。若将来要每帧调，
+        /// 应把 min/max 移进 <see cref="WaterFlood.Flood"/> 的循环里顺手记（一次写入点），
+        /// 而不是在此再加一遍扫描。</para>
+        /// </summary>
+        void MeasureLevels()
+        {
+            MinWaterLevel = float.PositiveInfinity;
+            MaxWaterLevel = float.NegativeInfinity;
+            if (WaterCells <= 0) { MinWaterLevel = float.NegativeInfinity; return; }
+            var waterBit = (ushort)CellFlag.Water;
+            for (var i = 0; i < _cellLevel.Length; i++)
+            {
+                if ((_mask[i] & waterBit) == 0) continue;
+                var v = _cellLevel[i];
+                if (float.IsNegativeInfinity(v)) continue;      // 理论上不会发生（Flood 必写），留兜底不污染统计
+                if (v < MinWaterLevel) MinWaterLevel = v;
+                if (v > MaxWaterLevel) MaxWaterLevel = v;
+            }
+            if (float.IsPositiveInfinity(MinWaterLevel)) MinWaterLevel = float.NegativeInfinity;
         }
 
         /// <summary>水位是否落在该格（04/03 直接查，不需要距离场）。</summary>
@@ -173,13 +205,12 @@ namespace Collin.CityMap
         /// <summary>
         /// 该格的水面高度（米）。<b>非水格返回 -∞</b> —— 用"没有水面"而不是"水面=0"表达，
         /// 否则地形渲染会把无水印成 0m 平面。取 <see cref="float.NegativeInfinity"/> 也避开了
-        /// "用 0 当哨兵"的老坑（海平面默认就是 0，两者会撞车）。
+        /// "用 0 当哨兵"的老坑（0m 是完全合法的水面高度）。
         /// </summary>
         public float WaterSurfaceAt(int cx, int cz)
         {
             if (!IsWater(cx, cz)) return float.NegativeInfinity;
-            var v = _cellLevel[cz * _grid.Columns + cx];
-            return float.IsNegativeInfinity(v) ? SeaLevelUsed : v;    // 兜底：万一没写上，退回全局海平面
+            return _cellLevel[cz * _grid.Columns + cx];
         }
 
         /// <summary>整张逐格水面高度数组（渲染按显示网格采样用）。<b>只读，不得修改</b>。</summary>
