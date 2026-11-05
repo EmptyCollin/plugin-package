@@ -1,9 +1,10 @@
 # ACCEPTANCE — com.collin.stealthplanner
 
 > 每条必须带可观测证据（谁 / 何时 / 用什么指令验证 / 结果）。只记事实，不记意图（AGENTS.md §4）。
-> **当前状态：M2 已交付 + M2 收口轮（U-5 定案）**（M1 全部 + 相位可达传播 `PhaseReachability` + 热区合并网格
+> **当前状态：M3 已交付**（含 M2 收口轮 U-5 定案）（M1 全部 + 相位可达传播 `PhaseReachability` + 热区合并网格
 > + 相位时间轴窗口/哨兵泳道；收口轮 = 表结构版本 1→2 强制重烘、零可见防线补出口）。
-> M3~M9 尚无实现 ⇒ 下方组 B、C、E~G 仍为草案。**M1 证据见条目 6~14，M2 证据见条目 15~28。**
+> **M3 已交付**（可行性判定 + 无解 Top-K，见 **D-24**：本阶段用带目标早退的层序传播、真 A\*/四剪枝/k-shortest 推 M4）。
+> M4~M9 尚无实现 ⇒ 下方组 C 仅部分取证、组 B、E~G 仍为草案。**M1 证据见条目 6~14，M2 见 15~28，M3 见 29~32。**
 
 ## 验收草案（待实现取证，非通过项）
 
@@ -14,9 +15,9 @@
 | | 玩法包缺席时优雅降级（面板提示未接入，不抛异常） | ✅ 已取证（条目 23，M2 补 U-1） |
 | **B. 安全岛（反向注入）** | `Services.TryGet<ISafeIslandProvider>()` 取到本包实现且 `Contains` 与表口径一致 | EditMode 用例 |
 | | A 包 Play 态判定确实查询到安全岛（跨包通路端到端） | Play 探针：玩家进岛 → 察觉增速下降 |
-| **C. 相位搜索可行解** | 有解场景返回 ≤M 条、按到达时间升序、且每条都能通过「逐相位复现」二次验证（求解器与复现器解耦） | EditMode + 复现比对 |
-| | 剪枝后求解耗时随 NPC 数增长的曲线可接受（DESIGN §性能） | 基准：N∈{4,8,16} 计时 |
-| | 无解场景返回最近 K 个可藏点及其最早到达时间 | EditMode：构造无解关卡 |
+| **C. 相位搜索可行解** | 有解场景返回 ≤M 条、按到达时间升序、且每条都能通过「逐相位复现」二次验证（求解器与复现器解耦） | ⏳ **部分**：M3 只判「有无解 + 最早一条到达时间」（见条目 29/30），**≤M 条 k-shortest 属 M4、逐相位复现属 M5**，不得据此声称已交付本条 |
+| | 剪枝后求解耗时随 NPC 数增长的曲线可接受（DESIGN §性能） | ⏳ 待 M4（M3 未上四剪枝，见 D-24；实测 horizon=480 单次求解在毫秒级，但规模化基准属 M4） |
+| | 无解场景返回最近 K 个可藏点及其最早到达时间 | ✅ **已取证**（条目 31，M3；候选按绕墙格步数排序） |
 | **D. 时间轴回溯** | 拖动 t，NPC 位姿/危险区/安全区**同源同步**响应（编辑态非 Play） | ✅ 已取证（条目 18~19，M2） |
 | **E. 路点数据集** | 导出 JSON schema 稳定、且能被运行期注入器读回并复现同一条动线 | round-trip 用例 |
 | **F. 反向规划 NPC** | 按给定玩家动线反推 NPC 路点，写回后 A 包实际巡逻经过预期节点 | Play 探针 |
@@ -72,17 +73,21 @@
 ⇒ 条目 16/18/19 的取证确实是在视野体在场的可信现场做的，无需重做。
 本轮唯一撞到的坏现场（`视野体=0`、永久安全格被算成全场）只发生在「切场景后同一帧立刻烘焙」那一次，
 其"静默无痕迹"的后果由条目 26 的三处出口修掉。 |
+| 29 | **静态2 可行判定 + 目标早退 = 最早到达**（M3，复用 #5 单一真源、非手搓 A*，见 D-24） | 假表 `PhaseSolverTests` 4 条（无障碍走廊距离↔层数、目标先险后安须等待、起点==目标判第 0 层可达、步长 0 只等待）+ 真实烘焙表端到端（反射走窗口 `SolveFeasibility`，horizon=N×BucketsPerPhase=480） | 2026-11-05 | **通过** — 假表：`ReachableGoal` 5 格步长1⇒第4层(=4s)、`GoalBlockedEarly` 目标桶0/1/2危险⇒**第3层才冲入**（等待生效）、`StartEqualsGoal`⇒桶0、`Horizon` 默认 480 且 N=64/Δt=0.05 时正确报「视界过大 > 4096」返 -1。真实表：起点(-26.75,-26.75)→对角撤离点(26.75,26.75) ⇒ **✅ 有解 t=27.5s（桶 55）**；直线最少约 50 桶，**55>50 说明绕开了巡逻危险区**（正是潜行求解该有的结果，非直线穿越）。`EarliestArrival` 与 M2 传播的 `EarliestSeconds[goal]` 同口径（都来自 `PhaseReachability.Compute`） |
+| 30 | **求解器与时间轴热区共用同一份阻断判据**（无第二套安全口径） | 代码走查 + 断言：`PhaseSolver` 仅调 `PhaseReachability.ExpandSuccessors`/`BuildBlockedMask`，不自建邻居展开 | 2026-11-05 | **通过** — `#5` 重构后 BFS 主循环与求解器都走同一对公开入口；D-19「墙=危险」在 `BuildBlockedMask` 内统一并入，求解路径不可能漏查。回归：`WallSeparation_YieldsEmptyFallback`（格2 标墙⇒两侧隔断⇒不可达**且** Top-K 空）与 M2 `NoDataCell_BlocksPropagation` 同源于足迹，删合并逻辑两边同时红 |
+| 31 | **静态3 无解 Top-K：候选须「玩家到过」且「绕墙连得到撤离点」，按绕墙步数升序** | 假表 4 条 + 真实表造 horizon=1 无解 | 2026-11-05 | **通过** — `UnreachableGoal`：目标全险不可达⇒候选={格0,格1} 且按绕墙距离排序（格1距目标1 在 格0距目标2 前）；`TopKIsTruncatedToRequestedCount`：topK=1⇒只剩最近的格1；`FallbackOnlyIncludesCellsPlayerActuallyReached`：步长0 只能等⇒候选仅起点(到过)，不含「连得到但没到过」的格1~3；`WallSeparation`：墙隔断⇒**空清单**（诚实的「没有任何可达位置能接近撤离点」，不谎报「就差一格」——排序键用绕墙 BFS 距离而非直线距离，正是为此）。真实表 horizon=1⇒Feasible=False、CellsReached=1、Top-K=起点、绕墙距goal=107（108×108 网格切比雪夫对角，吻合） |
+| 32 | **入参越界与视界上限一律可读失败、不返回半结果** | 假表 `OutOfRangeInputs_ReportReasons_NoHalfResult` + `Horizon_UsesSettingsAndCapsAtHardLimit` | 2026-11-05 | **通过** — 表空/起点越界/撤离点越界各回专属原因（「表为空」「起点格越界」「撤离点格越界」）且 `Feasible=false`；视界硬上限 `MaxHorizonBuckets=4096` 超限时 `Horizon` 返 -1 + 「视界过大…请减小 N 或 P」，绝不返回一个会算爆内存的视界。M3 全量：本包 **63/63**（`PhaseSolverTests` 9 + 前 54），全工程 **325/325** |
 
 ## 未通过项
 
 | # | 现象 | 复现步骤 | 状态 |
 |---|---|---|---|
 | U-1 | 组 A 第 3 条「玩法包缺席时优雅降级」**尚无自动化用例** | 清空 `Services` 后调 `ContractVisibilitySource.TryCreate()` / 窗口 `Start()` | **✅ 已收口（M2）** — 见条目 23（`GracefulDegradationTests` 4 条）。原记录保留以便追溯「代码有、断言无」这个状态曾持续一整个里程碑 |
-| U-2 | §6.7「建议参考相位时长」算法未实现 | — | **待 M3**（与求解器同期做，需先看真实 c_i 分布再定 `L_max` 默认值） |
+| U-2 | §6.7「建议参考相位时长」算法未实现 | — | **待 M4**（M3 交付的是可行性求解，未含本参考值算法；需先看真实 c_i 分布再定 `L_max` 默认值。`MaxAlignedBuckets=7200` 常量已在 `PlannerBakeSettings`，缺的是 §6.7 主算法 lcm 量化 + 互质爆炸兜底 + 面板只读展示） |
 | U-3 | 增量重烘（改 1 个哨兵只重算其分片）未实现 | — | **待后续** — 当前每次烘焙全量重算，但首烘 0.82s 使该优化暂不紧迫（条目 10）；DESIGN D-11 的承诺目前只做到「分帧 + 可中断 + 订阅失效」，**不得对外声称已支持增量** |
-| U-4 | 求解器尚不消费永久安全层（剪枝①空转） | — | 正常：M3 才接。表侧能力与结论已由条目 7 独立验证 |
+| U-4 | 求解器尚不消费永久安全层（剪枝①空转） | — | 正常：按 **D-24**，§6.2 四剪枝（含剪枝①消费 `IsPermanentlySafe`）**一律推到 M4**。M3 的可行性判定复用层序传播 `PhaseReachability.Compute`，未展开剪枝——但答案正确（unit-cost + earliest-arrival 图上 BFS 首达即最早）。表侧该层能力与结论已由条目 7 独立验证，M4 接剪枝时无需再验数据可信度 |
 | U-5 | 🐛 **缺足迹的旧表资产不会被自动判为过期**（D-19 的落地缺口） | 本轮实测：打开窗口时读到 `格=11664 足迹=False`——那是 M1 时代烘的资产，`LayoutVersion` 仍是 1，与当前代码**版本相符**，于是窗口照常显示热区，但**墙格没有被并入危险**（穿墙保护失效），面板也不报错 | **✅ 已收口（2026-11-05 用户拍板方案①）** — `LayoutVersion` **1→2**，v1 资产一律拒用（取证见条目 25）。原记录保留以便追溯「只增字段不抬版本」这个失误本身：正是它让新加的保护区静默失效。缓解因素（当时判断依据，现仍成立）：表是场景派生产物、不入库，重烘实测 0.82~0.88s、菜单一键 |
-| U-6 | 静态设计 1 的「N 相位轮封顶判定有无解」与静态 2/3/4（求解器、Top-K、k-shortest 导出）未实现 | — | 正常：**M3/M4** 范围。M2 只交付时间轴可视化与传播地基（`Field.EarliestSeconds` 已是 M3 A* 的直接可复用产物） |
+| U-6 | 静态设计 2/3/4 未实现 | — | **M3 部分收口**：静态 2「≤N 相位封顶判有无解」✅ 已交付（条目 29）、静态 3「无解最近 K 个可藏点 + 最早到达时间」✅ 已交付（条目 31）。**仍缺**：静态 4 的前 M 条短解（k-shortest）与 JSON/SO 数据集导出注入 ⇒ **M4**；「每条解逐相位复现二次验证」⇒ **M5**（依赖复现器）。另 §6.2 四剪枝与 A* 启发按 D-24 一并推 M4 |
 | U-7 | `Showcase.json` 与本包演示视频未落 | AGENTS.md §6 要求两段式（怎么用 + 用了之后的效果）实录 | **待 M9** — ⚠️ 录屏只能用户手动录（既有约定），本包不得自行生成或代签"示意视频" |
 
 ## 基线隔离门禁记录
@@ -103,3 +108,4 @@
 | **M2 交锁门禁** | `console clear` → `"script recompile"` → `test run`（全量）→ 重跑本会话全部验证动作（`m2check` 逐桶采样 / `m2lanes` 口径比对 / `realgui2` 真实窗口重绘）→ `"console status"` → `python Tools/verify_project.py` | 2026-11-05 | **三项全绿**：① `compilationFailed=false`；② 归零后重跑全部验证动作 `consoleErrors=0 / consoleWarnings=0`；③ 校验器 **FAIL 0 / 结论绿灯**（剩 2 条 WARN = 本会话自有锁 + citymap 活跃锁）。全量 **306/306**（本包 **48**：CityMap 137 + Stealth 121 + StealthPlanner 48，按 `FullName` 命名空间统计自洽）。⚠️ 条目 20~22 的三处修复发生在首次采样之后，故本行读数是在**含全部修复的最终代码状态**上重跑的完整门禁，不沿用早期读数 |
 | **门禁期间的他会话红灯（如实上报，非本包改动引入）** | `recompile_status` + `git status` | 2026-11-05 | 第一次跑门禁时报 2 条 `CS0103: '_strokeCenter' does not exist`，堆栈**全部指向 `Packages/com.collin.citymap/Editor/SculptBrushTool.cs`**——该文件在工作区是未提交的他会话进行中改动，本会话未碰。编辑器因编译失败进入 Safe Mode、实时通道一度中断；随后该会话自行补全，再归零重跑即为 0。**本包未代修、未改他包文件**（§2 并行互斥、§1.8 归因例外）。另注：本会话中途忘记续锁心跳致校验器报 `lock-stale`（3271s），**续自己活跃锁的心跳即可**，规则禁止的是自动删除他人超时锁 |
 | **M2 收口轮门禁** | `console clear` → `"script recompile"` → `test run`（全量）→ 重放本会话验证动作（起点成功路径探针 + `m2check` 逐桶采样）→ `"console status"` → `python Tools/verify_project.py` | 2026-11-05 | 本包三项**全绿**：① `compilationFailed=false`；② 归零后重跑验证动作 `consoleErrors=0 / consoleWarnings=0`；③ 校验器的**本包相关检查全 ok**（`pkg-layout` / `runtime-purity` / `dep-pin` / `console` / `hygiene` 等）。全量 **316/316**（本包 **54**：CityMap 141 + Stealth 121 + StealthPlanner 54）。⚠️ **校验器整体仍判红灯**，唯一 FAIL 是 `lock-stale: com.collin.citymap.lock 心跳超时（1783s）`——**他包的锁，按 §3「心跳超时锁不得自动删除，报告用户处理」，本会话未删、未代修**；该包文件最后写入已是 50 分钟前（疑似会话已停），**需用户处置**（恢复那个会话续心跳，或由用户确认后删除）。本包锁已随本次提交释放。⚠️ 同一会话内我也**再次自造**过一次锁超时（436s 未续），教训同前：长动作序列里必须持续续心跳 |
+| **M3 交锁门禁** | `console clear` → `"script recompile"` → `test run`（全量）→ 重放端到端求解取证（`m3e2e.cs`：切 StealthSample 预热→脚本模式烘可信表→窗口 `SolveFeasibility` + 核心入口造无解）→ 还原场景 → `"console status"` → `python Tools/verify_project.py` | 2026-11-05 | **三项全绿**：① `compilationFailed=false`（本包 0 错误）；② 归零后重跑全部验证动作 `consoleErrors=0 / consoleWarnings=0`（还原场景后再次复采仍 0/0）；③ 校验器 **FAIL 0**（WARN 1=本会话自有锁）。全量 **325/325**（本包 **63**：CityMap 141 + Stealth 121 + StealthPlanner 63，按 `FullName` 命名空间统计自洽）。端到端可信表读数（视野体=3、跳过0、零可见0）与 M1/M2 逐位一致 ⇒ #5 边判据重构 + D-22 抬版本**未改变判定结果**。⚠️ 本会话为端到端取证多次 `OpenScene(Single)` 切 StealthSample↔TerrainTest（citymap 现场），每次切前均确认其 `dirty=False`，末态已还原 TerrainTest(非脏)。⚠️ 期间 citymap 会话自造过一次编译错误（`CityTerrain.cs bakeTerrainVersion`）与一条自身用例失败（`Value_Key_Covers_Every_Tunable_Field` 漏 naturalize 字段），均**属他包、本会话未代修**，对方随后自修、门禁末态 FAIL 0 |

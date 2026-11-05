@@ -27,6 +27,7 @@ namespace Collin.StealthPlanner.EditorTooling
         [SerializeField] VisibilityTableAsset _tableAsset;
         [SerializeField] PlannerBakeSettings _settings;
         [SerializeField] Vector3 _startWorld = new Vector3(-24f, 0f, -24f);
+        [SerializeField] Vector3 _goalWorld = new Vector3(24f, 0f, 24f);
         [SerializeField, Min(0.5f)] float _walkSpeed = DefaultWalkSpeed;
         [SerializeField] int _buckets = 24;
         [SerializeField] float _t;
@@ -46,6 +47,9 @@ namespace Collin.StealthPlanner.EditorTooling
         double _lastTick;
         string _status = "未载入表";
         string _warning;
+
+        // 静态设计 2/3 的求解结果（点「求解可行性」后写入，纯文本展示，不驱动热区）
+        string _solveSummary;
 
         /// <summary>每片「自身各桶看见多少格」的统计（只在表实例变化时重算，不每帧重扫）。</summary>
         int[][] _laneVisible;
@@ -127,6 +131,18 @@ namespace Collin.StealthPlanner.EditorTooling
                 Recompute();
             }
             EditorGUILayout.EndHorizontal();
+
+            // 静态设计 2/3：可行性求解。与热区共用同一张表与人速，但结果只以文本呈现，
+            // 不驱动逐桶热区（那会再引入一套「什么时候算」的口径）。
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("可行性求解（静态设计 2 / 3）", EditorStyles.boldLabel);
+            _goalWorld = EditorGUILayout.Vector3Field("撤离点（世界）", _goalWorld);
+            using (new EditorGUI.DisabledScope(_table == null))
+            {
+                if (GUILayout.Button("求解有无可行解")) SolveFeasibility();
+            }
+            if (!string.IsNullOrEmpty(_solveSummary))
+                EditorGUILayout.LabelField(_solveSummary, EditorStyles.wordWrappedMiniLabel);
 
             // 当前桶号在此统一取一次（泳道与状态行共用，避免两套 CurBucket 读数不同步）
             var bucket = CurBucket;
@@ -332,6 +348,52 @@ namespace Collin.StealthPlanner.EditorTooling
             _status = "t=" + tBucket.ToString("0.00") + "s（桶 " + bucket + "）步长 "
                       + step + " 格" + (driver == null ? " · 无回溯服务，NPC 未挪动" : "");
             SceneView.RepaintAll();
+        }
+
+        /// <summary>
+        /// 点「求解有无可行解」：复用同一张表 + 面板人速，走 <see cref="PhaseSolver"/>。
+        /// <para>结果只写成文本，<b>不驱动逐桶热区</b>——求解用的是「视界=N 相位」的完整 horizon，
+        /// 与时间轴滑条的 <c>_buckets</c> 是两个量，混在一起会让热区口径分裂。</para>
+        /// </summary>
+        void SolveFeasibility()
+        {
+            if (_table == null) { _solveSummary = "无表，先烘焙可见性表"; return; }
+            if (_settings == null)
+                _solveSummary = "缺烘焙设置：视界 N×⌈P/Δt⌉ 与 Top-K 无从取得，请先指定烘焙设置资产";
+            else
+            {
+                var r = PhaseSolver.Solve(_table, _settings, _startWorld, _goalWorld, _walkSpeed,
+                                          out var fail);
+                if (!fail.ok)
+                {
+                    _solveSummary = "求解失败：" + fail.reason;
+                }
+                else if (r.Feasible)
+                {
+                    _solveSummary = "✅ 有解：最早 t=" + r.EarliestArrivalSeconds.ToString("0.0")
+                        + "s（桶 " + r.ArrivalBucket + "）抵达撤离点；视界 " + r.HorizonBuckets
+                        + " 桶、途中可达 " + r.CellsReached + " 格";
+                }
+                else
+                {
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append("⛔ 视界 ").Append(r.HorizonBuckets).Append(" 桶内无可行解（途中可达 ")
+                      .Append(r.CellsReached).Append(" 格）。距撤离点最近的可藏点 ")
+                      .Append(r.FallbackTopK.Count).Append(" 个：");
+                    for (var i = 0; i < r.FallbackTopK.Count; i++)
+                    {
+                        var cd = r.FallbackTopK[i];
+                        sb.Append("\n  #").Append(i + 1).Append(" (")
+                          .Append(cd.world.x.ToString("0.0")).Append(", ").Append(cd.world.z.ToString("0.0"))
+                          .Append(") 距撤离点 ").Append(cd.DistCellsToGoal).Append(" 格 · 最早 ")
+                          .Append(cd.EarliestSeconds.ToString("0.0")).Append("s");
+                    }
+                    if (r.FallbackTopK.Count == 0)
+                        sb.Append("\n  （无——被墙隔断，玩家所在的连通分量根本到不了撤离点那侧）");
+                    _solveSummary = sb.ToString();
+                }
+                SceneView.RepaintAll();
+            }
         }
 
         /// <summary>把「本桶可达」拷成掩码——只读 Field 的公开查询，不复制其内部位图布局。</summary>

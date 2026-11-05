@@ -286,7 +286,8 @@ namespace Collin.StealthPlanner.Tests
             const int Buckets = 4;
 
             // ① 标了足迹、格 2 未被探测（= 一堵墙）：危险位全 0，唯一能挡住玩家的就是足迹。
-            //    这条**端到端**验 MergeNoData —— 上面 CannotJumpOverBlockingCell 用的是 danger 位，
+            //    这条**端到端**验 BuildBlockedMask 里的「或进无数据格」——
+            //    上面 CannotJumpOverBlockingCell 用的是 danger 位，
             //    测不到「只有无数据」这一路；删掉合并逻辑时只有本条会红。
             var walled = BlindCorridor(Buckets);
             walled.MarkEvaluated(new List<int> { 0, 1, 3, 4 });

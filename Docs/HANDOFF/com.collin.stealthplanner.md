@@ -3,114 +3,80 @@
 > 覆写式交接单（非追加日志），每次交锁前整体重写五部分（AGENTS.md §4）。
 > 只写可观测事实：碰了哪些文件、跑了什么指令、结果如何；不写意图与代码行为解释。
 
-最后交接：qianwen-work-assistant · `planner-m2fix-2026-11-05` · 本次提交（M2 收口轮：表版本 1→2 + 零可见防线补出口 + 54 条用例）
-> 前序：`78a103a`（骨架+DESIGN）→ `bd0d8b4`（门禁补记）→ `4334661`（DESIGN 定稿）→ `e1e957b`（M1 表+烘焙）→ `fe44abe`（M2 时间轴+传播+热区）
+最后交接：qianwen-work-assistant · `planner-m3-2026-11-05` · 本次提交（M3 相位可行性求解 + 无解 Top-K + 边判据单一真源 + 63 条用例）
+> 前序：`78a103a`（骨架+DESIGN）→ `bd0d8b4`（门禁补记）→ `4334661`（DESIGN 定稿）→ `e1e957b`（M1 表+烘焙）→ `fe44abe`（M2 时间轴+传播+热区）→ `4535b3a`（M2 收口轮 表版本1→2）
 
-## 1. 已完成（本轮 = M2 收口轮，把 M2 遗留的 U-5 定案并补防线出口）
+## 1. 已完成（本轮 = M3，静态设计 2「有无解」+ 静态设计 3「无解 Top-K」）
 
-**破坏性变更（用户 2026-11-05 拍板，选方案①）**：
-- `VisibilityTableAsset.LayoutVersion` **1 → 2**。v1 资产一律拒用：`Table` 返 null、`IsBaked=false`、
-  `TryQuery` 返 false 且**保守判危险**、原因文本 `表结构版本 1 ≠ 当前 2，请重烘`。
-  端到端实测（直接读库里那份 v1 资产）：`[V2] 重烘前 资产Version=1 代码LayoutVersion=2 Table=null(已拒用) …`。
-  ⚠️ **所有用户机器上已有的表都需要重烘**（菜单 `Tools/Collin/Stealth Planner/烘焙可见性表`，实测 0.82~0.88s；
-  表是派生产物、不入库，新克隆环境无此负担）。
+**Runtime**（纯 CPU、只读表、无 UnityEditor 引用，可后台/引擎侧复用）：
+- `PhaseSolver.cs`（新增）：
+  - `Solve(table, settings, startWorld, goalWorld, walkSpeed, out failure)`（面板入口，内部算 horizon=N×BucketsPerPhase + stepCells + FallbackTopK）。
+  - `Solve(table, startCell, goalCell, horizonBuckets, stepCells, topK, out failure)`（核心入口，测试直接走这条）。
+  - 输出 `Result`：`Feasible` / `ArrivalBucket` / `EarliestArrivalSeconds` / `HorizonBuckets` / `CellsReached` / `FallbackTopK(List<Candidate>)`。
+  - 可行性一律复用 `PhaseReachability.Compute`（带目标早退重载），**不自建第二套安全/邻居判据**（见 D-24）。
+  - 无解 Top-K：从 goal 做「只穿非墙格」多源 BFS 距离场；候选须 `EarliestSeconds` 有限 **且** 距离场有限，按(绕墙格步数, 最早到达)升序、截断到 topK（topK<1 按 1）。墙隔断时**如实返回空清单**（排序键用绕墙距离，不用直线距离——后者会谎报「就差一格」）。
+  - 视界硬上限 `MaxHorizonBuckets=4096`；`Horizon()` 超限返 -1 + 可读原因。
+- `PhaseReachability.cs`（改）：
+  ① 抽出**单一真源公开 API**：`BuildBlockedMask(table,t,noData,mask)`（危险或无数据，全工程唯一「某桶哪些格不能站/过」入口）、`TryBuildNoData`、`ExpandSuccessors(table,from,stepCells,maskHere,maskNext,outBuf)`（合法后继含原地等待，去重，D-18 三条语义）。BFS 主循环改为调这三者（原 `ExpandFrom`/`MergeNoData` 私有实现被公开入口取代）。
+  ② 新增 `Compute(...,goalCell, out failure, out goalArrivalBucket)` **带目标早退**重载；原 5 参入口转调它（goal=-1）。注释写死：早退时场只覆盖到命中层，未命中时跑满 horizon 场完整。
 
-**防线出口补齐（新增决策 D-23）**：`ScanZeroVisibility()` 此前算出名单但**无任何出口**（会话不暴露、
-日志不打印、表不记录、窗口无从警告）⇒「三个哨兵全瞎」的表被下游当可信数据。本轮补三处出口：
-- `VisibilityBakeSession.ZeroVisibilityGuards`（对外可读）；
-- 脚本模式日志追加 `零可见=N（名字…）`；
-- **写进表**：烘焙收尾把「整片零可见」与「被跳过（位姿不可解析）」**合并**登记进
-  `VisibilityTable.UnknownGuardNames`（二者表侧语义相同：该哨兵的视野在表里等于不存在 ⇒ 其视野区被画成安全）。
-  时间轴窗口横幅措辞同步改为覆盖两类来源。
+**Editor**：`StealthTimelineWindow.cs`（改）加「可行性求解（静态设计 2/3）」区块：`_goalWorld` 输入 + 「求解有无可行解」按钮（无表禁用）+ `_solveSummary` 文本。**不驱动逐桶热区**（求解用完整 horizon，与滑条 `_buckets` 是两个量）。
 
-**测试**：本包 **48→54**（全量 **316/316**；分包 CityMap 141 + Stealth 121 + StealthPlanner 54）。
-新增 `VisibilityTableAssetVersionTests` **5 条**（版本常量=2 / v1 拒用且原因含两版号 / 未烘与版本冲突两条提示不同 /
-`ClearBaked` 回到版本 0）+ `ZeroVisibilityGuard_IsReported_AndPersistedOnTable` **1 条**（名单必须落到表上）。
-起点成功路径实测：`IsEvaluated(c) && !IsDangerousAt(c,0f)` 筛出格 0 → `状态=t=0.00s（桶 0）步长 3 格
-危险三角=774 可达三角=6 警告=(空)`。
+**测试**：本包 **54→63**（新增 `PhaseSolverTests` **9 条**）。全量 **325/325**，
+按 `FullName` 命名空间：CityMap 141 + Stealth 121 + StealthPlanner 63（自洽）。
 
-**本轮实测读数（视野体在场的可信现场，3 哨兵）**：`片数=3 活动格=11,660/11,664 永久安全格=4,482
-位图KB=252.0 查询=1,970,540 预筛省射线=1,586,206 实打射线=384,334 主循环=0.88s 跳过=0 零可见=0`；
-表侧 `Version=2 足迹=True 无数据格=4 可疑名单=0` ⇒ 与 M1 条目 11/12 读数逐位一致，D-22 抬版本没有改变判定结果。
+**实测读数**：
+- 假表（`PhaseSolverTests`）：无障碍 5 格步长1⇒第4层(=4s)；目标桶0/1/2危险⇒**第3层冲入**（等待生效）；起点==目标⇒桶0；topK=1⇒仅最近；步长0⇒候选仅起点；墙隔断⇒不可达**且** Top-K 空；入参越界各回专属原因；`Horizon` 默认480、N=64/Δt=0.05 时报「视界过大」返 -1。
+- 真实烘焙表（3 哨兵，脚本模式烘，视野体=3）：`片3 活动格11,660/11,664 永久安全4,482 位图252.0KB 查询1,970,540 预筛省1,586,206 实打384,334 主循环0.66s 跳过0 零可见0`；表 `Version=2 足迹=True 无数据格=4`（与 M1/M2 逐位一致 ⇒ 抬版本+重构未改变判定）。
+- 端到端（horizon=480）：起点(-26.75,-26.75)→对角撤离点(26.75,26.75) ⇒ **✅ 有解 t=27.5s（桶 55）**、途中可达 11,660 格（直线最少约 50 桶 ⇒ 55 桶说明绕开巡逻危险区）。
+- 端到端（horizon=1 造无解）：`Feasible=False CellsReached=1 TopK数=1 cell=0 距goal=107 最早=0`（108×108 网格切比雪夫对角=107 步，吻合）。
 
-**文档**：DESIGN 新增 **D-22**（版本随字段新增必须抬升）、**D-23**（防线必须有可观测出口）；
-ACCEPTANCE 新增条目 **25~28**、U-5 改「✅ 已收口」、状态头转收口轮、补本轮门禁行；CHANGELOG 新增
-「Changed（M2 收口轮）」与两处 Fixed。
+**文档**：DESIGN 里程碑 M3 标达成 + 新增 **D-24**（本阶段用带早退的层序传播替代手搓 A*，真 A*/四剪枝/k-shortest 推 M4）；
+ACCEPTANCE 状态头转 M3、C 组三行标取证状态（k-shortest 那条如实标「部分/属 M4」）、新增条目 **29~32**、U-2/U-4/U-6 推进；
+CHANGELOG 新增 Added(M3) 段、版本说明转 M3；HANDOFF 覆写五节。
+
+**门禁（本轮末次跑，最终代码状态）**：`console clear` → `"script recompile"` → `test run`(全量) → 重放 `m3e2e.cs` 端到端 → `"console status"` → `verify_project.py`。
+三项全绿：`compilationFailed=false`；`consoleErrors=0 / consoleWarnings=0`；校验器 **FAIL 0**（WARN 1=本会话自有锁）。还原场景后再次 `console status` error=0/warn=0。
 
 ## 2. 未完成
 
-- 🚨 **需用户处置：citymap 的超时锁让校验器整体判红灯。** 读数
-  `lock-stale: com.collin.citymap.lock 心跳超时（1783s），holder=qianwen-work-assistant`；
-  该包文件最后写入已是 50 分钟前（疑似会话已停）。**按 §3「心跳超时锁不得自动删除，报告用户处理」，
-  本会话未删、未碰 citymap 任何文件。** 后果：只要这把锁在超时状态，`verify_project.py` 就一直 FAIL 1
-  ⇒ 下个会话开工基线也是红的（与本包代码无关）。处置二选一：恢复那个会话让它续心跳，或你确认后删掉
-  `.locks/com.collin.citymap.lock`（它还有个 `.lock.tmp` 残留）。
-- **M3~M9 全部未动**。下一站 M3（相位图 A\* + 四剪枝 + 无解 Top-K，静态2/3）。
-  `Field.EarliestSeconds` 与 D-18 的中间格/终点分桶判据是 M3 的直接可复用产物，**别在求解器里再写一套判据**。
-- `VisibilityTableAssetVersionTests` 之外，**A 包编辑态的视野体注册时机问题未由本包解决**（属他包，未代修）：
-  实测「切场景后同一帧立刻烘焙」会得 `视野体=0 巡逻单位=3` ⇒ 烘出永久安全格=全部格的全瞎表。
-  本包的处置只是让它**不再静默**（三处出口）；根因在 A 包注册表，M3 若要自动化取证得先过一帧。
-- **增量重烘未实现**（U-3）；§6.7「建议参考相位时长」未实现（U-2，与 M3 同期）。
-- **本包没有自己的 `Sample/` 演示场景**，取证与演示复用 A 包 `StealthSample`；M9 的两段式演示视频未落
-  （**录屏只能用户手动录**，本包不得自行生成或标注"示意视频"）。
-- `.gitignore` 仍未加「表资产」忽略行：工具报 `Cannot preserve Windows file access permissions` 拒改，**未绕过**；
-  靠逐文件精确 `git add` 保证不入库。**长期规则需用户拍板。**
+- **M4~M9 全部未动**。下一站 M4：真 A* 可采纳启发 + §6.2 四剪枝（**剪枝①现在才该消费 `IsPermanentlySafe`**，M1 条目 7 已独立验证该层可信）+ §6.3 k-shortest（静态4 前 M 条短解）+ §6.7 建议参考相位时长（U-2）+ JSON/SO 数据集导出注入弹窗（静态4/动态1）。
+- 静态3 已交付候选筛选，但**未接进 SceneView 绘制**（当前只在窗口出文本）。若 M4 要把 Top-K 点画进场景，注意复用 `HeatmapGrid`/`Handles`，别在 `duringSceneGui` 里用 `Gizmos.*`（见 §3）。
+- **增量重烘未实现**（U-3）；D-11 只兑现「分帧+可中断+订阅失效」，**对外不得声称支持增量**。首烘 0.66~0.88s 使该优化暂不紧迫。
+- 本包无自己的 `Sample/` 演示场景，取证复用 A 包 `StealthSample`；M9 两段式演示视频未落（**录屏只能用户手动录**，不得自行生成或标"示意视频"）。
+- `.gitignore` 仍未加表资产忽略行（工具报 ACL 拒改，未绕过）；靠逐文件精确 `git add` 排除 `Sample/VisibilityTable.asset*`。**长期规则需用户拍板。**
 
 ## 3. 已知坏
 
-- **本包无红灯**：本轮门禁 = 编译 `false` + 归零后重跑验证动作 `consoleErrors=0/consoleWarnings=0` +
-  校验器的本包相关检查全 ok。整体 FAIL 1 的来源见 §2 第一条（他包锁）。
-- **本会话自造过两次红灯，均已当场修复**（§1.9）：
-  ① `CS0246`（新测试漏 `using …EditorTooling`）；
-  ② **测试清理越界**——`Resources.FindObjectsOfTypeAll<T>()` 会列出**磁盘上的真实资产**，
-     `TearDown` 里 `DestroyImmediate` 被 Unity 拦下打 error，**5 条用例断言全对却全红**。
-     修法是判 `EditorUtility.IsPersistent`；同类隐患（`TimelineRecomputeTests` 原会销毁
-     **他人正开着的时间轴窗口**）一并改成只回收自建实例。
-- **我在文档里写过三处不实数字/推断，均已按实测校正**：本包 53→**54**（含 `VisibilityTableBakeTests`
-  实际 16 条）、全量分包 130+121+48+7→**141+121+54**、以及「本轮读数与前次完全一致」这句证据不足
-  （桶 0 危险三角 774 与条目 17 的 768 不同，各桶本随相位变）⇒ 改成逐项比对。**教训：文档数字一律
-  从 `test run` 输出与 `git status` 回填，别凭印象。**
-- **本会话两次忘记续锁心跳**（3271s、436s），都让校验器直接判红「禁止交付」。
-  续自己活跃的锁没问题，规则禁的是自动删他人超时锁。
-- 环境噪声 `KeyNotFoundException: 'services-gateway'` 仍在 `Tools/console_allowlist.json` 在册（用户 2026-11-02 批准）；
-  本轮未新增豁免、未代清他会话日志。
-- **取证纪律（M3 必守）**：① 比较两次烘焙必须**先拷位图快照**（`LoadAssetAtPath` 返回同一缓存实例）；
-  ② 反射直调 `OnGUI()` 是假信号（无 GUI 上下文必抛 NRE），界面验证要**走菜单开窗口 + `Repaint()`**；
-  ③ `SceneView.duringSceneGui` 里**禁用 `Gizmos.*`**（必抛、每次重绘一条 error，顶爆门禁）；
-  ④ 两段式命令名必须整体加引号（`"script recompile"`），写错的失败请求本身会污染控制台；
-  ⑤ 切场景后先过一帧再烘焙，否则撞全瞎表。
+- **本包无红灯**：门禁三项末次全绿（读数见上）。
+- ⚠️ **A 包编辑态注册时机问题（属他包，本会话未代修）**：实测「切场景后**同一帧立刻**烘焙」得 `视野体=0 巡逻单位=3` ⇒ 烘出永久安全格=全场的全瞎表。本包只让它**不再静默**（D-23 三处出口已生效：日志/表/面板）。**取证纪律：切场景后先过一帧（等 ≥5s）再烘**，M3 端到端就是靠 step1 预热 + sleep 3 才拿到 `视野体=3` 的可信表。
+- **本会话自造失误（均当场纠正，无遗留红灯）**：
+  ① 求解器初稿留了一处 `|| true` 恒真垃圾判断和一个未用参数 `startCell` —— 写完自检删净；
+  ② 还原场景探针 `restore.cs` 只判 `name=="StealthSample"`，漏了空场景分支 ⇒ 第一次显示"无需还原"没真切；补 `restore2.cs` 用 `name==""||name=="StealthSample"` 才还原成 TerrainTest（非脏）。**教训：切场景还原的判断分支要覆盖"空场景"。**
+  ③ 文档数字两次写错（本包 53→实为 54、54→实为 63；分包 130+…→实测 141+121+63），一律从 `test run` 输出回填后才落笔。
+- **反复 Single 模式切场景的风险**：本轮为端到端取证多次 `OpenScene(Single)` 切 StealthSample↔TerrainTest。TerrainTest 是 citymap 会话现场，**每次切前都确认其 `dirty=False`**，末态已还原为 TerrainTest(非脏)。若 citymap 会话正在其中未保存操作，Single 切换会打断它——下个会话做同类取证应优先 additive 或先探脏（本轮已尽量规避，如实记此风险）。
+- 环境噪声 `KeyNotFoundException: 'services-gateway'` 仍在 `Tools/console_allowlist.json` 在册；本轮未新增豁免、未代清他会话日志。
 
-## 4. 下一步（M3 建议顺序）
+## 4. 下一步（M4 建议顺序）
 
-1. **先让用户处理 citymap 超时锁**（§2 第一条），否则开工基线一直是红的、门禁无法真正绿灯。
-2. 跑 `python Tools/verify_project.py` + `unity status` + 取包锁，确认基线。
-3. 相位图 A\*（§6.1）+ 四剪枝（§6.2）：**剪枝①现在就该消费 `IsPermanentlySafe`**（M1 条目 7 已独立验证该层可信）；
-   边的判据**直接复用 `PhaseReachability` 的中间格/终点分桶语义**（§6.9 / D-18）。
-4. N 相位封顶判有无解（静态2）→ 无解 Top-K + 最早到达时间（静态3，D-04）；§6.7 参考相位时长（U-2）。
-5. 求解器**必须能后台/多线程**（D-01 的全部意义）：表与传播都无 UnityEditor 依赖、可只读并发；
-   **任何新增求解入口不得在主线程现算射线**。
-6. 面板上「表版本不符」的当前提示是文本横幅——M3 若要"一键重烘"入口，注意 D-22 抬版本后
-   v1 资产读不出表体，任何重烘路径都得走 `EnsureAsset` + 脚本模式同一入口。
+1. 跑 `python Tools/verify_project.py` + `unity status` + 取包锁确认基线（本轮 citymap 已自修其编译错误、超时锁也已由对方处理，开工基线应是 FAIL 0）。
+2. **剪枝①先做**（成本最低、收益最直接）：求解/传播消费 `VisibilityTable.IsPermanentlySafe`（永久安全格不必展开时间维）。这是 §6.2 里唯一现成数据支撑的剪枝。
+3. §6.3 k-shortest（带禁止边迭代 BFS/A*）产出前 M 条 → 接静态4 导出（JSON schema + SO 双形态，D-07）→ 弹窗确认注入动态1。
+4. §6.7 参考相位时长（U-2）：`lcm(round(c_i/Δt))·Δt`，互质爆炸兜底 `max(c_i)×2`+Warning，面板**只读展示、绝不回写手配 P**（D-13）。
+5. ⚠️ 任何新增求解/剪枝入口**不得在主线程现算射线**（D-01 全部意义）；`PhaseSolver`/`PhaseReachability`/`VisibilityTable` 均无 UnityEditor 依赖，可只读并发。
 
 ## 5. 勿碰项
 
-- 🚨 **`.locks/com.collin.citymap.lock`（超时锁）——本会话未删，下个会话也不要自动删**（§3）。
-- `com.collin.citymap` 与 `com.collin.stealth` **任何文件**：工作区里 citymap 的
-  `SculptBrushTool.cs` / `SculptBrush.cs` / `SculptBrushTests.cs` / `TerrainProfile.asset` / `TerrainTest.unity`
-  与 `Assets/` 下的 `CityProject.asset`、被删的 `test.asset` **都是他会话现场，未动、不要提交**。
-  A 包视野体注册时机的问题（§2）也不得由本包代修。
-- **`Sample/VisibilityTable.asset(.meta)` 不入库**（派生产物；本轮重烘已把它升到 version=2）；
-  `PlannerBakeSettings.asset` 是源、**入库**。
-- **单一口径纪律**（破了必被用例判红，别绕）：`VisibilityTable.BucketOf` = 填桶/取桶唯一口径；
-  `BuildDangerMask` 逐格走 `IsDangerousAt`（**不许自己按桶扫位图**）；
-  `VisibleCellCountInBucket` 与 `VisibleCellCountInSliceBucket` 共用同一条位扫描；
-  `VisibilityBakeService.EnumerateWalkableCells` = footprint 唯一实现；
-  `PhaseReachability.StepCellsFor` = 步长唯一口径；阈值 `7200` 只在 `PlannerBakeSettings.cs` 一处。
-- **判定永远转调玩法包契约**（`IVisionWorld.CanSeeAt`）；本包源码出现任何 A 包具体类型即破方案 P。
-- **表结构再加字段时必须抬 `LayoutVersion`**（D-22）——别再"只增字段 + 兼容默认值"。
-- **测试里凡涉及 ScriptableObject / EditorWindow 的清理，必须先判 `EditorUtility.IsPersistent`
-  或只回收自建实例**（本轮实测：扫全部再销毁会试图删库内资产、并销毁他人窗口）。
-- `Packages/manifest.json`、`ProjectSettings/**`、`.gitignore`、`README.md`、
-  `Packages/packages-lock.json`（机器生成，本包条目由 Unity 自动写入，**不手工解冲突、本轮仍未提交**）。
-- `.locks/com.collin.stealthplanner.lock`：本会话持有、**随本次提交已释放**；下轮重新原子取锁，
-  长动作（`test run` / 烘焙 / 多次采样）序列里**每 60s 续心跳**。
+- **`Sample/VisibilityTable.asset(.meta)` 不入库**（派生产物；本轮重烘已升到 version=2）；`PlannerBakeSettings.asset` 是源、入库。
+- **单一口径纪律**（破了必被用例判红）：
+  `PhaseReachability.BuildBlockedMask` = 「某桶哪些格不能站/过」**唯一入口**（BFS/A*/热区共用）；
+  `PhaseReachability.ExpandSuccessors` = **唯一**邻居展开（含 D-18 三语义）；
+  `PhaseReachability.StepCellsFor` = 步长唯一口径；
+  `VisibilityTable.BucketOf` = 填/取桶唯一口径；`BuildDangerMask` 逐格走 `IsDangerousAt`（**不许自己按桶扫位图**）；
+  `VisibilityBakeService.EnumerateWalkableCells` = footprint 唯一实现；`PlannerBakeSettings.MaxAlignedBuckets=7200` 仅一处。
+- **判定永远转调玩法包契约**（`IVisionWorld.CanSeeAt`）；本包源码出现任何 A 包具体类型即破方案 P（`dep-direction` 守）。
+- **表结构再加字段必须抬 `LayoutVersion`**（D-22，本轮 1→2 已实践）。
+- **SceneView 回调禁用 `Gizmos.*`**（必抛、每次重绘一条 error 顶爆门禁）；辅助标记用 `Handles.*`。
+- **窗口视图态不得写静态字段**；测试清理凡涉 ScriptableObject/EditorWindow 必须先判 `EditorUtility.IsPersistent` 或只回收自建实例（本轮条目 27 实测踩坑）。
+- `com.collin.core`（契约签名改动=同时打断 A/B，走 ADR）；`com.collin.citymap`、`com.collin.stealth` **任何文件**——工作区里 citymap 的 `CityWindow.cs`/`CityTerrain.cs`/`SculptFilterAsset.cs`/`TerrainProfile.asset`/`TerrainTest.unity`、`Assets/` 下 `CityProject.asset`/被删的 `test.asset`、`README.md`、`packages-lock.json` **都是他会话现场，本轮未动、不要提交**。
+- `.locks/com.collin.stealthplanner.lock`：本会话持有、**随本次提交释放**；长动作序列（test run/烘焙/多次采样，累计十几分钟）里**每 60s 续心跳**（本轮已多次续，最险一次是 m3e2e 端到端跑完才续，中间未超时）。

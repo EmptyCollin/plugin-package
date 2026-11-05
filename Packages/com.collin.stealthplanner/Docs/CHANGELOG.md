@@ -116,6 +116,42 @@
   根因在 A 包编辑态的服务/注册表时机，**属他包、本会话未代修**；本包的处置是上面那条 D-23 出口，
   使这类数据**不再静默**（日志、表、面板三处都会留痕）。取证纪律：切场景后先过一帧再烘。
 
+### Added（M3：相位可行性求解 + 无解 Top-K，session planner-m3-2026-11-05）
+**Runtime**（纯 CPU、只读表、无 UnityEditor 依赖，可后台/引擎侧复用）
+- `PhaseSolver.cs`：**静态设计 2「有无可行解」+ 静态设计 3「无解给最近撤离点 Top-K」**。
+  `Solve(table, settings, startWorld, goalWorld, walkSpeed, out failure)` 面板入口 +
+  `Solve(table, startCell, goalCell, horizonBuckets, stepCells, topK, out failure)` 核心入口。
+  输出 `Result`（`Feasible` / `ArrivalBucket` / `EarliestArrivalSeconds` / `HorizonBuckets` /
+  `CellsReached` / `FallbackTopK`）。**⚠️ 不写第二套可达判据**：可行性与最早到达一律复用
+  `PhaseReachability.Compute`（见 D-24）。无解 Top-K 走「从撤离点做只穿非墙格的多源 BFS 距离场」，
+  候选须**同时满足**「玩家视界内到过」(`EarliestSeconds` 有限) 与「绕墙连得到撤离点」(距离场有限)，
+  按(绕墙格步数, 最早到达)升序、截断到 K。排序键用**绕墙距离而非直线距离**——被墙隔开的点
+  看着近其实到不了，直线距离会谎报「就差一格」；墙彻底隔断时如实返回**空清单**。
+  视界硬上限 `MaxHorizonBuckets=4096`（`Horizon()` 超限返回 -1 + 可读原因，不返回会算爆内存的视界）。
+- `PhaseReachability.cs` 扩展：
+  ① 抽 **#5 单一真源公开 API**——`BuildBlockedMask`（危险 或 无数据，全工程唯一「某桶哪些格不能站」入口，
+     BFS/A*/热区三处共用）、`TryBuildNoData`、`ExpandSuccessors`（合法后继格含原地等待，去重写缓冲，
+     M2 的 BFS 与 M3 复用同一份邻居/安全判据，杜绝两处各写必分叉）；
+  ② `Compute(..., goalCell, out failure, out goalArrivalBucket)` **带目标早退**重载——每步恰一桶、传播层序，
+     第 b 层首见目标即最早到达可安全停止（起点==目标算第 0 层命中）。⚠️ 早退时场只覆盖到命中层
+     （有解不需要尾部场），未命中时跑满 horizon、场完整（无解才要 Top-K），语义在注释写死。
+
+**Editor**
+- `StealthTimelineWindow.cs` 加「可行性求解（静态设计 2/3）」区块：撤离点世界坐标输入 +
+  「求解有无可行解」按钮（无表时禁用）+ `_solveSummary` 文本展示。复用同一张表与面板人速，
+  但结果**只出文本、不驱动逐桶热区**——求解用 `N×BucketsPerPhase` 的完整 horizon，与滑条 `_buckets`
+  是两个量，混用会让热区口径分裂。
+
+**决策与设计口径**
+- 新增 **D-24**：M3 用带目标早退的层序传播（unit-cost + earliest-arrival + 等待恒可选 ⇒ 等价于 A* 的答案）
+  实现，**不手搓 A\***；真 A* 可采纳启发、§6.2 四剪枝、§6.3 k-shortest **一律推 M4**。
+  理由：此时手搓启发纯属增加可采纳性 bug 的风险面、不改变答案。**下个会话勿据 §6.1/§6.3 字面以为 M3 已含 A\*。**
+- 新增 `PhaseSolverTests` **9 条**（假表：距离↔层数、目标先险后安须等待、起点==目标、墙隔断⇒Top-K空、
+  topK 截断、步长0 仅到过、入参越界各回专属原因、视界超限返 -1）→ 本包 **54→63 条**。
+- 端到端（真实烘焙表 3 哨兵，horizon=480）：角到对角撤离点 **✅ 有解 t=27.5s（桶 55）**——直线最少约 50 桶，
+  55>50 说明绕开了巡逻危险区（潜行求解该有的结果，非直线穿越）；horizon=1 造无解⇒候选仅起点、绕墙距 107 格吻合。
+- 全量 **325/325**（CityMap 141 + Stealth 121 + StealthPlanner 63，按 `FullName` 命名空间统计）。
+
 
 ### Fixed（M1 实测发现的严重缺陷 ⇒ DESIGN 新增 **D-17**）
 - **冷启动首烘静默给出荒谬数据**：重开场景后第 1 次烘焙把永久安全格算成 **11664 = 全部格**
@@ -147,7 +183,7 @@
 >    真结论来自条目 8 的快照法。
 
 ### 版本
-维持 **0.0.1**：M2 已交付但 M3~M9 未开工，本包尚无 `Showcase.json` 演示视频与包内演示场景，不满足收版条件。
+维持 **0.0.1**：M3 已交付但 M4~M9 未开工，本包尚无 `Showcase.json` 演示视频与包内演示场景，不满足收版条件。
 
 ### Changed（DESIGN 定稿，session planner-design-2026-11-05）
 - 用户 2026-11-05 拍板原 §10 五个开放问题 ⇒ **DESIGN 状态 v0.1 草案 → v0.2 已评审（定稿），M1 可开工**：
