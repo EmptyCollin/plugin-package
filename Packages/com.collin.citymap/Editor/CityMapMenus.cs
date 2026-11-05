@@ -21,7 +21,14 @@ namespace Collin.CityMap.EditorTooling
         {
             var text = BuildInfoText();
             Debug.Log($"{PackageIdentity.LogPrefix} {text.Replace('\n', ' ')}");
-            EditorUtility.DisplayDialog("Collin CityMap", text, "好");
+            // 不再弹模态框（AGENTS §2.1.5：DisplayDialog 阻塞主线程 = 卡死 AI 指令通道）。
+            // 信息已在控制台首屏可见；再把包目录选出来，用户点一下就能看到落在哪。
+            var root = FindPackageRoot();
+            if (root != null)
+            {
+                Selection.activeObject = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(root);
+                EditorGUIUtility.PingObject(Selection.activeObject);
+            }
         }
 
         /// <summary>包身份自检文本：版本真源仍取 package.json（§4），此处只做呈现。</summary>

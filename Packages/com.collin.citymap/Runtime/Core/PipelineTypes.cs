@@ -252,7 +252,15 @@ namespace Collin.CityMap
                 case StageId.S1a_TerrainBase:
                     return DirtyBits.Terrain | DirtyBits.World | DirtyBits.Seed | DirtyBits.Center;
                 case StageId.S2_River:
-                    return DirtyBits.River | DirtyBits.Terrain | DirtyBits.Occupancy;
+                    // +Flatten（02 改版）：水界由<b>最终生效地表</b>决定（用户裁定③"所见即所得"）。
+                    // 雕刻走 DeltaStroke ⇒ Flatten、烘焙与开关滤镜走 ParcelModel ⇒ Flatten，
+                    // 因此认领 Flatten 就让"水跟地形走"自动成立，且<b>不需要新增脏位、不改传播表、
+                    // 也不违反 D-31</b>（Flatten 本就在 D-31 允许的集合内）。
+                    // 反面对比：若改 bump River 位，Expand(River) 会带出 Road|Parcel ⇒
+                    // "雕一笔就重切地块"，直接破坏 D-31 与 M5 之后的性能预算。
+                    // 代价实测（8km/400 万格）：清位 2ms + 洪泛 2~8ms + 缓冲 3~21ms ≈ 每笔 7~30ms，
+                    // 且<b>没有水体种子时几乎为零</b>（Run 里早退）⇒ 不画水完全不影响手感。
+                    return DirtyBits.River | DirtyBits.Terrain | DirtyBits.Occupancy | DirtyBits.Flatten;
                 case StageId.S3_Road:
                     // OccupiedReloc：挪动的楼可能压到路 ⇒ 只复检，不重建地块
                     return DirtyBits.Road | DirtyBits.Budget | DirtyBits.River | DirtyBits.Occupancy | DirtyBits.OccupiedReloc;

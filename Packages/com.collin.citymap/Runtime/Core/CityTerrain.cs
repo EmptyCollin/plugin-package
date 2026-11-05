@@ -34,6 +34,14 @@ namespace Collin.CityMap
         [SerializeField] SculptDeltaAsset delta;
 
         /// <summary>
+        /// 水体意图层（02 改版）：<b>只存种子列表</b>，水面本身由 S2 每轮洪泛派生。
+        /// <para>与 delta／滤镜同样"一物一资产"：水的意图（点了哪里、什么水位）与地形的手绘意图
+        /// 是两件事，混存会让撤销粒度和版本迁移互相纠缠。</para>
+        /// </summary>
+        [Tooltip("WaterNetworkAsset：水体种子列表（添加水/移除水写入）。水面是派生量，不入库。")]
+        [SerializeField] WaterNetworkAsset water;
+
+        /// <summary>
         /// 平整滤镜层（M4-o，D-41）：<b>烘焙产物</b>，与 <see cref="delta"/> 物理分开存放。
         /// <para>存在理由（用户裁定的三条都靠这个分离成立）：
         /// ①「不能污染手绘的意图层数据」——滤镜与手绘若同存一个资产，"自动覆盖人工"就没有结构屏障，
@@ -66,6 +74,33 @@ namespace Collin.CityMap
         [Header("工具态：场景视图接管权（H-50）")]
         [Tooltip("开＝场景视图左键由山水笔刷接管（拖动落笔）；关＝左键还给编辑器默认工具。")]
         [SerializeField] bool sculptToolActive = false;
+
+        /// <summary>
+        /// 水工具是否接管场景视图（02 改版）。真源同样是<b>场景实例的序列化字段</b>（H-50／D-34）：
+        /// 放 EditorWindow 静态字段会随域重载归零 ⇒ "面板显示在水模式、点下去什么都没发生"。
+        /// <para>与 <see cref="sculptToolActive"/> <b>互斥</b>（两个写入口都显式清对方）：
+        /// 两者都抢左键，同时为真时行为取决于事件顺序、不可预期。互斥放在<b>写入侧</b>而不是
+        /// "读取时看谁优先"——约定迟早分叉，而字段级互斥一眼可证。</para>
+        /// </summary>
+        [Tooltip("开＝场景视图左键由水工具接管（点一格加／移水种子）。与雕刻笔刷互斥。")]
+        [SerializeField] bool waterToolActive = false;
+
+        [SerializeField] WaterToolMode waterToolMode = WaterToolMode.Add;
+
+        /// <summary>点击点高于海平面时是否先问"是否生成陆上水体"（用户裁定第 2 步）。</summary>
+        [Tooltip("点在高处时先询问是否生成陆上水体（关掉＝直接生成并打日志）。")]
+        [SerializeField] bool askBeforeLandlocked = true;
+
+        /// <summary>陆上水体的默认水深（米）：局部水位 = 点击点高程 + 本值。</summary>
+        [Tooltip("陆上水体的默认水深(m)：局部水位取点击点高程 + 此值。")]
+        [SerializeField] float landlockedDepth = 4f;
+
+        public enum WaterToolMode { Add = 0, Remove = 1 }
+
+        public bool WaterToolActive => waterToolActive;
+        public WaterToolMode WaterMode => waterToolMode;
+        public bool AskBeforeLandlocked => askBeforeLandlocked;
+        public float LandlockedDepth => landlockedDepth;
 
         [Header("身份")]
         [SerializeField] string stableId;
@@ -200,7 +235,26 @@ namespace Collin.CityMap
         /// 读写雕刻工具接管态（H-50）。<b>不走 Bump</b>：这是纯交互态，不影响任何派生层，
         /// 若误 bump 会让每次切工具都白跑一遍 S1b+S6（所见即所得≠每次都全重算）。
         /// </summary>
-        public void SetSculptToolActive(bool on) => sculptToolActive = on;
+        public void SetSculptToolActive(bool on)
+        {
+            sculptToolActive = on;
+            if (on) waterToolActive = false;      // 互斥落在<b>写入侧</b>，见 waterToolActive 注释
+        }
+
+        /// <summary>
+        /// 读写水工具接管态（02 改版）。<b>不走 Bump</b>：纯交互态，误 bump 会让每次切工具
+        /// 白跑一遍 S1b+S6。开启时清笔刷接管 ⇒ 两个工具不可能同时抢左键。
+        /// </summary>
+        public void SetWaterToolActive(bool on, WaterToolMode mode = WaterToolMode.Add)
+        {
+            waterToolActive = on;
+            if (on) { waterToolMode = mode; sculptToolActive = false; }
+        }
+
+        public void SetWaterToolMode(WaterToolMode mode) => waterToolMode = mode;
+        public void SetAskBeforeLandlocked(bool on) => askBeforeLandlocked = on;
+        public void SetLandlockedDepth(float meters)
+            => landlockedDepth = Mathf.Clamp(meters, 0.5f, 200f);
 
         /// <summary>
         /// 改「可平整对象」的写入口统一走这里：bump 地块通道 + <b>点名作废旧滤镜</b>。
@@ -338,6 +392,39 @@ namespace Collin.CityMap
             delta = d;
             MarkDeltaChanged(transform.position, MinAffectedRadius);
         }
+
+        public WaterNetworkAsset Water => water;
+
+        /// <summary>绑水体意图层（面板「添加水」时自动建并绑，同 delta 的 H-51 处置：不静默 null）。</summary>
+        public void SetWater(WaterNetworkAsset w)
+        {
+            if (ReferenceEquals(w, water)) return;
+            water = w;
+            MarkWaterChanged();
+        }
+
+        /// <summary>
+        /// 水相关意图变化（种子增删改）⇒ bump <see cref="IntentKind.RiverStroke"/> 让 S2 重洪泛。
+        /// <para>脏集合走 River 位：展开成 `Road|Parcel|Field|Building|Flatten`——
+        /// 水界变了确实波及地块边界与临水打分，<b>绝不含 Terrain</b>（不得重跑噪声基底）。</para>
+        /// </summary>
+        public void MarkWaterChanged()
+        {
+            EnsureStableId();
+            ledger ??= new IntentChangeLedger();
+            ledger.Bump(IntentKind.RiverStroke,
+                new Bounds(new Vector3(transform.position.x, 0f, transform.position.z),
+                           Vector3.one * MinAffectedRadius));
+        }
+
+        /// <summary>
+        /// 生效地表变了（烘焙完／开关滤镜）⇒ 水面必须跟着重算。
+        /// <para>存在理由：水界由"地表是否低于水位"决定。烘焙把洼地填高、或关掉滤镜让洼地露出，
+        /// 水面都该随之变化；不 bump 就会留下<b>水悬在半坡</b>——正是洪泛定义承诺不可能出现的东西。
+        /// 显式点名而非靠 `Flatten ⇒ River` 传播规则：后者会让每次 S1b 重放都触发全图重洪泛，
+        /// 而"重放"未必代表地表真的变了（同 D-39/D-41 的"显式作废优于嗅探"口径）。</para>
+        /// </summary>
+        public void MarkSurfaceChanged() => MarkWaterChanged();
 
         /// <summary>
         /// 实例变化的影响范围（保守上界）。

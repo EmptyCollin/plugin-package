@@ -125,9 +125,14 @@ namespace Collin.CityMap.EditorTooling
             var profile = _terrain != null ? _terrain.Profile : null;
             _runner.Unregister(StageId.S1a_TerrainBase);
             _runner.Unregister(StageId.S1b_Flatten);
+            _runner.Unregister(StageId.S2_River);
             if (profile != null)
             {
                 _runner.Register(new TerrainBaseStage(profile, _project));
+                // 水体阶段必须<b>注册</b>才会跑。StageId.S2_River 早在执行序里占位，但没人注册
+                // ⇒ 水面永远不出现，而且"未注册"是合法状态 ⇒ 不会有任何报错提示（M3 的
+                // 「Editor 目录没有 _runner.Register ⇒ 重新生成只跑 S0」同族教训：占位 ≠ 接线）。
+                _runner.Register(new WaterStage(_project, _terrain));
                 _runner.Register(new FlattenSolveStage(profile, _terrain));
             }
         }
@@ -330,6 +335,12 @@ namespace Collin.CityMap.EditorTooling
                 EditorGUILayout.Space(4f);
                 DrawSculptPanel();
             }
+            // 水体面板挂在「河流」模式下（02 改版：水＝低于水位的连通域，点一格加/移种子）
+            if (_mode == ToolMode.RiverBrush)
+            {
+                EditorGUILayout.Space(4f);
+                DrawWaterPanel();
+            }
             EditorGUILayout.Space(4f);
             DrawStageTree();
             EditorGUILayout.Space(4f);
@@ -464,8 +475,21 @@ namespace Collin.CityMap.EditorTooling
         private void MarkTerrainSceneDirty()
         {
             if (_terrain == null) return;
-            Undo.RecordObject(_terrain, "切换雕刻工具");
+            Undo.RecordObject(_terrain, "切换工具");
             EditorUtility.SetDirty(_terrain);
+        }
+
+        /// <summary>
+        /// 项目参数（海平面／缓冲带）改动后标脏。
+        /// <para><b>CityProject 是资产不是场景物体</b> ⇒ 落盘走 <c>SetDirty + SaveAssets</c>；
+        /// 若按场景物体的路子 SetDirty 它，重开工程会退回旧值（表现为"海平面白改了"）。</para>
+        /// </summary>
+        private void MarkProjectDirty()
+        {
+            if (_project == null) return;
+            Undo.RecordObject(_project, "改水体参数");
+            EditorUtility.SetDirty(_project);
+            AssetDatabase.SaveAssets();
         }
 
         /// <summary>
@@ -518,6 +542,11 @@ namespace Collin.CityMap.EditorTooling
                     {
                         _terrain.SetSculptToolActive(m == ToolMode.TerrainSculpt);
                         if (m == ToolMode.TerrainSculpt) EnsureDeltaLayer();
+                        // H-50 同族：切到「河流」同样必须写实例真源 waterToolActive，
+                        // 否则 _mode 是 EditorWindow 的字段、水工具读的是实例字段 ⇒ 面板显示在河流模式
+                        // 但点下去什么都没发生（笔刷当年就是这个症状）。
+                        _terrain.SetWaterToolActive(m == ToolMode.RiverBrush);
+                        if (m == ToolMode.RiverBrush) EnsureWaterAsset();
                         MarkTerrainSceneDirty();
                     }
                 }
@@ -609,6 +638,227 @@ namespace Collin.CityMap.EditorTooling
                 if (!ReferenceEquals(next, _project)) Bind(next);
                 if (GUILayout.Button("创建", GUILayout.Width(50f))) CreateProject();
             }
+
+            // ── 海平面与水体基准（02 改版，用户裁定①默认 0）──
+            // 必须显示"水现在淹了多少"，否则拖滑条时用户无从判断范围（同城区生效值的口径）。
+            if (_project != null)
+            {
+                var sea = EditorGUILayout.Slider(new GUIContent("海平面(m)",
+                        "水 = 与某个水体种子连通、且低于该种子有效水位的格。\n" +
+                        "种子未设局部水位时就用这个值。\n" +
+                        "改它只重算水面与下游，<b>不会</b>重跑地形噪声（走 River 通道）。"),
+                    _project.SeaLevel, -20f, 120f);
+                if (!Mathf.Approximately(sea, _project.SeaLevel))
+                {
+                    _project.SetSeaLevel(sea);
+                    MarkProjectDirty();
+                }
+
+                var wb = EditorGUILayout.Slider(new GUIContent("水缓冲带(m)",
+                        "水域外扩的不可建筑带宽度。0 = 不设带。\n" +
+                        "换算成格时<b>向上取整</b>（宁多不一格漏）。"),
+                    _project.WaterBufferMeters, 0f, 60f);
+                if (!Mathf.Approximately(wb, _project.WaterBufferMeters))
+                {
+                    _project.SetWaterBuffer(wb);
+                    MarkProjectDirty();
+                }
+            }
+        }
+
+        /// <summary>
+        /// 水体面板（02 改版）：加/移水的模式、陆上水体参数，以及<b>种子列表编辑</b>
+        /// （用户裁定第 4 条：坐标、高度均可调，也可手动添加）。
+        /// <para>面板必须显示"当前有几片水、淹了多少格"——水界面是派生量，
+        /// 只报种子数会让用户以为"有种子就有水"（实际可能全退干了）。</para>
+        /// </summary>
+        /// <summary>
+        /// 工具栏选「河流」＝进入水工具。<b>只在切换时设接管态</b>：
+        /// 若每帧重设，用户在场景里改完种子、面板一刷新就被重置 ⇒ 又变成两套状态打架（H-50 同族）。
+        /// </summary>
+        private void DrawWaterPanel()
+        {
+            if (_terrain == null) _terrain = FindTerrainInstance();
+            EditorGUILayout.LabelField("水体（水 = 低于水位的连通域）", EditorStyles.boldLabel);
+            if (_terrain == null)
+            {
+                EditorGUILayout.HelpBox("先「创建地形实例」才能加水：水面按实例逐格派生。", MessageType.Info);
+                return;
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                var add = GUILayout.Toggle(_terrain.WaterMode == CityTerrain.WaterToolMode.Add,
+                    new GUIContent("添加水", "点场景一格：低于海平面直接成水；"
+                        + "高于海平面会先问是否生成陆上水体。"),
+                    EditorStyles.toolbarButton);
+                var rm = GUILayout.Toggle(_terrain.WaterMode == CityTerrain.WaterToolMode.Remove,
+                    new GUIContent("移除水", "点掉种子：删最近的一个（最多 16 格内）。"),
+                    EditorStyles.toolbarButton);
+                var want = add ? CityTerrain.WaterToolMode.Add : CityTerrain.WaterToolMode.Remove;
+                if (want != _terrain.WaterMode)
+                {
+                    _terrain.SetWaterToolMode(want);
+                    MarkTerrainSceneDirty();
+                }
+            }
+            if (!_terrain.WaterToolActive)
+                EditorGUILayout.HelpBox("水工具未接管场景视图：点顶部工具栏「河流」才会接管左键。",
+                    MessageType.Info);
+
+            var ask = EditorGUILayout.Toggle("高处点击先询问", _terrain.AskBeforeLandlocked);
+            if (ask != _terrain.AskBeforeLandlocked) _terrain.SetAskBeforeLandlocked(ask);
+            var depth = EditorGUILayout.Slider("陆上水体默认水深(m)", _terrain.LandlockedDepth, 0.5f, 60f);
+            if (!Mathf.Approximately(depth, _terrain.LandlockedDepth)) _terrain.SetLandlockedDepth(depth);
+
+            // ── 陆上水体内联确认（用户裁定的第 2、3 步；<b>不用模态框</b>，AGENTS §2.1.5 禁阻塞弹窗）──
+            if (WaterBrushTool.HasPending)
+            {
+                var pd = WaterBrushTool.Pending;
+                EditorGUILayout.HelpBox(
+                    $"点在格 ({pd.cx},{pd.cz})：高程 {pd.height:0.##}m 高于海平面 {pd.sea:0.##}m。" +
+                    $"\n确认将生成带局部水位 {pd.height + _terrain.LandlockedDepth:0.##}m" +
+                    $"（水深 {_terrain.LandlockedDepth:0.#}m）的陆上水体；取消则什么都不建。",
+                    // MessageType 只有 None/Info/Warning/Error（无 Question，臆造会编译失败）。
+                    // 用 Warning：这是等用户决策的中间态，比 Info 更醒目、又不是错误。
+                    MessageType.Warning);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (GUILayout.Button("生成陆上水体", GUILayout.Height(24f)))
+                    {
+                        WaterBrushTool.ConfirmPending();
+                        Repaint();             // CommitSeed 内部已存盘 + bump 一次，这里<b>不再</b> TouchWaterAsset（会二次标脏白跑洪泛）
+                    }
+                    if (GUILayout.Button("取消", GUILayout.Width(70f), GUILayout.Height(24f)))
+                    {
+                        WaterBrushTool.CancelPending();
+                        Repaint();
+                    }
+                }
+            }
+
+            if (!string.IsNullOrEmpty(WaterBrushTool.BlockReason))
+                EditorGUILayout.HelpBox(WaterBrushTool.BlockReason, MessageType.Warning);
+
+            // ── 种子列表（坐标/高度可调、可手动添加、可启停与删除）──
+            var water = _terrain.Water;
+            if (water == null)
+            {
+                if (GUILayout.Button("新建水体种子列表", GUILayout.Height(22f))) EnsureWaterAsset();
+                EditorGUILayout.HelpBox("还没有种子列表：上面的按钮创建并绑定（固定在包内 Sample/Sculpt，"
+                    + "同 D-35 的\"固定路径 + LoadAssetAtPath\"纪律）。", MessageType.Info);
+                return;
+            }
+
+            EditorGUILayout.Space(2f);
+            EditorGUILayout.LabelField($"种子列表（{water.Count} 个）", EditorStyles.miniBoldLabel);
+            var grid = _ctx != null ? _ctx.Grid : (_terrain.GetComponent<CityTerrainView>()?.BoundGrid ?? default);
+            string toRemove = null;
+
+            for (var i = 0; i < water.Count; i++)
+            {
+                var s = water[i];
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    var en = EditorGUILayout.Toggle(s.enabled, GUILayout.Width(16f));
+                    if (en != s.enabled) { water.SetSeedEnabled(s.stableId, en); TouchWaterAsset(); }
+
+                    var px = EditorGUILayout.Vector2Field(GUIContent.none,
+                        new Vector2(s.cx, s.cz), GUILayout.Width(110f));
+                    if ((int)px.x != s.cx || (int)px.y != s.cz)
+                    {
+                        if (!water.MoveSeed(s.stableId, (int)px.x, (int)px.y))
+                            EditorGUILayout.LabelField("目标格已被占", GUILayout.Width(96f));
+                        TouchWaterAsset();
+                    }
+
+                    // 局部水位：复选框控制"是否覆盖全局海平面"，避免让用户去理解 +∞ 哨兵
+                    var hasLocal = !float.IsPositiveInfinity(s.localLevel);
+                    var hl = EditorGUILayout.ToggleLeft("局部", hasLocal, GUILayout.Width(44f));
+                    if (hl != hasLocal)
+                    {
+                        water.SetSeedLevel(s.stableId, hl ? 0f : WaterSeed.NoLocalLevel);
+                        TouchWaterAsset();
+                    }
+                    if (hl)
+                    {
+                        var lv = EditorGUILayout.FloatField(s.localLevel, GUILayout.Width(52f));
+                        if (!Mathf.Approximately(lv, s.localLevel))
+                        { water.SetSeedLevel(s.stableId, lv); TouchWaterAsset(); }
+                    }
+                    else EditorGUILayout.LabelField("—", GUILayout.Width(52f));
+
+                    if (GUILayout.Button("×", GUILayout.Width(20f))) toRemove = s.stableId;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(toRemove))
+            {
+                Undo.RecordObject(water, "移除水种子");
+                water.RemoveSeed(toRemove);
+                TouchWaterAsset();
+                _terrain.MarkWaterChanged();
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("手动加一个种子"))
+                {
+                    Undo.RecordObject(water, "添加水种子");
+                    var cc = grid.CellCount > 0 ? grid.Columns / 2 : 0;
+                    var rr = grid.CellCount > 0 ? grid.Rows / 2 : 0;
+                    water.AddSeed(cc, rr, WaterSeed.NoLocalLevel, out _);
+                    TouchWaterAsset();      // 内部已含 MarkWaterChanged；此处不再重复 bump（会白跑一轮洪泛）
+                }
+                var hf = WaterBrushTool.TryGetHover(out var hcell, out var hh);
+                if (hf)
+                {
+                    // 内插里的三元表达式必须加括号，否则 `:` 会被当成格式说明符分隔（CS8361）。
+                    // 这里直接先取局部变量，比嵌三元更易读。
+                    var seaNow = _project != null ? _project.SeaLevel : 0f;
+                    EditorGUILayout.LabelField(
+                        $"光标：格({hcell.x},{hcell.y}) 高程 {hh:0.##}m 海平面 {seaNow:0.##}m",
+                        GUILayout.Width(170f));
+                }
+            }
+        }
+
+        /// <summary>
+        /// 水资产改动：存盘 + 触发一次水面重算。
+        /// <para>只 bump 通道（<see cref="CityTerrain.MarkWaterChanged"/>），脏区搬入与 Tick
+        /// 由既有的 <c>UndoHistoryTracker.Scan()</c> → <c>CommitAndNotify</c> 链路负责
+        /// （面板 253~269 行）。<b>不在这里手动 MarkDirty/Tick</b>：那样会与自动跟随叠成双跑，
+        /// 更要命的是绕过 <c>LastDirtyBounds</c> 的搬入，增量重建退化成全图。</para>
+        /// </summary>
+        private void TouchWaterAsset()
+        {
+            if (_terrain?.Water == null) return;
+            EditorUtility.SetDirty(_terrain.Water);
+            AssetDatabase.SaveAssets();
+            _terrain.MarkWaterChanged();        // bump RiverStroke ⇒ Tracker 扫到 ⇒ 走 River 通道重洪泛
+            Repaint();
+        }
+
+        /// <summary>确保实例绑有水体种子列表资产（同 H-51 处置：不静默留 null）。</summary>
+        private void EnsureWaterAsset()
+        {
+            if (_terrain == null) return;
+            if (_terrain.Water != null) return;
+
+            var path = DeltaFolder + "/WaterNetwork.asset";
+            var asset = AssetDatabase.LoadAssetAtPath<WaterNetworkAsset>(path);
+            if (asset == null)
+            {
+                if (!AssetDatabase.IsValidFolder(DeltaFolder))
+                    AssetDatabase.CreateFolder("Packages/com.collin.citymap/Sample", "Sculpt");
+                asset = CreateInstance<WaterNetworkAsset>();
+                AssetDatabase.CreateAsset(asset, path);
+                AssetDatabase.SaveAssets();
+            }
+            Undo.RecordObject(_terrain, "绑定水体列表");
+            _terrain.SetWater(asset);
+            EditorUtility.SetDirty(_terrain);
+            _lastRunLine = "已创建并绑定水体种子列表：" + path;
         }
 
         private void CreateProject()
@@ -894,8 +1144,13 @@ namespace Collin.CityMap.EditorTooling
 
             if (!AssetDatabase.IsValidFolder("Packages/com.collin.citymap/Sample"))
             {
-                EditorUtility.DisplayDialog("CityMap",
-                    "包内 Sample 目录缺失，无法创建 TerrainProfile。请确认包已正确解析（package resolve）。", "好");
+                // 非阻塞呈现（AGENTS §2.1.5：DisplayDialog 会卡死 AI 指令通道）。
+                // <b>用 Log 而非 LogError/LogWarning</b>：后两者会自造控制台计数，
+                // 直接顶爆 §1.6b「consoleErrors==0 且 consoleWarnings==0」的交锁门禁 ——
+                // 这条错误路径本身就是门禁的一部分，不能靠制造红灯来报告问题。
+                const string why = "包内 Sample 目录缺失，无法创建 TerrainProfile。请确认包已正确解析（package resolve）。";
+                Debug.Log($"{PackageIdentity.LogPrefix} {why}");
+                _lastRunLine = why;
                 return null;
             }
             if (!AssetDatabase.IsValidFolder(ProfileFolder))
@@ -989,7 +1244,14 @@ namespace Collin.CityMap.EditorTooling
         /// <summary>重新生成 = 用当前意图层重算全部派生层，人工层原样叠回（08 §3.5，免确认）。</summary>
         private void Regenerate()
         {
-            if (_ctx == null) { EditorUtility.DisplayDialog("CityMap", "请先绑定城市项目", "好"); return; }
+            if (_ctx == null)
+            {
+                // 非阻塞提示（AGENTS §2.1.5）：状态行就在按钮下方，比模态框更快看到，也不卡指令通道
+                _lastRunLine = "请先绑定城市项目（面板顶部「城市项目」拖入或点「创建」）";
+                Debug.Log($"{PackageIdentity.LogPrefix} {_lastRunLine}");
+                Repaint();
+                return;
+            }
             SyncStages();
             _runner.MarkDirty(DirtyBits.All);
             // 全量重算的影响面 = 整图：显式传 null（= 全图），让 View 全量重建而不是按残留脏盒增量

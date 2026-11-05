@@ -73,6 +73,8 @@ namespace Collin.CityMap
     {
         [Header("显示（只读派生，不参与生成）")]
         [SerializeField] bool showTerrain = true;
+        [Tooltip("显示水面（02 改版：水 = 低于水位的连通域）。关掉便于单看地表雕刻。")]
+        [SerializeField] bool showWater = true;
         [Tooltip("chunk 边长（米）；自动对齐到显示步长的整数倍，生效值见 EffectiveChunkSize")]
         [SerializeField, Min(16f)] float chunkSizeMeters = 128f;
         [Tooltip("UV 世界映射密度：uv = 世界坐标 / tileScale（01 §3.3，避免接缝拉伸）")]
@@ -119,6 +121,14 @@ namespace Collin.CityMap
         }
 
         private readonly Dictionary<Vector2Int, ChunkHost> _chunks = new Dictionary<Vector2Int, ChunkHost>(64);
+
+        /// <summary>水面宿主单独一套容器：与水陆各自的脏区判据无关，且关水面时不能把地形一起拆了。</summary>
+        private readonly Dictionary<Vector2Int, ChunkHost> _waterChunks = new Dictionary<Vector2Int, ChunkHost>(8);
+        private Transform _waterRoot;
+        private Material _waterMat;
+        /// <summary>本轮解析到的水体派生（null = 无水面）。两条数据路径都在 ResolveData 里取。</summary>
+        private WaterField _water;
+
         private Transform _root;
         private Material _autoMat;
         private CityTerrain _terrain;
@@ -137,7 +147,11 @@ namespace Collin.CityMap
         private PipelineRunner _ownRunner;
         // M4-j：按变化来源拆分的版本（项目/Profile/实例三者各自单调），
         // 用于分辨"该重跑噪声"还是"只需重放 delta+平整"。
-        private long _ownProjVer = -1, _ownProfileVer = -1, _ownTerrainVer = -1;
+        private long _ownProfileVer = -1, _ownTerrainVer = -1;
+        /// <summary>世界参数键与水体键：<b>取代原 <c>_ownProjVer</c></b>（项目总版本会被海平面改动 bump，
+        /// 用它判重建就会让"拖海平面"重跑 4.8s 噪声）。死字段必须删干净 —— 留着不但是 CS0414 警告
+        /// （门禁要求零警告），更会让下一个人以为它还在起作用。</summary>
+        private long _ownWorldKey = -1, _ownWaterKey = -1;
         private TerrainProfile _ownProfile;
         private CityTerrain _ownStageTerrain;
         private Bounds? _ownRegion;
@@ -158,9 +172,13 @@ namespace Collin.CityMap
         private void OnDisable()
         {
             DestroyAllChunks();
+            DestroyAllWater();              // 水面宿主与材质同属派生态：不一起收就会留下隐藏物体
+            DestroyObj(_waterMat);
+            _waterMat = null;
             _ownCtx = null;
             _ownRunner = null;
             _field = null;
+            _water = null;
             _hasGrid = false;
             _seenCtx = null;
         }
@@ -194,6 +212,20 @@ namespace Collin.CityMap
             _wantFull = true;
         }
 
+        /// <summary>水面显隐（面板"只看地表"用）。关掉时水面宿主整体回收，不留隐藏物体。</summary>
+        public void SetShowWater(bool on)
+        {
+            if (on == showWater) return;
+            showWater = on;
+            if (!on) DestroyAllWater();
+        }
+
+        public bool ShowWater => showWater;
+        /// <summary>已铺水面的 chunk 宿主数（含被清空的占位宿主，故<b>不等于</b>可见水块数；测试只用来断言"没漏回收"）。</summary>
+        public int WaterChunkCount => _waterChunks.Count;
+        /// <summary>本轮取到的水体派生（null = 无水或未跑出 S2）。测试与面板读数用。</summary>
+        public WaterField BoundWater => _water;
+
         public void SetChunkSizeMeters(float m)
         {
             m = Mathf.Max(16f, m);
@@ -216,7 +248,9 @@ namespace Collin.CityMap
         {
             if (!showTerrain)
             {
+                // 地形关了水面单独留着会是一张悬空的蓝膜 ⇒ 一起收掉
                 if (_chunks.Count > 0) DestroyAllChunks();
+                DestroyAllWater();
                 _status = "地形显示已关闭";
                 _wantFull = false;
                 return;
@@ -227,6 +261,11 @@ namespace Collin.CityMap
                 _wantFull = false;
                 return;
             }
+
+            // 水面<b>先于</b>地形的重建判据独立刷新：两条数据路径都在 ResolveData 里取到 _water，
+            // 而下面的面板/自建分支都会提前 return，把 TickWater 放它们后面就永远不会执行。
+            // 且水变化<b>不该</b>触地形全量重建（289ms），地形变化也不该重铺水以外的事。
+            TickWater();
 
             var key = ComputeConfigKey();
             var cfgChanged = key != _configKey;
@@ -286,6 +325,8 @@ namespace Collin.CityMap
                     _status = "面板尚未跑出高度场（先执行 S1a）";
                     return false;
                 }
+                // 水体派生：S2 的槽位。<b>可为 null</b>（没加水就没水面），不能当错误处理。
+                _water = auth.GetSlot<WaterField>(StageId.S2_River);
                 _grid = auth.Grid;
                 _hasGrid = true;
                 _vp = MakeParams();
@@ -314,18 +355,27 @@ namespace Collin.CityMap
             //   仅 Profile 变        → 复用上下文，只重跑 S1a（噪声参数）
             //   仅实例版本变（雕刻等）→ 复用上下文，只重放 delta + 平整（S1b），**绝不重跑噪声**
             var proj = projectForStandalone;
-            var projVer = proj.ManualVersion;
+            // ⚠️ 判"要不要重建上下文/重跑噪声"必须用<b>世界参数键</b>，不能用 `proj.ManualVersion`。
+            // 海平面／缓冲带也是 CityProject 的意图，也会 bump 项目版本 —— 但二者<b>完全不改变格网</b>。
+            // 用版本号判定会让"拖一下海平面"变成"重建上下文 + 重跑 S1a 噪声"（M4-j 实测 4860ms/笔），
+            // 正是我们刚在水面语义上立下的"改水位只重算水面与下游"承诺在自建路径被打破。
+            var worldKey = WorldKey(proj);
             var profVer = profile.ManualVersion;
             var terrVer = _terrain != null ? _terrain.ManualVersion : 0L;
+            var water = _terrain != null ? _terrain.Water : null;
+            var waterKey = (water != null ? (long)water.ComputeValueKey() : 0L)
+                           ^ (long)(proj.SeaLevel * 1000f)          // 海平面也属于水面输入
+                           ^ (long)(proj.WaterBufferMeters * 100f);
 
             var needCtx = _ownCtx == null
                           || !ReferenceEquals(_ownCtx.Project, proj)
-                          || projVer != _ownProjVer
+                          || worldKey != _ownWorldKey
                           || (_terrain != null && !ReferenceEquals(_ownStageTerrain, _terrain));
             var needS1a = needCtx || !ReferenceEquals(_ownProfile, profile) || profVer != _ownProfileVer;
             var replayOnly = !needS1a && terrVer != _ownTerrainVer;
+            var waterChanged = !needS1a && !replayOnly && waterKey != _ownWaterKey;
 
-            if (!needS1a && !replayOnly && _field != null)
+            if (!needS1a && !replayOnly && !waterChanged && _field != null)
             {
                 _vp = MakeParams();
                 return true;                                  // 无事发生（显示参数变化由 cfgChanged 负责）
@@ -333,6 +383,8 @@ namespace Collin.CityMap
 
             if (needCtx) _ownCtx = new PipelineContext(proj);
             _ownRunner ??= new PipelineRunner();
+            _ownWorldKey = worldKey;
+            _ownWaterKey = waterKey;
 
             // 阶段对象只在 Profile/实例换了之后重注册并**长期复用**：FlattenSolveStage 的 scratch
             // 是实例级缓冲（见上方拆分说明），每笔重建就是每笔几十 MB 的 LOH 分配。
@@ -340,7 +392,11 @@ namespace Collin.CityMap
             {
                 _ownRunner.Unregister(StageId.S1a_TerrainBase);
                 _ownRunner.Unregister(StageId.S1b_Flatten);
+                _ownRunner.Unregister(StageId.S2_River);
                 _ownRunner.Register(new TerrainBaseStage(profile, proj));
+                // <b>自建路径同样必须注册 S2</b>：否则 Play / 面板未打开时水面永远不出现，
+                // 而"未注册"是合法状态 ⇒ 不报错、只是看不见（M3 那批「只注册 S0」的同一坑）。
+                _ownRunner.Register(new WaterStage(proj, _terrain));
                 _ownRunner.Register(new FlattenSolveStage(profile, _terrain));
                 _ownProfile = profile;
                 _ownStageTerrain = _terrain;
@@ -348,7 +404,8 @@ namespace Collin.CityMap
 
             _ownRunner.MarkDirty(needCtx ? DirtyBits.All
                                  : needS1a ? DirtyBits.Terrain
-                                           : DirtyBits.Flatten);
+                                           : replayOnly ? DirtyBits.Flatten
+                                                        : DirtyBits.River);   // 仅水体变：只重洪泛，不碰噪声/求解
             _ownRegion = null;
             if (replayOnly && _terrain != null && _terrain.Ledger != null)
             {
@@ -357,7 +414,6 @@ namespace Collin.CityMap
             }
             _ownRunner.Tick(_ownCtx, RunMode.Commit);
 
-            _ownProjVer = projVer;
             _ownProfileVer = profVer;
             _ownTerrainVer = terrVer;
 
@@ -368,12 +424,31 @@ namespace Collin.CityMap
                 _status = "自建路径未产出高度场（检查世界参数是否非法）";
                 return false;
             }
+            _water = _ownCtx.GetSlot<WaterField>(StageId.S2_River);
             _grid = _ownCtx.Grid;
             _hasGrid = true;
             _vp = MakeParams();
-            _ownDataChanged = true;      // 数据算过就必须重建显示（cfgChanged 抓不到实例版本，见字段注释）
+            // <b>只有地表真的变了</b>才置数据变更位：水面是独立宿主（TickWater 自己按 WaterCells/
+            // SeaLevelUsed 判重铺），若这里无条件置 true，"拖一下海平面"就会连带地形 mesh
+            // 全量重建（实测 289ms/次）—— 而地形高度<b>一点都没变</b>。
+            // 这正是 M4-j 花力气消掉的那类浪费，不能从这条路上回来。
+            if (!waterChanged || replayOnly || needS1a) _ownDataChanged = true;
             return true;
         }
+
+        /// <summary>
+        /// 世界参数键：只包含<b>会改变格网/掩码尺寸</b>的字段（尺寸、档位、外环、种子）。
+        /// <para>存在的意义是把"改海平面"与"改世界尺寸"分开：二者都会 bump CityProject 版本，
+        /// 但前者不该引发上下文重建（见 <see cref="ResolveData"/> 的 needCtx 判据）。</para>
+        /// <para>外环宽度取 <c>GetGrid().BuildableInset</c>（CityProject 上没有该公开属性，
+        /// 它在 CityGrid 上；GetGrid() 有缓存，不产生额外成本）。种子经 <see cref="CityRng.Mix"/>
+        /// 混入而非裸 <c>(ulong)</c> 强转 —— 那是 long→ulong 的符号扩展（CS0675），
+        /// 直接异或会让哈希退化。</para>
+        /// </summary>
+        static long WorldKey(CityProject p)
+            => unchecked((long)(
+                    CityRng.Mix((ulong)(int)(p.WorldSizeValue * 10f), (ulong)(int)(p.CellSize * 100f))
+                  ^ CityRng.Mix((ulong)(int)(p.GetGrid().BuildableInset * 10f), p.Seed)));
 
         private TerrainView.ViewParams MakeParams()
             => new TerrainView.ViewParams(
@@ -434,6 +509,136 @@ namespace Collin.CityMap
                 if (RebuildChunk(list[i])) built++;
             _status = $"增量重建 {built}/{list.Count} chunk（脏盒 {region.size.x:0}×{region.size.z:0}m，" +
                       $"全图 {per * per}）";
+        }
+
+        // ─────────────────── 水面宿主（02 改版） ───────────────────
+        //
+        // 水面<b>独立于地形增量</b>重建：水变了不改地形几何，若把它挂进 RebuildAll 的触发链，
+        // "点一下加水域"就要付 289ms 全量地形重建（M4-j 刚清掉的浪费不能从这条路回来）。
+        // 代价与判据：水变化时重铺<b>全部</b>水面 chunk —— 无水的 chunk 在 BuildChunk 第一遍
+        // 扫描（≈81 顶点）就早退，所以 3969 块也只几毫秒；地形的 mesh 一个都不碰。
+
+        /// <summary>上一次铺水面时的水体身份戳（对象引用 + 关键统计），变了就重铺。</summary>
+        WaterField _waterStamp;
+        int _waterStampCells = -1;
+        float _waterStampLevel = float.NaN;
+
+        private void TickWater()
+        {
+            if (!showWater || _water == null || !_hasGrid)
+            {
+                if (_waterChunks.Count > 0) DestroyAllWater();
+                return;
+            }
+            // 水掩码一变，S2 就交出一个<b>新的</b> WaterField 对象（见 WaterStage.Run），
+            // 所以"引用相同 ⇒ 内容相同"成立；再带上淹水格数与海平面，防同一对象被就地改写（探针/测试会）。
+            if (!ReferenceEquals(_waterStamp, _water)
+                || _waterStampCells != _water.WaterCells
+                || !Mathf.Approximately(_waterStampLevel, _water.SeaLevelUsed))
+            {
+                _waterStamp = _water;
+                _waterStampCells = _water.WaterCells;
+                _waterStampLevel = _water.SeaLevelUsed;
+                RebuildWaterAll();
+            }
+        }
+
+        private void RebuildWaterAll()
+        {
+            var per = TerrainView.ChunksPerSide(_grid.WorldSize, _vp.ChunkSize);
+            var built = 0;
+            for (var cz = 0; cz < per; cz++)
+            for (var cx = 0; cx < per; cx++)
+                if (RebuildWaterChunk(new Vector2Int(cx, cz))) built++;
+            if (built != _waterChunks.Count)   // 无水块被清过，计数即实际铺水的块数
+                _status += $" · 水面 {built} chunk";
+        }
+
+        private bool RebuildWaterChunk(Vector2Int c)
+        {
+            var geom = WaterView.BuildChunk(_water, _grid, c, _vp.ChunkSize);
+            if (geom.IsEmpty)
+            {
+                if (_waterChunks.TryGetValue(c, out var empty))
+                {
+                    if (empty.Mesh != null && empty.Mesh.vertexCount > 0) empty.Mesh.Clear(false);
+                    if (empty.Renderer != null) empty.Renderer.enabled = false;
+                }
+                return false;
+            }
+            if (!_waterChunks.TryGetValue(c, out var host))
+            {
+                EnsureWaterRoot();
+                var go = new GameObject($"water_chunk_{c.x}_{c.y}")
+                {
+                    hideFlags = HideFlags.HideAndDontSave,      // 派生态不入库（01 §6）
+                };
+                go.transform.SetParent(_waterRoot, false);
+                host = new ChunkHost
+                {
+                    Go = go,
+                    Filter = go.AddComponent<MeshFilter>(),
+                    Renderer = go.AddComponent<MeshRenderer>(),
+                };
+                _waterChunks[c] = host;
+            }
+            host.Mesh ??= NewMesh($"water_mesh_{c.x}_{c.y}");
+            TerrainView.ApplyToMesh(geom, host.Mesh);           // 与地形同一写入口（含增量与 32bit 索引升级）
+            host.Filter.sharedMesh = host.Mesh;
+            host.Renderer.sharedMaterial = ResolveWaterMaterial();
+            host.Renderer.enabled = true;
+            host.Renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            host.Renderer.receiveShadows = false;               // 水面不投影：会把水底地形照成一团黑斑
+            return true;
+        }
+
+        private void EnsureWaterRoot()
+        {
+            if (_waterRoot != null) return;
+            _waterRoot = new GameObject("water_chunks (derived)")
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+            }.transform;
+            _waterRoot.SetParent(transform, false);
+        }
+
+        /// <summary>
+        /// 水面材质。<b>必须半透明</b>：本包自带的地形着色器是不透明的（01 §3.3 单 pass 顶点色），
+        /// 拿它铺水面会<b>连地形一起盖成实心蓝</b>（我第一版用 alpha 羽化正是这个错）。
+        /// <c>Sprites/Default</c> 是内置的透明 unlit 顶点色 shader，读 COLOR0 且已在透明队列，
+        /// 首版够用且不引外部包。取不到时退回地形材质并<b>在状态里明说</b>，不静默画错。
+        /// </summary>
+        private Material ResolveWaterMaterial()
+        {
+            if (_waterMat != null) return _waterMat;
+            var sh = Shader.Find("Sprites/Default");
+            if (sh == null) sh = Shader.Find("UI/Default");
+            if (sh == null)
+            {
+                _status += "（无透明 shader：水面暂用不透明材质，会盖住地形）";
+                return ResolveMaterial();
+            }
+            _waterMat = new Material(sh)
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+                name = "water_view_fallback",
+            };
+            return _waterMat;
+        }
+
+        private void DestroyAllWater()
+        {
+            foreach (var kv in _waterChunks)
+            {
+                DestroyObj(kv.Value.Mesh);
+                DestroyObj(kv.Value.Go);
+            }
+            _waterChunks.Clear();
+            if (_waterRoot != null) DestroyObj(_waterRoot.gameObject);
+            _waterRoot = null;
+            _waterStamp = null;
+            _waterStampCells = -1;
+            _waterStampLevel = float.NaN;
         }
 
         private bool RebuildChunk(Vector2Int c)

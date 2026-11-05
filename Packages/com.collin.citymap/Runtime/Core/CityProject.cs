@@ -173,6 +173,57 @@ namespace Collin.CityMap
         [Tooltip("全城唯一随机源。改动 ⇒ Seed 脏 ⇒ 全量重算（必过影响预览 + 自动快照）")]
         [SerializeField] ulong seed = 1700;
 
+        /// <summary>
+        /// 海平面高度（米，默认 0）。水体定义的<b>全局基准</b>（02 改版，用户 2026-11-05 裁定）。
+        /// <para>「什么算水」＝ 与某个水体种子<b>4 邻接连通</b>、且<b>低于该种子有效水位</b>的格；
+        /// 种子未设局部水位时用的就是这个值。水面因此是<b>派生量</b>而非逐格属性 ——
+        /// 抬地形水自动退、降海平面水自动涨，不可能出现"悬在坡上的半截河"。</para>
+        /// <para><b>脏通道刻意选 RiverStroke 而不是 WorldParam</b>：WorldParam ⇒ `Seed|World`
+        /// ⇒ Expand 出 `All`（传播表首行「种子/世界尺寸 ⇒ 一切几何失效」）⇒ 重跑 S1a 噪声
+        /// （M4-j 实测 4860ms）。而改海平面<b>不该</b>改变地形本身；River 通道展开成
+        /// `Road|Parcel|Field|Building|Flatten`，正是"水面变了要波及下游"的正确闭包，且不含 Terrain。</para>
+        /// </summary>
+        [Header("水体（02 改版：水 = 低于水位的连通域）")]
+        [Tooltip("海平面高度(m)。改它只重算水面与下游，<b>不会</b>重跑地形噪声。")]
+        [SerializeField] float seaLevel = 0f;
+
+        /// <summary>水缓冲带宽度（米）：水域外圈不可建筑带（04 地块边界 / 07 临水偏好消费）。</summary>
+        [Tooltip("水域外扩的不可建筑带宽度(m)。0 = 不设缓冲带。")]
+        [SerializeField] float waterBuffer = 10f;
+
+        public float SeaLevel => seaLevel;
+        public float WaterBufferMeters => waterBuffer;
+
+        /// <summary>缓冲带换算成<b>格数</b>（洪泛外扩按格走，米数除不尽时向上取整，宁多不一格漏）。</summary>
+        public int WaterBufferCells(CityGrid grid)
+            => waterBuffer <= 0f || grid.CellSize <= 1e-5f ? 0 : Mathf.CeilToInt(waterBuffer / grid.CellSize);
+
+        /// <summary>
+        /// 改海平面。返回 false = 无变化（不 bump，防空重算风暴，同各 Set 入口纪律）。
+        /// <para>水位可以是负数（盆地低于 0 很正常），故<b>不做</b>下限钳制 ——
+        /// 但必须校验 NaN/无穷：那种值会让所有格都比较失败、水面整片消失且查不出原因。</para>
+        /// </summary>
+        public bool SetSeaLevel(float level)
+        {
+            if (float.IsNaN(level) || float.IsInfinity(level)) return false;
+            if (Mathf.Approximately(level, seaLevel)) return false;
+            EnsureRegistered();
+            seaLevel = level;
+            ledger.Bump(IntentKind.RiverStroke, FullMapBounds());
+            return true;
+        }
+
+        public bool SetWaterBuffer(float meters)
+        {
+            if (float.IsNaN(meters) || float.IsInfinity(meters)) return false;
+            var v = Mathf.Max(0f, meters);
+            if (Mathf.Approximately(v, waterBuffer)) return false;
+            EnsureRegistered();
+            waterBuffer = v;
+            ledger.Bump(IntentKind.RiverStroke, FullMapBounds());
+            return true;
+        }
+
         [Header("城心锚点（09 H-7 / D-19：独立意图对象，不实时读场域）")]
         [SerializeField] CityCenterAnchor centerAnchor;
 
