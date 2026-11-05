@@ -3,80 +3,95 @@
 > 覆写式交接单（非追加日志），每次交锁前整体重写五部分（AGENTS.md §4）。
 > 只写可观测事实：碰了哪些文件、跑了什么指令、结果如何；不写意图与代码行为解释。
 
-最后交接：qianwen-work-assistant · `planner-m3-2026-11-05` · 本次提交（M3 相位可行性求解 + 无解 Top-K + 边判据单一真源 + 63 条用例）
-> 前序：`78a103a`（骨架+DESIGN）→ `bd0d8b4`（门禁补记）→ `4334661`（DESIGN 定稿）→ `e1e957b`（M1 表+烘焙）→ `fe44abe`（M2 时间轴+传播+热区）→ `4535b3a`（M2 收口轮 表版本1→2）
+最后交接：qianwen-work-assistant · `planner-m4-2026-11-05` · 本次提交（M4 第一增量：PhaseKShortest 多条边不相交短解 + 面板接入 + 70 条用例）
+> 前序：`78a103a`（骨架+DESIGN）→ `bd0d8b4`（门禁补记）→ `4334661`（DESIGN 定稿）→ `e1e957b`（M1 表+烘焙）→ `fe44abe`（M2 时间轴+传播+热区）→ `4535b3a`（M2 收口轮 表版本1→2）→ `eabaca3`（M3 可行性+Top-K）
 
-## 1. 已完成（本轮 = M3，静态设计 2「有无解」+ 静态设计 3「无解 Top-K」）
+## 1. 已完成（本轮 = M4 第一增量，静态设计 4 的算法地基）
 
-**Runtime**（纯 CPU、只读表、无 UnityEditor 引用，可后台/引擎侧复用）：
-- `PhaseSolver.cs`（新增）：
-  - `Solve(table, settings, startWorld, goalWorld, walkSpeed, out failure)`（面板入口，内部算 horizon=N×BucketsPerPhase + stepCells + FallbackTopK）。
-  - `Solve(table, startCell, goalCell, horizonBuckets, stepCells, topK, out failure)`（核心入口，测试直接走这条）。
-  - 输出 `Result`：`Feasible` / `ArrivalBucket` / `EarliestArrivalSeconds` / `HorizonBuckets` / `CellsReached` / `FallbackTopK(List<Candidate>)`。
-  - 可行性一律复用 `PhaseReachability.Compute`（带目标早退重载），**不自建第二套安全/邻居判据**（见 D-24）。
-  - 无解 Top-K：从 goal 做「只穿非墙格」多源 BFS 距离场；候选须 `EarliestSeconds` 有限 **且** 距离场有限，按(绕墙格步数, 最早到达)升序、截断到 topK（topK<1 按 1）。墙隔断时**如实返回空清单**（排序键用绕墙距离，不用直线距离——后者会谎报「就差一格」）。
-  - 视界硬上限 `MaxHorizonBuckets=4096`；`Horizon()` 超限返 -1 + 可读原因。
-- `PhaseReachability.cs`（改）：
-  ① 抽出**单一真源公开 API**：`BuildBlockedMask(table,t,noData,mask)`（危险或无数据，全工程唯一「某桶哪些格不能站/过」入口）、`TryBuildNoData`、`ExpandSuccessors(table,from,stepCells,maskHere,maskNext,outBuf)`（合法后继含原地等待，去重，D-18 三条语义）。BFS 主循环改为调这三者（原 `ExpandFrom`/`MergeNoData` 私有实现被公开入口取代）。
-  ② 新增 `Compute(...,goalCell, out failure, out goalArrivalBucket)` **带目标早退**重载；原 5 参入口转调它（goal=-1）。注释写死：早退时场只覆盖到命中层，未命中时跑满 horizon 场完整。
+**Runtime**（纯 CPU、只读表，判据全部走 `PhaseReachability` 公开入口）：
+- `PhaseKShortest.cs`（新增）：前 M 条**边不相交**真实动线。
+  - 节点 = `(cell, layer)`（**不是 cell**）：`parent[layer*n+cell]` 兼作"未发现=-1"哨兵与父指针，每轮 `Array.Fill(-1)` 重建（**不是 Clear(0)**——0 是合法格号）。
+  - 每轮一次"按层递增、逐层重建前沿"的单位代价分层 BFS：首个把撤离点纳入前沿的层=最早到达；`Route.CellsPerLayer` 按层展开站位（相邻层同格=等待）。
+  - 路线产出后把其全部转移 `(from,layer)→to`（**含等待边**）锁进禁止集 ⇒ 下一条结构必不同；穷尽如实返回少于 M 条。
+  - 边键 `EdgeKey(fromCell,layer,toCell)` 三位打包（各 <2^21）；规模护栏 `MaxLayerCells=24M` 超限回可读失败；入参非法不返回半条路线。
+  - 口径 = **非严格 Yen**（DESIGN **D-25**：理由、代价声明、升级路径都在该条；组 C 验收按 D-25 判）。
+- `StealthTimelineWindow.cs`（改）：求解区块升级「静态设计 2/3/4」，新增「求前 M 条短解」按钮 + `M` 输入（1~16）+ `_routesSummary` 文本（每条到达时刻/移动跳/等待拍/末站 + 口径行 + 耗时）。结果只出文本、不驱动热区。
 
-**Editor**：`StealthTimelineWindow.cs`（改）加「可行性求解（静态设计 2/3）」区块：`_goalWorld` 输入 + 「求解有无可行解」按钮（无表禁用）+ `_solveSummary` 文本。**不驱动逐桶热区**（求解用完整 horizon，与滑条 `_buckets` 是两个量）。
-
-**测试**：本包 **54→63**（新增 `PhaseSolverTests` **9 条**）。全量 **325/325**，
-按 `FullName` 命名空间：CityMap 141 + Stealth 121 + StealthPlanner 63（自洽）。
+**测试**：本包 **63→70**（`PhaseKShortestTests` **7 条**）。全量 **332/332**，按 `FullName` 命名空间：
+CityMap 141 + Stealth 121 + StealthPlanner 70（自洽）。
 
 **实测读数**：
-- 假表（`PhaseSolverTests`）：无障碍 5 格步长1⇒第4层(=4s)；目标桶0/1/2危险⇒**第3层冲入**（等待生效）；起点==目标⇒桶0；topK=1⇒仅最近；步长0⇒候选仅起点；墙隔断⇒不可达**且** Top-K 空；入参越界各回专属原因；`Horizon` 默认480、N=64/Δt=0.05 时报「视界过大」返 -1。
-- 真实烘焙表（3 哨兵，脚本模式烘，视野体=3）：`片3 活动格11,660/11,664 永久安全4,482 位图252.0KB 查询1,970,540 预筛省1,586,206 实打384,334 主循环0.66s 跳过0 零可见0`；表 `Version=2 足迹=True 无数据格=4`（与 M1/M2 逐位一致 ⇒ 抬版本+重构未改变判定）。
-- 端到端（horizon=480）：起点(-26.75,-26.75)→对角撤离点(26.75,26.75) ⇒ **✅ 有解 t=27.5s（桶 55）**、途中可达 11,660 格（直线最少约 50 桶 ⇒ 55 桶说明绕开巡逻危险区）。
-- 端到端（horizon=1 造无解）：`Feasible=False CellsReached=1 TopK数=1 cell=0 距goal=107 最早=0`（108×108 网格切比雪夫对角=107 步，吻合）。
+- 真实烘焙表（StealthSample 3 哨兵，视野体=3 可信现场，horizon=480，M=5）：
+  `M3 可行=True 到达桶=55 | M4 路线数=5 | 一致性(首条==M3)=True | 5 条搜索耗时=2920ms`；
+  路线1 桶55（移动55、等待0），路线2~5 桶57 且首步分别岔向格 1/2/110/217 ⇒ 结构互异属实。
+- 注入内存表（8×8、中心格全时危险）UI 接线：`可行性=✅ t=7.0s（桶14）、途中可达 63 格`；
+  `短解=3 条（<M=4，如实穷尽）· 步长1格 · 2ms`，其中 #3 含「移动14+等待1」。
+- 单条首解 ≈0.6s、M=5 重搜 ≈M×0.6s 的成本画像如实入档（**未上四剪枝前不要拿它做自动批处理**）。
 
-**文档**：DESIGN 里程碑 M3 标达成 + 新增 **D-24**（本阶段用带早退的层序传播替代手搓 A*，真 A*/四剪枝/k-shortest 推 M4）；
-ACCEPTANCE 状态头转 M3、C 组三行标取证状态（k-shortest 那条如实标「部分/属 M4」）、新增条目 **29~32**、U-2/U-4/U-6 推进；
-CHANGELOG 新增 Added(M3) 段、版本说明转 M3；HANDOFF 覆写五节。
+**门禁（最终代码状态）**：`console clear` → `"script recompile"` → `test run` 全量 → 重放本会话验证动作
+（销毁反射遗留窗口）→ 静默 70s → `"console status"` → `verify_project.py`。
+三项全绿：`compilationFailed=false`；`consoleErrors=0 / consoleWarnings=0`；校验器 **FAIL 0 绿灯**。
+场景末态已还原 `TerrainTest`（非脏）。
 
-**门禁（本轮末次跑，最终代码状态）**：`console clear` → `"script recompile"` → `test run`(全量) → 重放 `m3e2e.cs` 端到端 → `"console status"` → `verify_project.py`。
-三项全绿：`compilationFailed=false`；`consoleErrors=0 / consoleWarnings=0`；校验器 **FAIL 0**（WARN 1=本会话自有锁）。还原场景后再次 `console status` error=0/warn=0。
+**文档**：DESIGN 里程碑 M4 标「第一增量达成 + 后续增量清单」+ 新增 **D-25**；ACCEPTANCE 状态头、
+组 C 两行推进（如实标注"本条整体不算通过"）、新增条目 **33~35**、U-6 推进、新增 **U-8**、补 M4 门禁行；
+CHANGELOG 新增 Added(M4 第一增量) + Fixed/已知问题登记段、版本说明更新。
 
 ## 2. 未完成
 
-- **M4~M9 全部未动**。下一站 M4：真 A* 可采纳启发 + §6.2 四剪枝（**剪枝①现在才该消费 `IsPermanentlySafe`**，M1 条目 7 已独立验证该层可信）+ §6.3 k-shortest（静态4 前 M 条短解）+ §6.7 建议参考相位时长（U-2）+ JSON/SO 数据集导出注入弹窗（静态4/动态1）。
-- 静态3 已交付候选筛选，但**未接进 SceneView 绘制**（当前只在窗口出文本）。若 M4 要把 Top-K 点画进场景，注意复用 `HeatmapGrid`/`Handles`，别在 `duringSceneGui` 里用 `Gizmos.*`（见 §3）。
-- **增量重烘未实现**（U-3）；D-11 只兑现「分帧+可中断+订阅失效」，**对外不得声称支持增量**。首烘 0.66~0.88s 使该优化暂不紧迫。
-- 本包无自己的 `Sample/` 演示场景，取证复用 A 包 `StealthSample`；M9 两段式演示视频未落（**录屏只能用户手动录**，不得自行生成或标"示意视频"）。
-- `.gitignore` 仍未加表资产忽略行（工具报 ACL 拒改，未绕过）；靠逐文件精确 `git add` 排除 `Sample/VisibilityTable.asset*`。**长期规则需用户拍板。**
+- 🚨 **U-8（M5 实跑前必须先解决，属 A 包）**：编辑态**视野体注册间歇恒 0**——本轮多次
+  `OpenScene(StealthSample)` + `EnsureRegistered` + `SyncTransforms` 后 `IVisionWorld.Volumes.Count=0`
+  （`巡逻单位=3` 正常），连强制同名重载也无效；同一路径 M2/M3 取证时"过一帧后=3"可复现。
+  `GlobalServices` 物体查无。疑似 A 包注册表/静态实例跨域重载残留（`StealthWorld.Volumes ← VisionRegistry`）。
+  **堆栈与根因都在 `com.collin.stealth`，本会话未代修。** 复现线索已记 ACCEPTANCE U-8。
+- **M4 后续增量**（下一轮候选，均在 DESIGN §6.2/§6.5/§6.7、组 E）：
+  ① §6.2 四剪枝（**剪枝①消费 `IsPermanentlySafe`**，M1 条目 7 已验证该层可信，现成加速抓手）；
+  ② slack（§6.5；需要察觉累积速率参数，动手前先和用户定参数口径）；
+  ③ JSON/SO 数据集导出 + 注入弹窗（静态4→动态1；组 E round-trip 用例；`Route` 站位序列就是导出载体）；
+  ④ 规模化耗时基准 N∈{4,8,16}。
+- §6.7 参考相位时长（U-2）、增量重烘（U-3）、实跑复现器 M5、反推路点 M6、安全岛端到端 M7、
+  UMPM M8、`Showcase.json`+两段式演示视频 M9（**录屏只能用户手动录**）。
+- `.gitignore` 表资产忽略行仍未加（工具报 ACL 拒改，未绕过）；靠逐文件精确 add 排除。
 
 ## 3. 已知坏
 
-- **本包无红灯**：门禁三项末次全绿（读数见上）。
-- ⚠️ **A 包编辑态注册时机问题（属他包，本会话未代修）**：实测「切场景后**同一帧立刻**烘焙」得 `视野体=0 巡逻单位=3` ⇒ 烘出永久安全格=全场的全瞎表。本包只让它**不再静默**（D-23 三处出口已生效：日志/表/面板）。**取证纪律：切场景后先过一帧（等 ≥5s）再烘**，M3 端到端就是靠 step1 预热 + sleep 3 才拿到 `视野体=3` 的可信表。
-- **本会话自造失误（均当场纠正，无遗留红灯）**：
-  ① 求解器初稿留了一处 `|| true` 恒真垃圾判断和一个未用参数 `startCell` —— 写完自检删净；
-  ② 还原场景探针 `restore.cs` 只判 `name=="StealthSample"`，漏了空场景分支 ⇒ 第一次显示"无需还原"没真切；补 `restore2.cs` 用 `name==""||name=="StealthSample"` 才还原成 TerrainTest（非脏）。**教训：切场景还原的判断分支要覆盖"空场景"。**
-  ③ 文档数字两次写错（本包 53→实为 54、54→实为 63；分包 130+…→实测 141+121+63），一律从 `test run` 输出回填后才落笔。
-- **反复 Single 模式切场景的风险**：本轮为端到端取证多次 `OpenScene(Single)` 切 StealthSample↔TerrainTest。TerrainTest 是 citymap 会话现场，**每次切前都确认其 `dirty=False`**，末态已还原为 TerrainTest(非脏)。若 citymap 会话正在其中未保存操作，Single 切换会打断它——下个会话做同类取证应优先 additive 或先探脏（本轮已尽量规避，如实记此风险）。
-- 环境噪声 `KeyNotFoundException: 'services-gateway'` 仍在 `Tools/console_allowlist.json` 在册；本轮未新增豁免、未代清他会话日志。
+- **本包无红灯**（门禁读数见上）。
+- **本轮自造并已当场修复的问题**（无遗留）：
+  ① `PhaseKShortest` 首版用"格级全局 arrived"当访问标志 ⇒ 同格不能跨层重入，连首条路线都找不到、
+     与 M3「判可行」自相矛盾（4 条用例红）。改 `(cell,layer)` 建模后全绿。
+     ⚠️ 连环坑：改成 `parent` 哨兵法后用 `Array.Clear` 初始化 ⇒ "未发现"=-1 被填成 0（0 是合法格号）
+     ⇒ 又是 0 条。**哨兵值初始化必须 Fill(-1)，这类错编译不报、只把可行判成无解。**
+  ② 反射创建的窗口实例残留挂 `duringSceneGui`，在无 StealthClock 场景持续 `Recompute` 刷 A 包警告
+     （2 条 warn 污染门禁）⇒ 销毁全部遗留实例 + 归零静默 70s 复采恢复 0/0。
+  ③ 一次 Edit 替换吞掉相邻方法的文档注释行 + 留了个未使用局部变量（会打 CS0219 顶爆门禁）——提交前 diff 清掉。
+- **取证纪律（本轮再验证）**：会话恢复后编辑器端口会变（7800→7801），被打断的取证调用**结果不可用**，
+  必须在新连接重跑；两段式命令整体加引号；`OpenScene` 同名场景不触发重载。
+- 环境噪声豁免清单不变（`services-gateway` 等，用户 2026-11-02 批准），本轮未新增。
 
-## 4. 下一步（M4 建议顺序）
+## 4. 下一步（建议顺序）
 
-1. 跑 `python Tools/verify_project.py` + `unity status` + 取包锁确认基线（本轮 citymap 已自修其编译错误、超时锁也已由对方处理，开工基线应是 FAIL 0）。
-2. **剪枝①先做**（成本最低、收益最直接）：求解/传播消费 `VisibilityTable.IsPermanentlySafe`（永久安全格不必展开时间维）。这是 §6.2 里唯一现成数据支撑的剪枝。
-3. §6.3 k-shortest（带禁止边迭代 BFS/A*）产出前 M 条 → 接静态4 导出（JSON schema + SO 双形态，D-07）→ 弹窗确认注入动态1。
-4. §6.7 参考相位时长（U-2）：`lcm(round(c_i/Δt))·Δt`，互质爆炸兜底 `max(c_i)×2`+Warning，面板**只读展示、绝不回写手配 P**（D-13）。
-5. ⚠️ 任何新增求解/剪枝入口**不得在主线程现算射线**（D-01 全部意义）；`PhaseSolver`/`PhaseReachability`/`VisibilityTable` 均无 UnityEditor 依赖，可只读并发。
+1. **先处理 U-8**：它是 A 包问题但挡着 M4 后续的真实场景取证与 M5 实跑。把复现步骤交给用户/或经用户
+   批准去查 `com.collin.stealth` 的注册时机（**默认不代修**）。临时替代：算法层取证继续可用注入表。
+2. M4 后续增量建议先做 **剪枝①**（改动小、收益实测可得：horizon 480×11664 的重搜成本直接降），
+   再 **数据集导出注入**（组 E round-trip 是静态4 收口条件），slack 最后（要先定参数口径）。
+3. 任何求解侧新代码：判据只准调 `PhaseReachability.ExpandSuccessors/BuildBlockedMask/TryBuildNoData`，
+   视界只走 `PhaseSolver.Horizon`，步长只走 `StepCellsFor`；入口一律"可读失败 + 不返回半结果"。
+4. 门禁老三样 + **静默 70s 复采**；创建过窗口/资产的探针必须在同次调用里彻底回收。
 
 ## 5. 勿碰项
 
-- **`Sample/VisibilityTable.asset(.meta)` 不入库**（派生产物；本轮重烘已升到 version=2）；`PlannerBakeSettings.asset` 是源、入库。
-- **单一口径纪律**（破了必被用例判红）：
-  `PhaseReachability.BuildBlockedMask` = 「某桶哪些格不能站/过」**唯一入口**（BFS/A*/热区共用）；
-  `PhaseReachability.ExpandSuccessors` = **唯一**邻居展开（含 D-18 三语义）；
-  `PhaseReachability.StepCellsFor` = 步长唯一口径；
-  `VisibilityTable.BucketOf` = 填/取桶唯一口径；`BuildDangerMask` 逐格走 `IsDangerousAt`（**不许自己按桶扫位图**）；
-  `VisibilityBakeService.EnumerateWalkableCells` = footprint 唯一实现；`PlannerBakeSettings.MaxAlignedBuckets=7200` 仅一处。
-- **判定永远转调玩法包契约**（`IVisionWorld.CanSeeAt`）；本包源码出现任何 A 包具体类型即破方案 P（`dep-direction` 守）。
-- **表结构再加字段必须抬 `LayoutVersion`**（D-22，本轮 1→2 已实践）。
-- **SceneView 回调禁用 `Gizmos.*`**（必抛、每次重绘一条 error 顶爆门禁）；辅助标记用 `Handles.*`。
-- **窗口视图态不得写静态字段**；测试清理凡涉 ScriptableObject/EditorWindow 必须先判 `EditorUtility.IsPersistent` 或只回收自建实例（本轮条目 27 实测踩坑）。
-- `com.collin.core`（契约签名改动=同时打断 A/B，走 ADR）；`com.collin.citymap`、`com.collin.stealth` **任何文件**——工作区里 citymap 的 `CityWindow.cs`/`CityTerrain.cs`/`SculptFilterAsset.cs`/`TerrainProfile.asset`/`TerrainTest.unity`、`Assets/` 下 `CityProject.asset`/被删的 `test.asset`、`README.md`、`packages-lock.json` **都是他会话现场，本轮未动、不要提交**。
-- `.locks/com.collin.stealthplanner.lock`：本会话持有、**随本次提交释放**；长动作序列（test run/烘焙/多次采样，累计十几分钟）里**每 60s 续心跳**（本轮已多次续，最险一次是 m3e2e 端到端跑完才续，中间未超时）。
+- **`Sample/VisibilityTable.asset(.meta)` 不入库**（派生产物）；`PlannerBakeSettings.asset` 是源、入库。
+- **单一口径纪律**（新增成员也要守）：
+  `PhaseKShortest` **不得**自带任何安全/邻居判定（现仅复用 `#5` 三入口 + 自算 `EdgeKey`）；
+  `BuildBlockedMask`=唯一"某桶不能站"入口；`ExpandSuccessors`=唯一邻居展开；
+  `StepCellsFor`=唯一步长；`PhaseSolver.Horizon`=唯一视界；`BucketOf`=唯一填/取桶；
+  `BuildDangerMask` 逐格走 `IsDangerousAt`；`EnumerateWalkableCells`=唯一 footprint；`7200` 仅一处。
+- **表结构加"缺省即危险"字段必须抬 `LayoutVersion`**（D-22）；防线必须有可观测出口（D-23）。
+- **短解口径以 D-25 为准**（边不相交≠严格 Yen）；升级严格 Yen 前先看 `Route` 结构，别绕开真源拼路径。
+- SceneView 回调禁 `Gizmos.*`；窗口视图态不写静态；测试/探针创建的 ScriptableObject/EditorWindow
+  回收前判 `EditorUtility.IsPersistent` 或只回收自建实例。
+- `com.collin.core`（契约签名改动走 ADR）；`com.collin.citymap`、`com.collin.stealth` **任何文件**——
+  工作区里 citymap 的 `CityWindow.cs`/`CityTerrain.cs`/`SculptFilterAsset.cs`/`TerrainProfile.asset`/
+  `TerrainTest.unity`、`Assets/CityProject.asset`、被删的 `Assets/test.asset`、`README.md`、
+  `packages-lock.json` **都是他会话现场，本轮未动、不要提交**。
+- `.locks/com.collin.stealthplanner.lock`：本会话持有、**随本次提交释放**；长动作序列每 60s 续心跳。

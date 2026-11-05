@@ -34,6 +34,7 @@ namespace Collin.StealthPlanner.EditorTooling
         [SerializeField] bool _autoPlay;
         [SerializeField] bool _showDanger = true, _showReach = true, _showCumulative = true;
         [SerializeField] bool _showLanes = true;
+        [SerializeField, Range(1, 16)] int _maxRoutes = 5;
 
         // 派生态（不进序列化，也不跨窗口共享）
         VisibilityTable _table;
@@ -50,6 +51,10 @@ namespace Collin.StealthPlanner.EditorTooling
 
         // 静态设计 2/3 的求解结果（点「求解可行性」后写入，纯文本展示，不驱动热区）
         string _solveSummary;
+        // 静态设计 4：前 M 条短解的结果文本（点「求前 M 条短解」后写入）
+        string _routesSummary;
+        readonly System.Collections.Generic.List<PhaseKShortest.Route> _routeBuf
+            = new System.Collections.Generic.List<PhaseKShortest.Route>();
 
         /// <summary>每片「自身各桶看见多少格」的统计（只在表实例变化时重算，不每帧重扫）。</summary>
         int[][] _laneVisible;
@@ -132,10 +137,10 @@ namespace Collin.StealthPlanner.EditorTooling
             }
             EditorGUILayout.EndHorizontal();
 
-            // 静态设计 2/3：可行性求解。与热区共用同一张表与人速，但结果只以文本呈现，
+            // 静态设计 2/3/4：可行性求解 + 前 M 条短解。与热区共用同一张表与人速，结果只以文本呈现，
             // 不驱动逐桶热区（那会再引入一套「什么时候算」的口径）。
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("可行性求解（静态设计 2 / 3）", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("可行性求解（静态设计 2 / 3 / 4）", EditorStyles.boldLabel);
             _goalWorld = EditorGUILayout.Vector3Field("撤离点（世界）", _goalWorld);
             using (new EditorGUI.DisabledScope(_table == null))
             {
@@ -143,6 +148,15 @@ namespace Collin.StealthPlanner.EditorTooling
             }
             if (!string.IsNullOrEmpty(_solveSummary))
                 EditorGUILayout.LabelField(_solveSummary, EditorStyles.wordWrappedMiniLabel);
+
+            // 静态设计 4：前 M 条边不相交短解（口径见 PhaseKShortest，非严格 Yen）
+            _maxRoutes = Mathf.Clamp(EditorGUILayout.IntField("短解条数上限 M", _maxRoutes), 1, 16);
+            using (new EditorGUI.DisabledScope(_table == null))
+            {
+                if (GUILayout.Button("求前 M 条短解")) SolveRoutes();
+            }
+            if (!string.IsNullOrEmpty(_routesSummary))
+                EditorGUILayout.LabelField(_routesSummary, EditorStyles.wordWrappedMiniLabel);
 
             // 当前桶号在此统一取一次（泳道与状态行共用，避免两套 CurBucket 读数不同步）
             var bucket = CurBucket;
@@ -394,6 +408,58 @@ namespace Collin.StealthPlanner.EditorTooling
                 }
                 SceneView.RepaintAll();
             }
+        }
+
+        /// <summary>
+        /// 点「求前 M 条短解」：复用同一张表 + 面板人速 + 视界，走 <see cref="PhaseKShortest"/>。
+        /// <para>首条路线即<b>最早到达解</b>（单位代价分层图上第一个把撤离点纳入前沿的层），
+        /// 与「求解有无可行解」同一 horizon、同一判据 ⇒ 首条到达桶必然等于可行性解，
+        /// 无需在此再跑一遍 <see cref="PhaseSolver"/>（那会把整视界重扫一次）。</para>
+        /// <para>结果只写成文本，不驱动逐桶热区（口径理由同 <see cref="SolveFeasibility"/>）。</para>
+        /// </summary>
+        void SolveRoutes()
+        {
+            if (_table == null) { _routesSummary = "无表，先烘焙可见性表"; return; }
+            if (_settings == null)
+            { _routesSummary = "缺烘焙设置：视界 N×⌈P/Δt⌉ 无从取得，请先指定烘焙设置资产"; return; }
+
+            var horizon = PhaseSolver.Horizon(_settings, out var whyH);
+            if (horizon < 0) { _routesSummary = "视界非法：" + whyH; return; }
+
+            if (!_table.TryCellIndex(_startWorld, out var startCell))
+            { _routesSummary = "起点落在网格外：" + _startWorld.ToString("0.0"); return; }
+            if (!_table.TryCellIndex(_goalWorld, out var goalCell))
+            { _routesSummary = "撤离点落在网格外：" + _goalWorld.ToString("0.0"); return; }
+
+            var step = PhaseReachability.StepCellsFor(_walkSpeed, _table.TimeStep, _table.CellSize);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            PhaseKShortest.FindRoutes(_table, startCell, goalCell, horizon, step,
+                                      _maxRoutes, _routeBuf, out var fail);
+            var ms = sw.ElapsedMilliseconds;
+
+            if (!fail.ok) { _routesSummary = "搜索失败：" + fail.reason; return; }
+            if (_routeBuf.Count == 0)
+            { _routesSummary = "视界 " + horizon + " 桶内无任何可达撤离点的边不相交动线（无解；用「求解有无可行解」看最近可藏点）。耗时 " + ms + "ms"; return; }
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("✅ 边不相交短解 ").Append(_routeBuf.Count).Append(" 条（≤M ")
+              .Append(_maxRoutes).Append("）· 视界 ").Append(horizon).Append(" 桶 · 步长 ")
+              .Append(step).Append(" 格 · 耗时 ").Append(ms).Append("ms\n")
+              .Append("  口径：非严格 Yen K-shortest，而是逐条锁移动+等待边的边不相交真实动线；穷尽时少于 M 条不凑数。\n");
+            for (var i = 0; i < _routeBuf.Count; i++)
+            {
+                var r = _routeBuf[i];
+                // 等待拍数 = 层间转移总数 − 移动跳数（原地等待不产生新格）
+                var waits = (r.CellsPerLayer.Count - 1) - r.MoveCount;
+                var s1 = _table.CellCenterWorld(r.CellsPerLayer[r.CellsPerLayer.Count - 1]);
+                sb.Append("  #").Append(i + 1).Append("  t=")
+                  .Append(r.ArrivalSeconds.ToString("0.0")).Append("s（桶 ").Append(r.ArrivalBucket)
+                  .Append("）移动 ").Append(r.MoveCount).Append(" 跳、原地等待 ").Append(waits)
+                  .Append(" 拍 · 末站(").Append(s1.x.ToString("0.0")).Append(", ")
+                  .Append(s1.z.ToString("0.0")).Append(")\n");
+            }
+            _routesSummary = sb.ToString();
+            SceneView.RepaintAll();
         }
 
         /// <summary>把「本桶可达」拷成掩码——只读 Field 的公开查询，不复制其内部位图布局。</summary>
