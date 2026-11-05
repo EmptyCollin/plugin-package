@@ -1,9 +1,10 @@
 # ACCEPTANCE — com.collin.stealthplanner
 
 > 每条必须带可观测证据（谁 / 何时 / 用什么指令验证 / 结果）。只记事实，不记意图（AGENTS.md §4）。
-> **当前状态：包骨架 + DESIGN 草案，尚无实现，故本表为空。** 下列为「验收草案」——
-> DESIGN 定稿后要逐条落成的可观测判据，实现一条补一条证据。DESIGN 先于代码，
-> 此草案的存在即为 M0 的产出物之一。
+> **当前状态：包骨架 + DESIGN v0.2「已评审定稿」**（2026-11-05 用户拍板 §10 五问）。
+> **尚无烘焙/求解实现**（仅有决议落地的参数载体 SO 与其检视面板，无可测行为），故本表**零通过项**。
+> 下列为「验收草案」——实现一条补一条证据（M1 起逐里程碑取证）。
+> DESIGN 先于代码，本草案的存在即为 M0 的产出物之一。
 
 ## 验收草案（待实现取证，非通过项）
 
@@ -20,12 +21,29 @@
 | **D. 时间轴回溯** | 拖动 t，NPC 位姿/危险区/安全区**同源同步**响应（编辑态非 Play） | 手动 + 探针读 `ScrubDriver` 生效 |
 | **E. 路点数据集** | 导出 JSON schema 稳定、且能被运行期注入器读回并复现同一条动线 | round-trip 用例 |
 | **F. 反向规划 NPC** | 按给定玩家动线反推 NPC 路点，写回后 A 包实际巡逻经过预期节点 | Play 探针 |
+| **G. 决议可观测性**（对应 §10 拍板五条） | 格长 / Δt / 相位窗 P **三项在面板可配**，改值后重烘结果随之变化（默认 0.5m / 0.5s） | EditMode：写参→重烘→比对表维度 |
+| | 面板显示**只读**「建议参考相位时长」，且**绝不自动改写**用户手配的 P | EditMode：改周期→读参考值变化→断言 P 未被写 |
+| | 周期互质致 LCM 爆炸时**走兜底** `max(c_i)×2` 并出 Warning，不卡死、不报 error | EditMode：构造 c={23,29} 断言退化路径 |
+| | **正确性声明可验证**：同一关卡 P 取不同值，「是否存在 ≤N 相位可行解」的布尔答案不变 | EditMode：P=30/60/120 三跑，断言解存在性一致 |
+| | 目标仅「抵达撤离点」，代码中不存在多前置任务谓词（防范围蔓延） | 代码审查 + 图模型节点定义断言 |
+| | 实跑为**单窗口顺序**，M 条数据集串行完成；并行入口不实现 | 运行一次 M=3 批跑，断言无 UMPM 依赖 |
+
+## 已验证事实
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 时间 | 结果与证据 |
+|---|---|---|---|---|
+| 1 | **D-16：格长 / Δt / 相位窗 P 三项可配，默认 0.5m / 0.5s** | 内存对象探针（`ScriptableObject.CreateInstance` + `SerializedObject` 写入，测完 `DestroyImmediate`、不落盘） | 2026-11-05 | **通过** — `[BakeProbe] 默认: cell=0.500 dt=0.500 P=60.0 N=4 M=5 K=5 buckets=120 Lmax=7200`；改后 `cell=0.200 dt=0.250 buckets=360`（120→360 = `ceil(90/0.25)`，派生量随参数联动正确） |
+| 2 | **越界只钳制、不隐式联动**（§0.1.1 所见即所得） | 同上探针：写 `_cellSize=0.001`、`_maxPhases=999` 后触发 `OnValidate` | 2026-11-05 | **通过** — `越界钳制后 cell=0.050 N=64 P=90.0`：cell 钳到下限 0.05、N 钳到上限 64，**P 保持 90 未被 Δt 变化牵连**（符合「改 Δt 不该偷偷改 P」） |
+| 3 | **§6.7 兜底阈值有单一真源** | `MaxAlignedBuckets` 常量落 `PlannerBakeSettings`，面板与未来求解器共用 | 2026-11-05 | **通过** — 探针读出 `Lmax=7200`，与 DESIGN §6.7 数值一致；本包内该数字**只定义一处**（避免草案期两套口径漂移的老毛病重演） |
+
+| 4 | 参数载体行为固化为**可重复回归用例**（不是一次性探针） | `test run --mode editor` 全量（按 `FullName` 分包统计，非估算） | 2026-11-05 | **通过** — 本包 `PlannerBakeSettingsTests` **7/7 绿**；全量 **258/258**，分布 **CityMap 130 + Stealth 121 + StealthPlanner 7 = 258**（合计已核对自洽）。7 条分别钉住：默认值即拍板值、三项真可配、桶数向上进位（10/3 须得 4 不得截成 3）、P<Δt 病态不为 0、越界钳制不牵连 P、改 Δt 不静默改写 P、7200 赋值形态全包仅一处 |
+| 5 | 用例判据自身曾被实测证伪并修正（防虚假通过） | 首轮 `test run` 结果 | 2026-11-05 | **已修** — 单一真源用例首版**报「实际 6 次」假阳性**：把注释说明、用例自己的期望值与搜索词都算成重复定义。二版又误用 `Assert.Ignore`，命中定义处即中止、使统计变死代码（判「跳过」而非通过，等于没守卫）。终版收紧为：只扫 Runtime/Editor、跳过注释、只匹配 `= 7200` 赋值形态、定义文件豁免，并加**「必须真找到定义文件」前置断言**——否则路径拼错会命中 0 文件让 `hits==1` 断言虚假通过 |
 
 ## 未通过项
 
 | # | 现象 | 复现步骤 | 状态 |
 |---|---|---|---|
-| — | 尚无实现，无运行期现象可记录 | — | 骨架阶段 |
+| — | 烘焙器 / 相位图求解 / 时间轴 / 实跑复现 / 反推均**无实现**，故上表组 A~G 仍为草案 | — | 骨架阶段（已验证事实 1-3 只覆盖参数载体，不含算法） |
 
 ## 基线隔离门禁记录
 
@@ -33,5 +51,7 @@
 |---|---|---|---|
 | 开工基线 | `python Tools/verify_project.py` | 2026-11-05 | 1 FAIL：`console` warning=1（`No script asset for TerrainProfile`，堆栈属 com.collin.citymap，与本包无关，**不代修**，见 DESIGN §约束末注） |
 | 编辑器就绪 | `unity status` | 2026-11-05 | Port 7800 ready · 6000.6.7f1 |
-| **M0 交锁门禁** | `script recompile` → `console clear` → 重编译 → 60s 静默复采 `console status` → `verify_project.py` | 2026-11-05 | **三项全绿**：`compilationFailed=false`、`consoleErrors=0 / consoleWarnings=0`、校验器 FAIL 0（WARN 2：`pkg-sample` 无 Sample 目录 + `lock-active` 本会话自有锁）。空 asmdef 编译干净。提交 `78a103a` |
+| **M0 交锁门禁** | `script recompile` → `console clear` → 重编译 → 60s 静默复采 `console status` → `verify_project.py` | 2026-11-05 | 当时记录「三项全绿、`consoleErrors=0/consoleWarnings=0`、提交 `78a103a`」。⚠️ **「空 asmdef 编译干净」这句是错的，本轮（11-05 设计定稿轮）实测推翻**：Unity 对无脚本的程序集**必打 warning**（`Assembly for ... will not be compiled, because it has no scripts`）。M0 的 clear→复采时序正好把它漏在窗口外，属**取证方法的漏洞**，不是本包清白 |
 | 交锁后收口复采 | `console get --level warn` + 75s 静默窗口 | 2026-11-05 | warning=1：`Color primaries 0 … stealth_demo.mp4`（VideoPlayer 解码告警，路径属 **com.collin.stealth**，与本包无关）。**用户证实为其本人测试展板播放视频所致**；静默期不复现 ⇒ 一次性外部动作产物，不满足 §1.8 豁免条件①，**未写 allowlist**；未代清空控制台（用户测试现场日志）。校验器在该日志清除前将持续显示 console 红灯 |
+| **设计定稿轮修复** | `console get`（重编译后） | 2026-11-05 | **本包 2 条空程序集 warning 已消除**：新落 `Runtime/PlannerBakeSettings.cs`（D-13/D-16 可配参数载体，无判定/求解逻辑）+ `Editor/PlannerBakeSettingsEditor.cs`（§6.8 参数敏感性检视）。复采列表内**无任何指向 stealthplanner 的条目** |
+| **设计定稿轮交锁门禁** | `console clear` → `script recompile` → 静默复采 → `verify_project.py` | 2026-11-05 | **结论：绿灯，FAIL 0 / WARN 4**（① `pkg-sample` 无 Sample 目录属 M0 预期；②③ 两条 `lock-active` 是 citymap 与本会话自有锁；④ `console: error=1 warning=0 全部命中豁免清单（§1.8 已批准，命中 1 条）`= `services-gateway`，属已批准环境噪声）。本轮改动=4 份文档 + 2 个骨架配套脚本，**无烘焙/求解实现、无测试用例** |
