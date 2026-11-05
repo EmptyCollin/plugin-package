@@ -6,7 +6,7 @@
 
 ### Fixed
 - **M6-a/b/c/d/e（用户五项反馈一次收口：面板、即时刷新、平整"灾难"、右上角语义、笔刷撤销）**
-  （本包 **184/184** Failed 0，全工程 **386/386** Failed 0）：
+  （本包 **184/184** Failed 0，全工程 **386/386** Failed 0；提交 `a220d2a`）：
   - **【数据丢失级】三张层资产的列表字段此前从未真正落盘**（M6-a，登记 **D-46**）：
     取证方式是把磁盘上的 `.asset` cat 出来 —— `SculptDelta.asset` / `FlattenFilter.asset` / `WaterNetwork.asset`
     里<b>业务字段只有 `schemaVersion: 1` 一行</b>，`chunks` / `seeds` 整个不见。根因是
