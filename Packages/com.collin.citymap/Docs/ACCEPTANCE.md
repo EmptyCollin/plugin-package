@@ -92,6 +92,9 @@
 | 83 | **M4-k 新增回归用例（3 条）+ 一次口径自纠错** | `Stroke_Accumulates_Track_Extent_Across_Steps`（含"新笔不得残留上一笔范围"）、`Long_Stroke_Dirty_Bounds_Covers_Track_Without_Becoming_A_Square`（含圆心口径**防恒真对照**）、`Degenerate_Stroke_Extent_Still_Produces_Usable_Bounds` | 同上 | 2026-11-05 | 首跑 1 条红（`min.x 969.5 > 949.5`）＝**我测试漏喂 `BeginStroke` 的起笔那一步**、实现侧无误（与 H-62 同族）；按真实流程补正后 **136/136** |
 | 84 | **M4-k 交锁门禁（§1.6 三项）** | 清台 → 静默 60s → 重跑本会话全部验证动作（recompile → 本包 test run → `verify_project.py`）→ `console status` | 同上 | 2026-11-05 | `RECOMPILE failed=false errors=[]`；`Tests.dll` mtime ≥ 测试源 mtime（H-36）；**136/136 Failed 0**；控制台 `error=1 warning=0` → 校验器判定 **`全部命中豁免清单（§1.8 已批准，命中 1 条）`转 WARN**：该条为 Unity Connect `services-gateway` KeyNotFound，堆栈仅 `UnityEditor.Connect.ServicesConfiguration`、**不含任何项目程序集**，且在静默窗口内自行复现（§1.8 三条件齐）|
 | 85 | **M4-k 交锁时的锁状态（如实上报，未代删他人锁）** | `python Tools/verify_project.py` 的 `lock-stale` 项 + 逐把读 `.locks/*.lock` 的 `session` 字段核对归属 | 同上 | 2026-11-05 | 两条 `lock-stale` FAIL：① `com.collin.citymap.lock` `session=2026-11-05 m4-k-stroke` ＝**本会话**，交锁时删除自己的锁文件；② `com.collin.stealthplanner.lock` `session=planner-m1-2026-11-05` ＝**另一会话的进行中工作**（该包有 13 个未提交新文件在写），按 §3「心跳超时锁不得自动删除，报告用户处理」**未代删、未改其内容**，仅如实上报 |
+| 86 | **M4-l 根因取证（用户反馈「平滑的算法有问题？噪音反而变大了」）** | 三层探针：① 纯数学——λ=1 对固定均值一步到位（契约行为）、两格互平差值恒 10（翻转不衰减）；② 300 轮 Jacobi 同步迭代——棋盘粗糙度 4→0，**真实同步更新是收敛的**；③ **隔离探针跑真实 `BeginStroke→20×ApplyDrag→EndStroke`**（内存 CityTerrain+View+delta+包内 Profile，`HideAndDontSave`，测完销毁并复原工具静态字段）：±1m 棋盘原地磨 20 事件 → 中心格累积 delta = **−21.0**、邻格 **+21.0**（单次上限本应 ≈±2）| qianwen-work-assistant（会话 `2026-11-05 m4-l-smooth`） | 2026-11-05 | **根因确认＝笔划期间场不更新 ⇒ 每事件对旧场重复累加同一增量（放大 20 倍）**；场刷新要等松手提交后的 S1b→显示层链路，故 20 个事件读到同一份旧值。抬升/下压（位移积分）与定高（覆盖语义）均不受影响 |
+| 87 | **M4-l 修复：本笔「有效面」（D-39），λ 契约保持不变** | `SculptBrushTool._strokeAcc` + `EffectiveHeight`/`NeighborMeanEffective`（self 与邻居都读「场+本笔累计」，界外邻居只读场不查表）；`BeginStroke` 清表。修后同一探针复测：累积 **−1.003 / +0.997**。**曾钳 `λ≤0.5` 又撤销**：撞红 M4-d 既有契约用例（`strength=1 一步到邻域均值`）⇒ 属"为取证改行为"而非行为错，钳制常量与相关用例已删除、恢复原语义 | 同上 | 2026-11-05 | **通过**；`Smooth_Accumulates_Bounded_Within_One_Stroke`（0.2<\|累积\|<3、相邻格**异号**=各自朝均值回归，含抬升对照组防"没写入的假绿"）与 `SmoothDelta_Moves_Toward_Neighbor_Mean_By_Strength`（原契约）**同时绿**；本包 **137/137 Failed 0**。自纠一处：收敛判据我误写「同号」（棋盘相邻格初值相反、增量必异号），被自己用例抓出（H-67，与 H-62/H-43 同族）|
+| 88 | **M4-l 交锁门禁（§1.6 三项）** | 清台 → 静默 60s 取基线（`0/0 seeded=True`）→ 重跑本会话全部验证动作（recompile → 本包 test run → `verify_project.py`）→ `console status` | 同上 | 2026-11-05 | `RECOMPILE failed=false errors=[]`；`Tests.dll` mtime ≥ 测试源 mtime（H-36）；**137/137 Failed 0**；控制台 `error=1`（验证动作期间新增，seq 825）→ 校验器判定 **`全部命中豁免清单（§1.8 已批准，命中 1 条）`转 WARN**：Unity Connect `services-gateway` KeyNotFound，堆栈仅 `UnityEditor.Connect.ServicesConfiguration`、不含项目程序集，静默窗口内不复现（属瞬时初始化）；校验器 **`FAIL 0`、结论: 绿灯**（3 WARN＝本会话锁 ×1 + 他包 `stealthplanner` 锁 ×1 + 上述豁免 console ×1）|
 
 ## 未通过项
 
@@ -787,7 +790,7 @@ S1b 重算，否则从关到开画面仍是旧的未平整态）；S1b 在 `Comm
 
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~85）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~88）。
 - **M4-e/M4-f 的实机闭环待用户验证**（§M4-e-3）：场景内创建地形实例后拖笔，看是否即时起伏、
   一笔一撤销是否成立、超格数提示是否出现。这是"雕刻笔刷"从"代码正确"到"手感成立"的最后一跳。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。

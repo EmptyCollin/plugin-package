@@ -283,5 +283,144 @@ namespace Collin.CityMap.Tests
                 Object.DestroyImmediate(go);
             }
         }
+
+        // ─────────────── H-65：同一笔内反复施加平滑必须有界 ───────────────
+
+        /// <summary>
+        /// 同一笔内对同一区域反复落事件，平滑的累积增量必须<b>有界收敛</b>，不得随事件数线性增长。
+        /// <para>用户反馈「平滑的算法有问题？噪音反而变大了」。隔离探针实测根因：
+        /// 场（<c>View.BoundField</c>）在<b>整个笔划期间不更新</b>（刷新要等松手提交后走 S1b→显示层），
+        /// 于是每个 MouseDrag 事件读到的 <c>field.GetHeight</c> 都是同一份旧值，
+        /// 平滑增量被<b>重复算出同一个数并 AddDelta 累加</b> ⇒ ±1m 棋盘磨 20 个事件 →
+        /// 累积 delta = <b>−21 / +21 m</b>（单次上限本应 ≈2m）= 噪音放大 20 倍。
+        /// 修复后同一场景实测收敛到 <b>−1.003 / +0.997</b>。</para>
+        /// <para>抬升/下压<b>不受此约束</b>：其增量语义本就是"位移积分"，累加是正确行为 ——
+        /// 故本用例带一个抬升对照组，证明"平滑有界"不是恒真断言。</para>
+        /// </summary>
+        [Test]
+        public void Smooth_Accumulates_Bounded_Within_One_Stroke()
+        {
+            var tool = System.Type.GetType("Collin.CityMap.EditorTooling.SculptBrushTool, com.collin.citymap.Editor");
+            Assert.IsNotNull(tool, "取不到 SculptBrushTool（Editor 程序集未引用？）");
+            var NP = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public;
+            var IN = System.Reflection.BindingFlags.Instance;
+            var ST = System.Reflection.BindingFlags.Static;
+
+            var keys = new[] { "_terrain", "_grid", "_hasGrid", "_view", "_lastCenter", "_carry",
+                               "_stroking", "_blocked", "RadiusMeters", "Strength", "Action" };
+            var save = new System.Collections.Generic.Dictionary<string, object>();
+            foreach (var k in keys) save[k] = tool.GetField(k, NP | ST).GetValue(null);
+
+            var proj = ScriptableObject.CreateInstance<CityProject>();
+            var prof = ScriptableObject.CreateInstance<TerrainProfile>();
+            var go = new GameObject("h65_smooth");
+            SculptDeltaAsset delta = null, delta2 = null;
+            try
+            {
+                proj.EnsureRegistered();
+                proj.SetWorldParams(600f, WorldScale.Small2km, 60f, 20f, 100f, 100f);
+                proj.SetSeed(6501);
+                prof.SetBaseShape(18f, 520f, 4, 0.5f, 2f, 0.35f);
+                prof.SetUrbanFlatness(0.5f);
+
+                var terr = go.AddComponent<CityTerrain>();
+                terr.SetProfile(prof);
+                var view = go.AddComponent<CityTerrainView>();
+                delta = ScriptableObject.CreateInstance<SculptDeltaAsset>();
+                terr.SetDelta(delta);
+
+                var ctx = new PipelineContext(proj);
+                var grid = ctx.Grid;
+                var field = new TerrainField(grid);
+                // 高频棋盘 ±1m，范围须盖住笔刷半径 + 一步 span，否则边缘格读到"没棋盘"的 0
+                int gcx = grid.Columns / 2, gcz = grid.Rows / 2;
+                const int seed = 34;
+                for (var z = -seed; z <= seed; z++)
+                    for (var x = -seed; x <= seed; x++)
+                    {
+                        var i = (gcz + z) * grid.Columns + (gcx + x);
+                        if (i < 0 || i >= field.Heights.Length) continue;
+                        var v = ((x + z) % 2 == 0 ? 1f : -1f);
+                        field.BaseHeights[i] = v; field.Heights[i] = v;
+                    }
+
+                // 把场喂给显示层（工具经 View.BoundField 读它，与画面同源）
+                var vt = typeof(CityTerrainView);
+                vt.GetField("_field", NP | IN).SetValue(view, field);
+                vt.GetField("_grid", NP | IN).SetValue(view, grid);
+                vt.GetField("_hasGrid", NP | IN).SetValue(view, true);
+
+                tool.GetField("_terrain", NP | ST).SetValue(null, terr);
+                tool.GetField("_grid", NP | ST).SetValue(null, grid);
+                tool.GetField("_hasGrid", NP | ST).SetValue(null, true);
+                tool.GetField("_view", NP | ST).SetValue(null, view);
+                tool.GetField("RadiusMeters", NP | ST).SetValue(null, 20f);
+                tool.GetField("Strength", NP | ST).SetValue(null, 1f);
+
+                var cc = grid.CellCenterWorld(gcx, gcz);
+                var center = new Vector3(cc.x, 0f, cc.y);      // Vector2 第二分量承载世界 Z（本工程口径）
+
+                float AccumAt(SculptDeltaAsset d, int cx, int cz)
+                {
+                    var zero = new TerrainField(grid);
+                    d.ApplyTo(zero);
+                    return zero.Heights[cz * grid.Columns + cx];
+                }
+
+                // ── 平滑：原地磨 20 个事件 ──
+                tool.GetField("Action", NP | ST).SetValue(null, SculptAction.Smooth);
+                var begin = tool.GetMethod("BeginStroke", NP | ST);
+                var drag = tool.GetMethod("ApplyDrag", NP | ST);
+                var end = tool.GetMethod("EndStroke", NP | ST);
+                begin.Invoke(null, new object[] { center });
+                for (var i = 1; i <= 20; i++)
+                {
+                    var off = (i % 2 == 0 ? -0.6f : 0.6f);
+                    drag.Invoke(null, new object[] { new Vector3(center.x + off, 0f, center.z) });
+                }
+                end.Invoke(null, null);
+
+                var smoothAcc = AccumAt(delta, gcx, gcz);
+                var smoothNei = AccumAt(delta, gcx, gcz + 1);
+                Assert.Less(Mathf.Abs(smoothAcc), 3f,
+                    $"同一笔内磨 20 次，中心格累积增量必须收敛（实得 {smoothAcc:0.###}m）：" +
+                    "旧实现读到笔划期间不更新的旧场、每事件重复累加同一增量 ⇒ 实测 −21m = 用户说的「噪音反而变大」");
+                Assert.Greater(Mathf.Abs(smoothAcc), 0.2f,
+                    "累积增量近乎为 0 ⇒ 笔划根本没写入，上面那条断言是空过的");
+                // 棋盘相邻格初值相反（+1 / −1）、邻居均值≈0 ⇒ 两格的累积增量必须**异号**
+                //（各自朝 0 回归）。我第一版把判据写成"同号=收敛"，方向恰好反了，被自己的用例抓出（H-67）。
+                Assert.Less(smoothAcc * smoothNei, 0f,
+                    $"相邻格增量应异号（各自朝均值靠拢）：实得 {smoothAcc:0.###} × {smoothNei:0.###} > 0");
+                Assert.Less(smoothAcc, 0f, "中心初值 +1 ⇒ 收敛增量必须为负（朝 0 回归）");
+                Assert.Greater(smoothNei, 0f, "邻格初值 −1 ⇒ 收敛增量必须为正（朝 0 回归）");
+
+                // ── 对照组：抬升同样磨 20 次，累积必须随位移增长（证明环境真的在写） ──
+                delta2 = ScriptableObject.CreateInstance<SculptDeltaAsset>();
+                terr.SetDelta(delta2);
+                tool.GetField("Action", NP | ST).SetValue(null, SculptAction.Raise);
+                begin.Invoke(null, new object[] { center });
+                for (var i = 1; i <= 20; i++)
+                {
+                    var off = (i % 2 == 0 ? -0.6f : 0.6f);
+                    drag.Invoke(null, new object[] { new Vector3(center.x + off, 0f, center.z) });
+                }
+                end.Invoke(null, null);
+                var raiseAcc = AccumAt(delta2, gcx, gcz);
+                Assert.Greater(raiseAcc, 5f,
+                    $"对照组抬升应累出可观高度（实得 {raiseAcc:0.##}m）；若不成立说明平滑那组的『小值』是没写入的假绿");
+
+                Debug.Log($"[M4l] 平滑 20 事件累积 {smoothAcc:0.###}m（收敛，邻格 {smoothNei:0.###}）；" +
+                          $"对照抬升 {raiseAcc:0.##}m（正常累加）");
+            }
+            finally
+            {
+                foreach (var k in keys) tool.GetField(k, NP | ST).SetValue(null, save[k]);
+                Object.DestroyImmediate(go);
+                if (delta != null) Object.DestroyImmediate(delta, true);
+                if (delta2 != null) Object.DestroyImmediate(delta2, true);
+                Object.DestroyImmediate(proj, true);
+                Object.DestroyImmediate(prof, true);
+            }
+        }
     }
 }

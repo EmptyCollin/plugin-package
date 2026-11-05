@@ -57,7 +57,16 @@ namespace Collin.CityMap
 
         /// <summary>
         /// 平滑一格的增量：邻域加权平均与自身之差（01 §5.1「邻域加权平均的<b>增量</b>」）。
-        /// <b>必须是增量</b>：写绝对值会让 delta 层与基底耦合，换噪声参数后平滑效果无法保留（D-01-1）。
+        /// <para><b>必须是增量</b>：写绝对值会让 delta 层与基底耦合，换噪声参数后平滑效果无法保留（D-01-1）。</para>
+        /// <para>语义按 M4-d 既有契约：<c>strength=1</c> 时一步把本格拉到邻域均值（<c>self+delta == mean</c>），
+        /// 用例 <c>SmoothDelta_Moves_Toward_Neighbor_Mean_By_Strength</c> 钉着这条，<b>不得擅改松弛系数</b>。
+        /// H-65 的"噪音变大"根因不在这里，而在调用侧对笔划期间不更新的旧场重复累加（见
+        /// <c>SculptBrushTool._strokeAcc</c>），已由该处修复。</para>
+        /// <para><b>已知风险（未解决，如实记录）</b>：同一事件内各格读的是"事件开始前"的有效面，
+        /// 属 Jacobi 同步更新；对最高频棋盘模式，λ=1 在纯两点模型里是<b>不衰减的翻转</b>
+        /// （实测差值恒为 10 来回跳）。真实 2D 场里因衰减核 fall&lt;1 与低频分量存在，实测粗糙度仍单调下降
+        /// （4 → 2.29 / 12 步）。若实机出现"磨几下不平、像在对倒"，再讨论把 λ 上限收到 0.5
+        /// ——那会改掉上面的既有契约，须先经用户裁定。</para>
         /// </summary>
         public static float SmoothDelta(float self, float neighborMean, float strength, float falloff)
             => (neighborMean - self) * Mathf.Clamp01(strength) * falloff;

@@ -38,6 +38,28 @@ namespace Collin.CityMap.EditorTooling
         static Vector2 _lastCenter;
         static float _carry;
 
+        /// <summary>
+        /// 本笔已写入的增量累计（格线性号 → 米）。H-65 的核心修复载体。
+        /// <para>存在理由：场（<c>_view.BoundField</c>）在**整个笔划期间不更新**——刷新要等松手提交后
+        /// 走 S1b→显示层链路。于是每个 MouseDrag 事件读到的 <c>field.GetHeight</c> 都是**同一份旧值**，
+        /// 平滑增量 <c>(mean − self)·λ·fall</c> 每事件被重复算出同一个数并 <c>AddDelta</c> 累加。
+        /// 实测：±1m 棋盘磨 20 个事件 → 累积 delta = <b>−21 / +21 m</b>（单次上限本应 ≈2m）
+        /// ⇒ 平滑把噪音放大了 20 倍，正是用户说的「噪音反而变大」。
+        /// 抬升/下压不受影响（其增量语义本就是"位移积分"，累加是正确行为）。</para>
+        /// <para>解法：平滑与定高读取的"有效面"= 场 + 本笔累计，使同一格在同一笔内**收敛**而非发散。
+        /// 用字典而非预分配窗口：范围随笔划自然增长，不必猜笔划长度，也不吃大块内存。</para>
+        /// </summary>
+        static readonly System.Collections.Generic.Dictionary<int, float> _strokeAcc
+            = new System.Collections.Generic.Dictionary<int, float>();
+
+        /// <summary>取"有效面"高度：场当前值 + 本笔已写入的累计增量。</summary>
+        static float EffectiveHeight(TerrainField f, int cellIndex, float wx, float wz)
+        {
+            var v = f.GetHeight(wx, wz);
+            float add;
+            return _strokeAcc.TryGetValue(cellIndex, out add) ? v + add : v;
+        }
+
         /// <summary>阻断原因（面板可见）：H-51 实测「提示只打在控制台 Log，用户看不到 ⇒ 表现为拖了没反应」。</summary>
         internal static string BlockReason;
 
@@ -220,6 +242,9 @@ namespace Collin.CityMap.EditorTooling
             Undo.RecordObject(_terrain.Delta, "Sculpt Stroke");   // 一笔 = 一个 undo（A-1-6），捕获改前态
             _stroking = true;
             _carry = 0f;
+            // H-65：每笔开始清空本笔累计表。残留会让下一笔读到上一笔的增量 ⇒ 平滑跨笔互相放大，
+            // 且撤销上一笔后本笔的"有效面"仍是错的（表比 delta 多算了一份）。
+            _strokeAcc.Clear();
             _lastCenter = new Vector2(ground.x, ground.z);
             _stroke.Begin(_lastCenter);
             StampRadius(_lastCenter, SculptBrush.StepDistanceM);    // 单击也有起笔量，避免"点了没反应"
@@ -296,9 +321,16 @@ namespace Collin.CityMap.EditorTooling
                             Mathf.Lerp(field.GetHeight(w.x, w.y), baseH, fall));
                         break;
                     case SculptAction.Smooth:
-                        var h = field.GetHeight(w.x, w.y);
-                        _terrain.Delta.AddDelta(_grid, cx, cz,
-                            SculptBrush.SmoothDelta(h, NeighborMean(field, w, cell), Strength, fall));
+                        // H-65：self 与邻居都必须读**有效面**（场 + 本笔累计），否则每个拖拽事件
+                        // 对着笔划期间不更新的旧场重复算出同一增量并累加 ⇒ 噪音被放大（实测 20 倍）。
+                        // 定高分支不改：SetAbsolute 是覆盖语义，重复写同一目标值天然幂等。
+                        var sIdx = cz * _grid.Columns + cx;
+                        var sh = EffectiveHeight(field, sIdx, w.x, w.y);
+                        var sd = SculptBrush.SmoothDelta(sh, NeighborMeanEffective(field, w, cell, cx, cz),
+                                                         Strength, fall);
+                        _terrain.Delta.AddDelta(_grid, cx, cz, sd);
+                        float sAcc;
+                        _strokeAcc[sIdx] = _strokeAcc.TryGetValue(sIdx, out sAcc) ? sAcc + sd : sd;
                         break;
                 }
             }
@@ -312,6 +344,35 @@ namespace Collin.CityMap.EditorTooling
             {
                 if (i == 0 && j == 0) continue;
                 sum += f.GetHeight(w.x + i * cell, w.y + j * cell);
+                n++;
+            }
+            return n > 0 ? sum / n : f.GetHeight(w.x, w.y);
+        }
+
+        /// <summary>
+        /// 邻居均值（<b>有效面</b>版，H-65）。与 <see cref="NeighborMean"/> 的唯一区别：
+        /// 每个邻居都要加上"本笔已写入该邻居格的累计增量"。
+        /// <para>少了这一步，平滑读到的永远是笔划开始前的旧场：N 个拖拽事件就累加 N 份同一增量
+        /// （实测 ±1m 棋盘 → ±21m）。加上之后同一格在同一笔内单调收敛，"多磨几下"才真的更平。</para>
+        /// <para>邻居格号按 <c>w ± cell</c> 精确反推（w 是格中心，故落在邻居中心上）；
+        /// 越界格不查累计表——线性格号会绕到下一行，读到别的格的增量（越界只会发生在图幅边缘）。</para>
+        /// </summary>
+        static float NeighborMeanEffective(TerrainField f, Vector2 w, float cell, int cx, int cz)
+        {
+            float sum = 0f; var n = 0;
+            for (var i = -1; i <= 1; i++)
+            for (var j = -1; j <= 1; j++)
+            {
+                if (i == 0 && j == 0) continue;
+                var nx = cx + i;
+                var nz = cz + j;
+                if (nx < 0 || nz < 0 || nx >= _grid.Columns || nz >= _grid.Rows)
+                {
+                    sum += f.GetHeight(w.x + i * cell, w.y + j * cell);   // 界外：只读场，不查表
+                    n++;
+                    continue;
+                }
+                sum += EffectiveHeight(f, nz * _grid.Columns + nx, w.x + i * cell, w.y + j * cell);
                 n++;
             }
             return n > 0 ? sum / n : f.GetHeight(w.x, w.y);
