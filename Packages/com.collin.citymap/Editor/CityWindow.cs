@@ -550,13 +550,37 @@ namespace Collin.CityMap.EditorTooling
 
             SculptBrushTool.RadiusMeters = EditorGUILayout.Slider("笔刷半径(m)",
                 SculptBrushTool.RadiusMeters, 2f, 200f);
+
+            // 平滑的强度语义是 Clamp01（1=一步拉到位），滑条给到 5 会让 1 之后的拖动毫无反应（M4-m）。
+            // 抬升/下压是位移积分、强度无上限语义，保持 5。
+            var maxStrength = SculptBrushTool.Action == SculptAction.Smooth ? 1f : 5f;
             SculptBrushTool.Strength = EditorGUILayout.Slider("强度",
-                SculptBrushTool.Strength, 0.05f, 5f);
+                Mathf.Min(SculptBrushTool.Strength, maxStrength), 0.05f, maxStrength);
 
             // 仅呈现可用动作；选中未接线项会被工具拒绝并提示，这里直接不给选项
             var idx = Mathf.Clamp(IndexOf(SculptBrushTool.Action), 0, _sculptActions.Length - 1);
             var next = EditorGUILayout.Popup("动作", idx, _sculptActionsLabels);
             if (next != idx) SculptBrushTool.Action = ActionAt(next);
+
+            // ── 平滑专属参数（M4-m / D-40）：只在动作=平滑时出现，其它动作下它没有作用 ──
+            if (SculptBrushTool.Action == SculptAction.Smooth)
+            {
+                var ep = EditorGUILayout.ToggleLeft(
+                    new GUIContent("保边平滑（只抹碎、不削坡）",
+                        "开＝盘内样本按高差加权：比本格陡 2σ 以上的样本被忽略 ⇒ 磨不到折线与陡坎，"
+                      + "适合「城里找平、城外保留野性」。\n"
+                      + "关＝普通盘均值（= Unity 地形平滑笔刷的直觉），山头沟脊一起圆掉。"),
+                    SculptBrushTool.EdgePreserve);
+                if (ep != SculptBrushTool.EdgePreserve) SculptBrushTool.EdgePreserve = ep;
+                if (ep)
+                    SculptBrushTool.SigmaMeters = EditorGUILayout.Slider("保边带宽σ(m)",
+                        SculptBrushTool.SigmaMeters, 0.5f, 15f);
+
+                EditorGUILayout.HelpBox(
+                    "平滑尺度 = 笔刷半径（M4-m 起）：想磨掉多大尺度就拖多大半径。"
+                  + "半径 30m 修形、200m 能圆掉山体轮廓；斜面不受影响（对称核的不动点是任意平面）。",
+                    MessageType.Info);
+            }
 
             // H-51：阻断原因必须出现在面板上。原先只 Debug.Log 到控制台，
             // 用户看不到 ⇒ 现象就是「左键拖了完全没反应」，与真 bug 无法区分。

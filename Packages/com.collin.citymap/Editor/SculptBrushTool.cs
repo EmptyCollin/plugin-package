@@ -22,6 +22,10 @@ namespace Collin.CityMap.EditorTooling
         internal static float RadiusMeters = 30f;
         internal static float Strength = 1f;
         internal static SculptAction Action = SculptAction.Raise;
+        /// <summary>平滑保边（bilateral）开关：开=只抹碎不削坡（陡坎样本被压权，磨不到折线）。</summary>
+        internal static bool EdgePreserve = false;
+        /// <summary>保边高度带宽 σ（米）：盘内与本格高差超过 ~2σ 的样本基本不计权。</summary>
+        internal static float SigmaMeters = 3f;
 
         static readonly SculptStroke _stroke = new SculptStroke();
         /// <summary>本帧解析到的地形实例（含其接管开关）；null = 场景里没有可用实例。</summary>
@@ -67,6 +71,70 @@ namespace Collin.CityMap.EditorTooling
         {
             SceneView.duringSceneGui += OnSceneGUI;
         }
+
+        // ─────────── M4-m：局部积分图（非保边平滑的精确窗口均值） ───────────
+        // 32 点盘采样实测在大半径下混叠（R=200 对 λ=60 残余 0.51，理论≈0）⇒ 该抹的没抹掉、
+        // 且相邻格样本相位不齐可能出斑块。积分图每格 O(1) 且任意半径精确；矩形窗口关于格中心
+        // 对称 ⇒ 保住"任意斜面是精确不动点"（只吃曲率不推坡）。
+        // 保边模式仍用点采样（bilateral 依赖局部高差门控，点采样是其标准实现）。
+        // 缓冲静态复用：绝不逐事件新建 —— 那正是 M4-j 修掉的 LOH/GC 读条根因。
+
+        static TerrainField _stampField;
+        static float[] _prefixBuf = new float[4096];
+        static Vector2 _prefixOrigin;                       // 图幅左下角世界 XZ
+        static int _prefixCols, _prefixRows, _prefixBaseCx, _prefixBaseCz;
+        static int _prefixHalf;                             // 窗口半径（格）
+        static bool _prefixOk;                              // 本次落笔建图是否成功（失败 ⇒ 平滑退路走点采样）
+
+        /// <summary>有效面采样（场 + 本笔累计），H-65 口径。</summary>
+        static float SampleEff(float x, float z) => EffectiveHeightAt(_stampField, x, z);
+
+        /// <summary>图内局部格号 → 有效面高度。</summary>
+        static float PrefixCellHeight(int gx, int gz)
+        {
+            var cell = _grid.CellSize;
+            var wx = _prefixOrigin.x + (_prefixBaseCx + gx + 0.5f) * cell;
+            var wz = _prefixOrigin.y + (_prefixBaseCz + gz + 0.5f) * cell;
+            return EffectiveHeightAt(_stampField, wx, wz);
+        }
+
+        /// <summary>
+        /// 为<b>本次落笔</b>构建局部积分图。必须逐事件重建：<c>_strokeAcc</c> 每事件都在变（H-65），
+        /// 缓存会读到过期的本笔累计。覆盖"事件中心 ± (影响半径 + 半窗)"，成本随笔刷半径、与全图无关。
+        /// </summary>
+        static bool BuildStampPrefix(Vector2 center)
+        {
+            var cell = _grid.CellSize;
+            var reach = Mathf.CeilToInt(RadiusMeters / cell);
+            _prefixHalf = reach;
+            var bcx = Mathf.FloorToInt((center.x - _grid.Origin.x) / cell);
+            var bcz = Mathf.FloorToInt((center.y - _grid.Origin.y) / cell);
+            var x0 = Mathf.Max(0, bcx - 2 * reach);
+            var z0 = Mathf.Max(0, bcz - 2 * reach);
+            var x1 = Mathf.Min(_grid.Columns - 1, bcx + 2 * reach);
+            var z1 = Mathf.Min(_grid.Rows - 1, bcz + 2 * reach);
+            _prefixCols = x1 - x0 + 1;
+            _prefixRows = z1 - z0 + 1;
+            if (_prefixCols < 3 || _prefixRows < 3) return false;
+
+            var need = (_prefixCols + 1) * (_prefixRows + 1);
+            if (_prefixBuf.Length < need)
+            {
+                var cap = _prefixBuf.Length;
+                while (cap < need) cap *= 2;
+                _prefixBuf = new float[cap];
+            }
+            _prefixBaseCx = x0; _prefixBaseCz = z0;
+            _prefixOrigin = _grid.Origin;
+            SculptBrush.BuildLocalPrefix(PrefixCellHeight, _prefixCols, _prefixRows, _prefixBuf);
+            return true;
+        }
+
+        /// <summary>取格 (cx,cz) 的窗口均值（图内局部号换算 + 边缘钳制由 LocalBoxMean 负责）。</summary>
+        static float WindowMean(int cx, int cz)
+            => SculptBrush.LocalBoxMean(_prefixBuf, _prefixCols, _prefixRows,
+                                        cx - _prefixBaseCx - _prefixHalf, cz - _prefixBaseCz - _prefixHalf,
+                                        cx - _prefixBaseCx + _prefixHalf, cz - _prefixBaseCz + _prefixHalf);
 
         /// <summary>
         /// 笔刷是否接管场景视图。<b>真源 = 场景实例上的 <see cref="CityTerrain.SculptToolActive"/></b>（H-50）。
@@ -288,6 +356,15 @@ namespace Collin.CityMap.EditorTooling
                 new Vector2(center.x - RadiusMeters, center.y - RadiusMeters),
                 new Vector2(center.x + RadiusMeters, center.y + RadiusMeters));
 
+            // M4-m：非保边平滑的窗口均值走局部积分图。**必须逐事件重建**——_strokeAcc 每事件都在变
+            // （H-65），缓存会读到过期的本笔累计。保边模式用点采样，不建图（省一整个窗口的构建成本）。
+            _prefixOk = false;
+            if (Action == SculptAction.Smooth)
+            {
+                _stampField = field;
+                if (!EdgePreserve) _prefixOk = BuildStampPrefix(center);
+            }
+
             // 从世界中心反推起始格（内联 floor，避免 center 略越界时 CellIndex 返回错序 index）
             var bcx = Mathf.FloorToInt((center.x - _grid.Origin.x) / cell);
             var bcz = Mathf.FloorToInt((center.y - _grid.Origin.y) / cell);
@@ -321,13 +398,20 @@ namespace Collin.CityMap.EditorTooling
                             Mathf.Lerp(field.GetHeight(w.x, w.y), baseH, fall));
                         break;
                     case SculptAction.Smooth:
-                        // H-65：self 与邻居都必须读**有效面**（场 + 本笔累计），否则每个拖拽事件
+                        // H-65：self 与目标都必须读**有效面**（场 + 本笔累计），否则每个拖拽事件
                         // 对着笔划期间不更新的旧场重复算出同一增量并累加 ⇒ 噪音被放大（实测 20 倍）。
                         // 定高分支不改：SetAbsolute 是覆盖语义，重复写同一目标值天然幂等。
+                        // M4-m（D-40）：平滑尺度 = 笔刷半径。两条核：
+                        //   非保边 → 局部积分图的精确窗口均值（O(1)/格、任意半径无混叠）；
+                        //   保边   → 32 点盘采样 + 高差 σ 加权（bilateral，点采样是标准实现）。
                         var sIdx = cz * _grid.Columns + cx;
                         var sh = EffectiveHeight(field, sIdx, w.x, w.y);
-                        var sd = SculptBrush.SmoothDelta(sh, NeighborMeanEffective(field, w, cell, cx, cz),
-                                                         Strength, fall);
+                        var mean = (EdgePreserve || !_prefixOk)
+                            // 保边模式，或建图失败（图幅过小等）⇒ 退路走 32 点盘采样，绝不让平滑静默变 0
+                            ? SculptBrush.DiskMean(SampleEff, w.x, w.y, RadiusMeters,
+                                                   EdgePreserve, sh, SigmaMeters)
+                            : WindowMean(cx, cz);
+                        var sd = SculptBrush.SmoothDelta(sh, mean, Strength, fall);
                         _terrain.Delta.AddDelta(_grid, cx, cz, sd);
                         float sAcc;
                         _strokeAcc[sIdx] = _strokeAcc.TryGetValue(sIdx, out sAcc) ? sAcc + sd : sd;
@@ -336,46 +420,17 @@ namespace Collin.CityMap.EditorTooling
             }
         }
 
-        static float NeighborMean(TerrainField f, Vector2 w, float cell)
-        {
-            float sum = 0f; var n = 0;
-            for (var i = -1; i <= 1; i++)
-            for (var j = -1; j <= 1; j++)
-            {
-                if (i == 0 && j == 0) continue;
-                sum += f.GetHeight(w.x + i * cell, w.y + j * cell);
-                n++;
-            }
-            return n > 0 ? sum / n : f.GetHeight(w.x, w.y);
-        }
-
         /// <summary>
-        /// 邻居均值（<b>有效面</b>版，H-65）。与 <see cref="NeighborMean"/> 的唯一区别：
-        /// 每个邻居都要加上"本笔已写入该邻居格的累计增量"。
-        /// <para>少了这一步，平滑读到的永远是笔划开始前的旧场：N 个拖拽事件就累加 N 份同一增量
-        /// （实测 ±1m 棋盘 → ±21m）。加上之后同一格在同一笔内单调收敛，"多磨几下"才真的更平。</para>
-        /// <para>邻居格号按 <c>w ± cell</c> 精确反推（w 是格中心，故落在邻居中心上）；
-        /// 越界格不查累计表——线性格号会绕到下一行，读到别的格的增量（越界只会发生在图幅边缘）。</para>
+        /// 盘样本的<b>有效面</b>采样（世界 XZ 版，M4-m）：格号按 floor 反推，界内才查本笔累计表
+        /// （越界的线性格号会绕到别的行，绝不能拿它查表）；界外只读场，<c>Sample</c> 自带 clamp。
+        /// <para>H-65 语义原样保留：读"场 + 本笔累计"而非旧场，同一格在同一笔内才收敛不发散。</para>
         /// </summary>
-        static float NeighborMeanEffective(TerrainField f, Vector2 w, float cell, int cx, int cz)
+        static float EffectiveHeightAt(TerrainField f, float wx, float wz)
         {
-            float sum = 0f; var n = 0;
-            for (var i = -1; i <= 1; i++)
-            for (var j = -1; j <= 1; j++)
-            {
-                if (i == 0 && j == 0) continue;
-                var nx = cx + i;
-                var nz = cz + j;
-                if (nx < 0 || nz < 0 || nx >= _grid.Columns || nz >= _grid.Rows)
-                {
-                    sum += f.GetHeight(w.x + i * cell, w.y + j * cell);   // 界外：只读场，不查表
-                    n++;
-                    continue;
-                }
-                sum += EffectiveHeight(f, nz * _grid.Columns + nx, w.x + i * cell, w.y + j * cell);
-                n++;
-            }
-            return n > 0 ? sum / n : f.GetHeight(w.x, w.y);
+            var cx = Mathf.FloorToInt((wx - _grid.Origin.x) / _grid.CellSize);
+            var cz = Mathf.FloorToInt((wz - _grid.Origin.y) / _grid.CellSize);
+            if (cx < 0 || cz < 0 || cx >= _grid.Columns || cz >= _grid.Rows) return f.GetHeight(wx, wz);
+            return EffectiveHeight(f, cz * _grid.Columns + cx, wx, wz);
         }
 
         static void EndStroke()

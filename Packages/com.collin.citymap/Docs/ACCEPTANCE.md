@@ -96,6 +96,11 @@
 | 87 | **M4-l 修复：本笔「有效面」（D-39），λ 契约保持不变** | `SculptBrushTool._strokeAcc` + `EffectiveHeight`/`NeighborMeanEffective`（self 与邻居都读「场+本笔累计」，界外邻居只读场不查表）；`BeginStroke` 清表。修后同一探针复测：累积 **−1.003 / +0.997**。**曾钳 `λ≤0.5` 又撤销**：撞红 M4-d 既有契约用例（`strength=1 一步到邻域均值`）⇒ 属"为取证改行为"而非行为错，钳制常量与相关用例已删除、恢复原语义 | 同上 | 2026-11-05 | **通过**；`Smooth_Accumulates_Bounded_Within_One_Stroke`（0.2<\|累积\|<3、相邻格**异号**=各自朝均值回归，含抬升对照组防"没写入的假绿"）与 `SmoothDelta_Moves_Toward_Neighbor_Mean_By_Strength`（原契约）**同时绿**；本包 **137/137 Failed 0**。自纠一处：收敛判据我误写「同号」（棋盘相邻格初值相反、增量必异号），被自己用例抓出（H-67，与 H-62/H-43 同族）|
 | 88 | **M4-l 交锁门禁（§1.6 三项）** | 清台 → 静默 60s 取基线（`0/0 seeded=True`）→ 重跑本会话全部验证动作（recompile → 本包 test run → `verify_project.py`）→ `console status` | 同上 | 2026-11-05 | `RECOMPILE failed=false errors=[]`；`Tests.dll` mtime ≥ 测试源 mtime（H-36）；**137/137 Failed 0**；控制台 `error=1`（验证动作期间新增，seq 825）→ 校验器判定 **`全部命中豁免清单（§1.8 已批准，命中 1 条）`转 WARN**：Unity Connect `services-gateway` KeyNotFound，堆栈仅 `UnityEditor.Connect.ServicesConfiguration`、不含项目程序集，静默窗口内不复现（属瞬时初始化）；校验器 **`FAIL 0`、结论: 绿灯**（3 WARN＝本会话锁 ×1 + 他包 `stealthplanner` 锁 ×1 + 上述豁免 console ×1）|
 
+| 89 | **M4-m 根因定性（用户反馈「平滑效果和我预料的完全不一样」）** | 代码事实核对 + 数学推导（标准滤波器响应，非实测）：旧平滑核 = 8 紧邻格均值 ⇒ 核宽恒 2×逻辑格距（实测 4m），半径滑条从不参与"抹到什么尺度"；520m 波长每轮衰减 0.09%；且**任意斜面是旧核的精确不动点** ⇒ 越想抹坡越不动。新核（积分图窗口均值）的端到端实测见条目 90 | qianwen-work-assistant（会话 `2026-11-05 m4-m-smooth`） | 2026-11-05 | **定性成立**：尺度错位而非参数问题；修复方向（1 盘均值 + 3 保边开关）经用户裁定「都要、保边做开关」 |
+| 90 | **M4-m 双核实现与端到端实测（D-40）** | 隔离物体跑真实 `BeginStroke→N×ApplyDrag→EndStroke`（λ=60m 振幅 5m 正弦场，磨 10 事件后测振幅残余）；斜面场磨一笔测最大位移 | 同上 | 2026-11-05 | **通过**：残余 R=30→**9.7%** / R=60→2.7% / R=120→1.4% / R=200→2.9%（解析 sinc 同量级；旧核同场景≈100%）；斜面最大位移 **0.005m** ⇒ 不推坡；成本 R=200 十事件 **92ms ≈ 9ms/事件**（O(1)/格，不随半径放大样本数）。**注**：保边的端到端探针数字（>100%）系**我探针坐标混算**（格号×世界米），不作判据 ⇒ 保边正确性以条目 91 的 EditMode 用例为准 |
+| 91 | **M4-m 核回归用例（4 条，含解析判据与防恒真对照）** | `Prefix_Window_Mean_Matches_Analytic_Sinc_For_Cosine`（窗口均值 vs 解析 sinc，附**点采样混叠对照组**：R=200/λ=60 点采样误差 >5e-3 而积分图 <2e-3）；`Prefix_Window_Mean_Leaves_Plane_Undisturbed`（三档窗宽斜面不动）；`Prefix_Window_Mean_At_Edge_Uses_Clamped_Area`（角落越界按实际格数，防均值被 0 稀释）；`Bilateral_Kernel_Preserves_Step_While_Chipping_Noise`（σ=3m 坎保留 ≥95%、碎噪抹除更强，含"关保边坎须被抹"对照组） | 同上 | 2026-11-05 | **本包 141/141 Failed 0**；另修面板强度滑条语义（平滑上限 1 / 抬压 5——旧版平滑拖过 1 毫无反应） |
+| 92 | **M4-m 交锁门禁（§1.6 三项）** | 清台 → 静默 60s 取基线（`0/0/0 seeded=True`）→ 重跑本会话全部验证动作（recompile → 本包 test run → `verify_project.py`）→ `console status` | 同上 | 2026-11-05 | `RECOMPILE failed=false errors=[]`；**141/141 Failed 0**；`consoleErrors=0 consoleWarnings=0 seeded=True`（本轮**零 error**，连豁免都不需要）；校验器 **`FAIL 0`、结论: 绿灯**（唯一 WARN＝本会话自持锁，交锁即消）|
+
 ## 未通过项
 
 | # | 现象 | 复现步骤 | 状态 |
@@ -790,7 +795,7 @@ S1b 重算，否则从关到开画面仍是旧的未平整态）；S1b 在 `Comm
 
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~88）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~92）。
 - **M4-e/M4-f 的实机闭环待用户验证**（§M4-e-3）：场景内创建地形实例后拖笔，看是否即时起伏、
   一笔一撤销是否成立、超格数提示是否出现。这是"雕刻笔刷"从"代码正确"到"手感成立"的最后一跳。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。

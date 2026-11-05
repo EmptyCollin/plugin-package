@@ -422,5 +422,122 @@ namespace Collin.CityMap.Tests
                 Object.DestroyImmediate(prof, true);
             }
         }
+
+        // ─────────────── M4-m（D-40）：平滑核 = 笔刷半径尺度的窗口均值 ───────────────
+
+        /// <summary>
+        /// 非保边核（局部积分图窗口均值）必须<b>对任意半径精确</b>，判据取<b>解析 sinc 解</b>。
+        /// <para>存在理由：实测 32 点盘采样在 R=200m 对 λ=60m 的残余 0.51（真值 0.042）——
+        /// 采样间距超过奈奎斯特 ⇒ "该抹掉的中等波长没抹掉"，且相邻格样本相位不齐可能出斑块。
+        /// 积分图每格 O(1) 且与半径无关地精确，故成为默认核；点采样只留给保边模式。</para>
+        /// <para>断言比的是"与实现无关的数学"（方窗对余弦的响应 = sinc(ka)），不是自反调一遍实现；
+        /// 并带一条<b>混叠对照组</b>：同一 λ/R 下点采样必须明显偏 ⇒ 证明换核必要、本用例非恒真。</para>
+        /// </summary>
+        [Test]
+        public void Prefix_Window_Mean_Matches_Analytic_Sinc_For_Cosine()
+        {
+            const int n = 401;                       // 401² 格 @4m ≈ 1604m 见方
+            const float cell = 4f, lam = 60f, R = 200f;
+            var h = new float[n * n];
+            for (var z = 0; z < n; z++)
+                for (var x = 0; x < n; x++)
+                    h[z * n + x] = 1.5f + 0.5f * Mathf.Cos(2f * Mathf.PI * (x * cell) / lam);
+
+            var pref = new float[(n + 1) * (n + 1)];
+            SculptBrush.BuildLocalPrefix((gx, gz) => h[gz * n + gx], n, n, pref);
+
+            var half = (int)(R / cell);
+            const int cx = 200, cz = 200;            // 中心取样，窗口不触图幅边缘（边缘另有用例）
+            var mean = SculptBrush.LocalBoxMean(pref, n, n, cx - half, cz - half, cx + half, cz + half);
+            var k = 2f * Mathf.PI / lam;
+            var truth = 1.5f + 0.5f * Mathf.Cos(k * cx * cell) * (Mathf.Sin(k * R) / (k * R));
+            Assert.AreEqual(truth, mean, 2e-3f,
+                $"窗口均值须贴合解析 sinc（实得 {mean:0.####} vs 真值 {truth:0.####}）：" +
+                "偏了说明积分图构建或面积钳制有错，平滑会静默偏置");
+
+            System.Func<float, float, float> wave = (x, z) => 1.5f + 0.5f * Mathf.Cos(k * x);
+            var sampled = SculptBrush.DiskMean(wave, cx * cell, cz * cell, R, false,
+                                               1.5f + 0.5f * Mathf.Cos(k * cx * cell), 100f);
+            var errPoint = Mathf.Abs(sampled - truth);
+            Assert.Greater(errPoint, 5e-3f,
+                $"对照组失效：点采样若也精确（误差 {errPoint:0.0000}），本用例就没在防混叠这件事");
+            Debug.Log($"[M4m] 解析={truth:0.####} 积分图={mean:0.####}(误差{Mathf.Abs(mean - truth):0.0000}) " +
+                      $"点采样={sampled:0.####}(误差{errPoint:0.###}) ⇒ 默认核用积分图是必要的");
+        }
+
+        /// <summary>任意斜面是窗口均值的<b>精确不动点</b>（对称核 ⇒ 只吃曲率、不推坡，多档窗宽核验）。</summary>
+        [Test]
+        public void Prefix_Window_Mean_Leaves_Plane_Undisturbed()
+        {
+            const int n = 201; const float cell = 4f;
+            var pref = new float[(n + 1) * (n + 1)];
+            SculptBrush.BuildLocalPrefix((gx, gz) => 0.3f * gx * cell + 0.15f * gz * cell + 7f, n, n, pref);
+            var halves = new[] { 3, 8, 20 };
+            for (var t = 0; t < halves.Length; t++)
+            {
+                var half = halves[t];
+                var cxx = 100 + t * 7; var czz = 90 - t * 5;
+                var mean = SculptBrush.LocalBoxMean(pref, n, n, cxx - half, czz - half, cxx + half, czz + half);
+                var self = 0.3f * cxx * cell + 0.15f * czz * cell + 7f;
+                Assert.AreEqual(self, mean, 1e-3f,
+                    $"半窗 {half} 格下斜面必须不动（{self:0.###} → {mean:0.###}）：动了就是在推坡");
+            }
+        }
+
+        /// <summary>图幅角落：面积必须按<b>钳制后的实际格数</b>算，否则被越界的 0 稀释（均值静默塌陷）。</summary>
+        [Test]
+        public void Prefix_Window_Mean_At_Edge_Uses_Clamped_Area()
+        {
+            const int n = 64;
+            var pref = new float[(n + 1) * (n + 1)];
+            SculptBrush.BuildLocalPrefix((gx, gz) => 5f, n, n, pref);
+            var corner = SculptBrush.LocalBoxMean(pref, n, n, -30, -30, 30, 30);
+            Assert.AreEqual(5f, corner, 1e-4f,
+                $"角落越界窗口均值必须仍是 5（实得 {corner:0.###}）：若面积用名义 61²，会被补 0 稀释成 ~1.3");
+        }
+
+        /// <summary>
+        /// 保边盘核的分离性：<b>陡坎保留 ≫ 碎噪保留</b>（"只抹碎不削坡"）。
+        /// σ 过小退化成"什么都不磨"、过大啃坎 ⇒ 必须存在可用区间（面板默认 σ=3m）。
+        /// </summary>
+        [Test]
+        public void Bilateral_Kernel_Preserves_Step_While_Chipping_Noise()
+        {
+            // 剖面 = 10m 陡坎 + ±1m 碎噪（棋盘周期 8m）
+            System.Func<float, float, float> prof = (x, z) =>
+            {
+                var step = x < 0f ? 0f : 10f;
+                var chip = ((int)Mathf.Round(Mathf.Abs(x) / 4f)) % 2 == 0 ? 1f : -1f;
+                return step + (x < 0f ? -chip : chip);
+            };
+            System.Func<bool, float, float> stepKeep = (edge, sigma) =>
+            {
+                System.Func<float, float> one = cx =>
+                {
+                    var self = prof(cx, 0f);
+                    return self + (SculptBrush.DiskMean(prof, cx, 0f, 30f, edge, self, sigma) - self);
+                };
+                return Mathf.Abs(one(2f) - one(-2f)) / 10f;
+            };
+            System.Func<bool, float, float> chipKeep = (edge, sigma) =>
+            {
+                var a = SculptBrush.DiskMean(prof, 100f, 0f, 30f, edge, prof(100f, 0f), sigma);
+                var b = SculptBrush.DiskMean(prof, 104f, 0f, 30f, edge, prof(104f, 0f), sigma);
+                var d0 = Mathf.Abs(prof(104f, 0f) - prof(100f, 0f));
+                return d0 > 1e-4f ? Mathf.Abs(b - a) / d0 : 0f;
+            };
+
+            var plainStep = stepKeep(false, 100f);
+            Assert.GreaterOrEqual(plainStep, 0f);
+            Assert.Less(plainStep, 0.3f,
+                $"对照组：关保边时 10m 陡坎须被抹掉（实得保留 {plainStep * 100:0}%）——否则保边那条断言是空过的");
+
+            var keep = stepKeep(true, 3f);
+            var chip = chipKeep(true, 3f);
+            Assert.Greater(keep, 0.95f, $"σ=3m 时陡坎保留须 ≥95%（实得 {keep * 100:0}%）");
+            Assert.Less(chip, keep,
+                $"碎噪须被抹得比坎多（残余 {chip * 100:0}% vs 坎保留 {keep * 100:0}%）⇒「只抹碎不削坡」才成立");
+            Debug.Log($"[M4m] σ=3m 坎保留 {keep * 100:0}% / 碎噪残余 {chip * 100:0}%；关保边坎保留 {plainStep * 100:0}%");
+        }
     }
 }

@@ -62,14 +62,102 @@ namespace Collin.CityMap
         /// 用例 <c>SmoothDelta_Moves_Toward_Neighbor_Mean_By_Strength</c> 钉着这条，<b>不得擅改松弛系数</b>。
         /// H-65 的"噪音变大"根因不在这里，而在调用侧对笔划期间不更新的旧场重复累加（见
         /// <c>SculptBrushTool._strokeAcc</c>），已由该处修复。</para>
-        /// <para><b>已知风险（未解决，如实记录）</b>：同一事件内各格读的是"事件开始前"的有效面，
-        /// 属 Jacobi 同步更新；对最高频棋盘模式，λ=1 在纯两点模型里是<b>不衰减的翻转</b>
-        /// （实测差值恒为 10 来回跳）。真实 2D 场里因衰减核 fall&lt;1 与低频分量存在，实测粗糙度仍单调下降
-        /// （4 → 2.29 / 12 步）。若实机出现"磨几下不平、像在对倒"，再讨论把 λ 上限收到 0.5
-        /// ——那会改掉上面的既有契约，须先经用户裁定。</para>
+        /// <para>"邻域均值"从 M4-m 起由 <see cref="DiskMean"/> 提供（盘均值，尺度=笔刷半径）；
+        /// 本函数只负责"拉向该目标多少"，与核的形状无关，故契约与用例原样保留。</para>
         /// </summary>
         public static float SmoothDelta(float self, float neighborMean, float strength, float falloff)
             => (neighborMean - self) * Mathf.Clamp01(strength) * falloff;
+
+        // ─────────── M4-m：盘均值 / 保边（bilateral）平滑核 ───────────
+
+        /// <summary>盘面积等分环数（每环 <see cref="RingAngles"/> 个样本，等权 ⇒ 均匀盘均值的确定性近似）。</summary>
+        public const int DiskRings = 4;
+        /// <summary>每环样本数。总样本 = 4×8 = 32，<b>与半径无关</b>：大笔刷不放大成本（编辑器主线程每事件都在跑）。</summary>
+        public const int RingAngles = 8;
+        /// <summary>盘样本数（保边模式用）：4×8=32，与半径无关。</summary>
+        public const int EdgeKernelSamples = DiskRings * RingAngles;
+
+        // ─────────── M4-m：局部积分图（非保边平滑的精确窗口均值） ───────────
+
+        /// <summary>
+        /// 用格高函数构建 (cols+1)×(rows+1) 的局部积分图（prefix[y*(cols+1)+x] = Σ 左上到开区间）。
+        /// <para>存在理由：盘均值若用固定 32 点采样，采样间距在"半径大 / 波长短"时超过奈奎斯特
+        /// ——实测 R=200m 对 λ=60m 的残余达 0.51（理论应≈0）：该抹的中等波长没抹掉，且相邻格的
+        /// 样本相位不一致 ⇒ 磨完可能出现斑块。积分图对<b>任意半径都精确</b>（每格 O(1)），
+        /// 无混叠；矩形窗口关于中心对称 ⇒ 与圆盘核同样保持"任意斜面是精确不动点"。</para>
+        /// <para>由调用方按<b>局部窗口</b>（笔刷包围盒 + 边距）构建，不是全图：全图 4M 格的
+        /// 积分图要 16MB 且每事件重建；局部窗口 ~10²KB，成本随半径而非全图。</para>
+        /// </summary>
+        public static void BuildLocalPrefix(System.Func<int, int, float> heightAtCell,
+                                            int cols, int rows, float[] prefix)
+        {
+            var w = cols + 1;
+            prefix[0] = 0f;
+            for (var x = 1; x <= cols; x++) prefix[x] = prefix[x - 1] + heightAtCell(x - 1, 0);
+            for (var y = 1; y <= rows; y++)
+            {
+                prefix[y * w] = prefix[(y - 1) * w] + heightAtCell(0, y - 1);
+                for (var x = 1; x <= cols; x++)
+                    prefix[y * w + x] = heightAtCell(x - 1, y - 1)
+                                        + prefix[y * w + x - 1] + prefix[(y - 1) * w + x]
+                                        - prefix[(y - 1) * w + x - 1];
+            }
+        }
+
+        /// <summary>
+        /// 从局部积分图取窗口均值（图内局部格号，闭区间；本函数负责钳进 <c>[0,cols-1]×[0,rows-1]</c>）。
+        /// 面积用<b>钳制后的实际格数</b> ⇒ 图幅边缘的半窗口不会把均值拉偏（缺失的样本不能凭空算 0）。
+        /// </summary>
+        public static float LocalBoxMean(float[] prefix, int cols, int rows, int x0, int y0, int x1, int y1)
+        {
+            var w = cols + 1;
+            var xa = Mathf.Max(0, x0); var ya = Mathf.Max(0, y0);
+            var xb = Mathf.Min(cols - 1, x1); var yb = Mathf.Min(rows - 1, y1);
+            var area = (xb - xa + 1) * (yb - ya + 1);
+            if (area <= 0) return 0f;
+            var s = prefix[(yb + 1) * w + (xb + 1)] - prefix[ya * w + (xb + 1)]
+                  - prefix[(yb + 1) * w + xa] + prefix[ya * w + xa];
+            return s / area;
+        }
+
+        /// <summary>
+        /// 盘内加权均值（平滑目标）。
+        /// <para>环半径取 <c>r_i = R·√((i+0.5)/n)</c>——按<b>面积</b>等分圆盘（不是等分半径），
+        /// 等分半径会把权重堆向圆心；环间错开半角避免方向性混叠。核关于中心对称 ⇒
+        /// <b>任意斜面是精确不动点</b>（线性函数在对称核下的均值=中心值）：平滑只吃曲率
+        /// （磨圆山头、填平沟谷），不会把已经做好的坡推歪，与"削碎不削坡"的城市需求同向。</para>
+        /// <para>保边（bilateral）：样本再乘高度核 <c>exp(−(Δh/σ)²)</c>。高差超过 σ 的样本
+        /// （陡坎、折线）被压权 ⇒ 均值≈自身、增量≈0，<b>边缘被保留</b>；σ→∞ 退化为普通盘均值。
+        /// 极端情况（盘内全是跳变）权重和→0，此时返回自身值 = 这一格本事件不动，而不是被拉飞。</para>
+        /// </summary>
+        /// <param name="heightAt">有效面采样（场 + 本笔累计，H-65 口径），签名 (x, z) → 高度。</param>
+        public static float DiskMean(System.Func<float, float, float> heightAt,
+                                     float cx, float cz, float radius,
+                                     bool edgePreserve, float selfHeight, float sigmaMeters)
+        {
+            var sum = 0f; var wsum = 0f;
+            var angleStep = Mathf.PI * 2f / RingAngles;
+            for (var i = 0; i < DiskRings; i++)
+            {
+                var r = radius * Mathf.Sqrt((i + 0.5f) / DiskRings);
+                var a0 = i * (angleStep * 0.5f);
+                for (var j = 0; j < RingAngles; j++)
+                {
+                    var a = a0 + j * angleStep;
+                    var h = heightAt(cx + Mathf.Cos(a) * r, cz + Mathf.Sin(a) * r);
+                    var w = 1f;
+                    if (edgePreserve)
+                    {
+                        if (sigmaMeters <= 1e-4f) return selfHeight;   // σ≈0 = 什么都不许参考
+                        var dh = (h - selfHeight) / sigmaMeters;
+                        w = Mathf.Exp(-dh * dh);
+                        if (w < 0.01f) continue;                        // 陡坎样本直接不计
+                    }
+                    sum += h * w; wsum += w;
+                }
+            }
+            return wsum > 1e-6f ? sum / wsum : selfHeight;
+        }
 
         /// <summary>
         /// 把位移沿固定步长切成积分步进（D-01-3 的唯一实现处）。
