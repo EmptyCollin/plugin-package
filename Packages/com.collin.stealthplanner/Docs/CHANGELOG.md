@@ -28,6 +28,60 @@
 - `Sample/PlannerBakeSettings.asset`：**入库**（是源）。
 - `Tests/Editor/VisibilityTableBakeTests.cs`：**15 条**（本包 7 → 22）。
 
+### Added（M2：相位时间轴 + 可达传播 + 热区，session planner-m2-2026-11-05）
+**Runtime**（纯 CPU、不引 UnityEditor，引擎侧可直接复用同一传播与查询）
+- `PhaseReachability.cs`：**相位可达传播**（静态设计 1 的「玩家可达位置基于上一轴节点」，亦是 M3 求解器地基）。
+  按桶 BFS 推进，`Field` 输出逐桶可达位图 + 每格最早到达秒 + 整窗并集。三条语义见 DESIGN **D-18**
+  （桶内不插值 / 终点只查下一桶 / 允许原地等待）；一步跨多格用整数超行栅格化检查**严格中间格**
+  （只查起止格会一步跳过掩体）；步长 `floor(v·Δt/格长)` 且**允许为 0**（兜成 1 等于虚构移动力）；
+  每桶判据 = 表危险 **或** 无数据格（**D-19**），与热区渲染共用同一份合成掩码。
+  `Field.FillReachableUpTo(bucket, mask)`（**D-20**）：「截至当前桶」的前缀并集，专供时间轴；
+  与「整窗并集 = 可达上限」严格分成两个 API。
+- `HeatmapGrid.cs`：热区网格构建器，把**同行相邻同状态格合并成横带**（单条 4 顶点 2 三角，绕序法线朝上）。
+  11664 格 → 单次采样 354~786 三角形（**D-21**，逐格画 gizmo 会把 SceneView 拖死）。
+- `VisibilityTable.cs` 扩展（全部走既有单一口径，不开第二套判定）：`BuildDangerMask`（逐格转调
+  `IsDangerousAt`）、`VisibleCellCountInBucket` + 新增 `VisibleCellCountInSliceBucket`（按**片内桶号**
+  精确取，供泳道画一整条周期；两者共用同一条位扫描实现）、**足迹三件套**
+  `MarkEvaluated` / `IsEvaluated` / `HasFootprint` / `BuildNoDataMask`（**D-19**，`byte/格`）、
+  表级 `SetUnknownGuardNames` / `UnknownGuardNames`（跳过的哨兵 = 其视野在表里不存在 ⇒ 面板必须警告"安全偏乐观"）。
+- `VisibilityBakeRunner.cs`：收尾登记足迹 + 写入缺失哨兵名单（**先标足迹再重建永久安全层**）。
+
+**Editor**
+- `StealthTimelineWindow.cs`：**相位时间轴窗口**（菜单 `Tools ▸ Collin ▸ Stealth Planner ▸ 相位时间轴`）。
+  拖 t 时：① 经 `IStealthScrubDriver.ScrubTo` 推 A 包 NPC 位姿（**B 不自算折线**，同源同步）
+  ②危险热区 + 本桶可达 + 累计可达三层 ③**哨兵泳道**：每名哨兵一行，横条深浅 = 该桶可见格数、
+  白竖线 = 当前 t 落在其自身周期的哪一桶（走 `BucketOf`，周期不整除 Δt 时不会错位）、
+  行尾 = 此刻世界坐标 / 朝向 / 是否落在网格外（取 `IPatrolWorld.TryPoseAtWorld`）。
+  视图态全部是窗口实例字段 + `[SerializeField]`，**无静态**（不跨窗口串台，为 M8 多窗口预留）。
+  ⚠️ SceneView 回调里起点标记必须用 `Handles.DrawWireDisc`——`Gizmos.*` 在 `duringSceneGui` 会抛
+  `ArgumentException`，每次重绘一条 error，直接顶爆 §1.6b 的 `consoleErrors == 0` 门禁（实测踩过）。
+- `PlannerEditorInternals.cs`：`InternalsVisibleTo("com.collin.stealthplanner.Tests")`。
+  为的是让 U-1 的降级断言打在**真实的 internal 入口**上，而不是为了测试把 `ContractVisibilitySource`
+  / `VisibilityBakeSession` 提成 public（那等于把内部实现固化成对外 API）。
+- `ContractVisibilitySource.cs` / `VisibilityBakeService.cs`：**本轮未改动**（`WarmUpPoses`、
+  距离预筛、`EnumerateWalkableCells` 唯一 footprint 实现、`RunOnce` 脚本模式都是 **M1 已交付**内容，
+  见上一节。此处点名是因为时间轴与采样取证依赖它们，**不是本轮的产出**，勿据此误记归属）。
+- `Tests/Editor/`：新增 `PhaseReachabilityTests` **18 条**、`GracefulDegradationTests` **4 条**（收口 U-1）、
+  `TimelineRecomputeTests` **4 条**（窗口级回归，§0.1 所见即所得），
+  + 既有 22 条 = **本包 48 条**；`Tests` asmdef 增引用 `com.collin.stealthplanner.Editor`。
+  ⚠️ 新用例一律用 `VisibilityTableAsset.SetBaked` **现场注入假表**，不载库里的
+  `Sample/VisibilityTable.asset`——那是派生产物、不入库，依赖它会随现场状态时红时绿。
+
+### Fixed（M2 实测发现的三处缺陷 ⇒ 均已补回归，见 ACCEPTANCE 条目 20~22）
+- **累计热区拖不动**：窗口拷的是 `Field.EverReachable`（整次传播的并集），8 个采样桶读数**恒为同一数**，
+  时间轴看着像坏了。修法：Runtime 新增前缀并集 API，窗口改调用；测试同时钉「中途桶必须**严格小于**
+  整窗并集」与「末桶必须**恰好等于**并集」。**教训：「可达上限」与「推进量」是两个语义，混用不报错、只静默失效。**
+- **改「可达起点」输入框毫无反应**：`_startCell` 只在第一次算出后缓存（`if (_startCell < 0 && …)`），
+  之后改世界坐标被完全忽略 ⇒ 面板死报「出发格在 t=0 已被看见」。违反 AGENTS.md §0.1 第 1 条。
+  修法：每次 `Recompute` 都按 `_startWorld` 重算格号，越界置 -1 并报「起点落在网格外」。
+  回归断言**只改坐标、不点任何按钮**，并额外测「移出再移回必须恢复」防单向卡死。
+- **表失效/传播失败后残留上一次热区**：`Reload` 的无表分支只改状态文本，`_meshDanger` 仍持有
+  上一份表的网格对象、`_dangerMask` 仍满长度 ⇒ 状态行**继续谎报旧格数**且对象泄漏；
+  传播失败时 `Compute` 返回的 `Buckets=0` 空场留在 `_field` 会被读成含糊的「0 格可达」。
+  修法：无表分支补 `ReleaseGfx()` + 清三张掩码与泳道缓存；失败分支补 `_field = null`。
+  （这条由我自己写的断言首次运行即失败暴露——**断言先于实现生效**，正是它该有的样子。）
+
+
 ### Fixed（M1 实测发现的严重缺陷 ⇒ DESIGN 新增 **D-17**）
 - **冷启动首烘静默给出荒谬数据**：重开场景后第 1 次烘焙把永久安全格算成 **11664 = 全部格**
   （等于「三个哨兵全是瞎子」），第 2 次才回落正确的 4482，**全程不报错**。
@@ -58,7 +112,7 @@
 >    真结论来自条目 8 的快照法。
 
 ### 版本
-维持 **0.0.1**：M2~M9 未开工，无演示视频，不满足收版条件。
+维持 **0.0.1**：M2 已交付但 M3~M9 未开工，本包尚无 `Showcase.json` 演示视频与包内演示场景，不满足收版条件。
 
 ### Changed（DESIGN 定稿，session planner-design-2026-11-05）
 - 用户 2026-11-05 拍板原 §10 五个开放问题 ⇒ **DESIGN 状态 v0.1 草案 → v0.2 已评审（定稿），M1 可开工**：

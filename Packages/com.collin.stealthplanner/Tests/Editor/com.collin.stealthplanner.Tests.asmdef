@@ -4,6 +4,7 @@
   "references": [
     "com.collin.core",
     "com.collin.stealthplanner",
+    "com.collin.stealthplanner.Editor",
     "UnityEngine.TestRunner",
     "UnityEditor.TestRunner"
   ],

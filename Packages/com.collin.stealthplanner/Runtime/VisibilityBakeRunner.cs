@@ -193,6 +193,10 @@ namespace Collin.StealthPlanner
 
             if (_guardCursor >= (guards == null ? 0 : guards.Count))
             {
+                // 先留足迹再派生永久安全层：墙体/掩体内部的格从未被射线打过，
+                // 若不记「哪些格真被探测过」，下游 BuildDangerMask 会把它们当安全 ⇒ 玩家穿墙。
+                _table.MarkEvaluated(_cells);
+                _table.SetUnknownGuardNames(SkippedGuards);
                 _table.RebuildPermanentSafeLayer();
                 ScanZeroVisibility();
                 _finalized = true;
