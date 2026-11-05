@@ -33,3 +33,5 @@
 |---|---|---|---|
 | 开工基线 | `python Tools/verify_project.py` | 2026-11-05 | 1 FAIL：`console` warning=1（`No script asset for TerrainProfile`，堆栈属 com.collin.citymap，与本包无关，**不代修**，见 DESIGN §约束末注） |
 | 编辑器就绪 | `unity status` | 2026-11-05 | Port 7800 ready · 6000.6.7f1 |
+| **M0 交锁门禁** | `script recompile` → `console clear` → 重编译 → 60s 静默复采 `console status` → `verify_project.py` | 2026-11-05 | **三项全绿**：`compilationFailed=false`、`consoleErrors=0 / consoleWarnings=0`、校验器 FAIL 0（WARN 2：`pkg-sample` 无 Sample 目录 + `lock-active` 本会话自有锁）。空 asmdef 编译干净。提交 `78a103a` |
+| 交锁后收口复采 | `console get --level warn` + 75s 静默窗口 | 2026-11-05 | warning=1：`Color primaries 0 … stealth_demo.mp4`（VideoPlayer 解码告警，路径属 **com.collin.stealth**，与本包无关）。**用户证实为其本人测试展板播放视频所致**；静默期不复现 ⇒ 一次性外部动作产物，不满足 §1.8 豁免条件①，**未写 allowlist**；未代清空控制台（用户测试现场日志）。校验器在该日志清除前将持续显示 console 红灯 |

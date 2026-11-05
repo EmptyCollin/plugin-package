@@ -62,6 +62,7 @@
 | 现象 | 归属 | 最终事实 |
 |---|---|---|
 | 中途出现过 1 条 error：`No command named 'status console'` | **本会话自造**——`unity list` 输出列顺序是「动作 组」，我误读成命令名；正确是 `console status` | 一次性操作噪声。`console clear` + 重编译 + **60s 静默窗口**复采后不再出现；**不写 allowlist**（自造噪声不得豁免） |
+| **本包交锁后新出现的 console 红灯**：warning=`Color primaries 0 is unknown or unsupported by WindowsMediaFoundation … Packages/com.collin.stealth/ShowcaseMedia/stealth_demo.mp4` | VideoPlayer 解码 **stealth 包**演示视频的告警（堆栈空、路径不经本包程序集）；**用户证实为其本人测试展板播放视频所致** | **非本包缺陷、非 M0 产物**。75s 静默复采无新增 ⇒ 一次性外部动作，不满足 §1.8 豁免条件①，**未写 allowlist**。**未代清空控制台**（那是用户测试现场日志）。校验器在该日志被清除前持续显示 console 红灯 ⇒ 下个会话开工第一步先复跑 `verify_project.py` 确认 console 项已归零 |
 | 开工基线曾报 error/warning：`No script asset for TerrainProfile` | **com.collin.citymap**（堆栈不含本包/stealth 程序集），该会话当时正在改 `TerrainProfile.asset` | **未代修**（§2 包互斥）。静默窗口复采**未再复现**，校验器转绿——大概率是对方编辑过程中的瞬态。**不归因于已修复**，citymap 侧仍可能再出现，见 §5 |
 | `pkg-sample` WARN：本包无 `Sample/` | 本包，**M0 预期状态**（无实现即无演示） | 保留红灯以外的 WARN，M2 落地时间轴窗口时建 `Sample/` 消除 |
 
