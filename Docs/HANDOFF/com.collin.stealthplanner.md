@@ -39,11 +39,14 @@ CHANGELOG 新增 Added(M4 第一增量) + Fixed/已知问题登记段、版本�
 
 ## 2. 未完成
 
-- 🚨 **U-8（M5 实跑前必须先解决，属 A 包）**：编辑态**视野体注册间歇恒 0**——本轮多次
-  `OpenScene(StealthSample)` + `EnsureRegistered` + `SyncTransforms` 后 `IVisionWorld.Volumes.Count=0`
-  （`巡逻单位=3` 正常），连强制同名重载也无效；同一路径 M2/M3 取证时"过一帧后=3"可复现。
-  `GlobalServices` 物体查无。疑似 A 包注册表/静态实例跨域重载残留（`StealthWorld.Volumes ← VisionRegistry`）。
-  **堆栈与根因都在 `com.collin.stealth`，本会话未代修。** 复现线索已记 ACCEPTANCE U-8。
+- ✅ **U-8 已收口（2026-11-05 用户授权「现在就修」，修复在 A 包 `com.collin.stealth`）**：
+  编辑态切场景后 `IVisionWorld.Volumes` 恒 0。根因＝`VisionRegistry`/`DetectionRegistry` 惰性缓存
+  在切场景时 `OnDisable` 不触发 ⇒ 滞留已销毁引用且 `_dirty=false` 不再重建，上层 `v==null` 过滤后静默 0
+  （`Actors` 现扫不受影响，故"单位 3 / 视野 0"）。修法：getter 加 `HasDestroyed` 便宜自愈 **＋**
+  `StealthEditorBootstrap` 订阅 `activeSceneChangedInEditMode` 置脏（后者才闭合"重建后空缓存"漏网路径）。
+  确证：同一段 `[U8S]` 往返探针，切回 StealthSample 后 `IVisionWorld=3`（修复前 =0）。
+  回归 A 包 `VisionRegistry/DetectionRegistry_StaleCacheAfterDestroy_SelfHeals`（刻意不手动置脏）。
+  ⇒ **本包后续真实场景取证不再需要注入内存假表兜底**；曾受阻的 M4 真实表端到端、M5 实跑通路解锁。
 - **M4 后续增量**（下一轮候选，均在 DESIGN §6.2/§6.5/§6.7、组 E）：
   ① §6.2 四剪枝（**剪枝①消费 `IsPermanentlySafe`**，M1 条目 7 已验证该层可信，现成加速抓手）；
   ② slack（§6.5；需要察觉累积速率参数，动手前先和用户定参数口径）；
@@ -70,8 +73,7 @@ CHANGELOG 新增 Added(M4 第一增量) + Fixed/已知问题登记段、版本�
 
 ## 4. 下一步（建议顺序）
 
-1. **先处理 U-8**：它是 A 包问题但挡着 M4 后续的真实场景取证与 M5 实跑。把复现步骤交给用户/或经用户
-   批准去查 `com.collin.stealth` 的注册时机（**默认不代修**）。临时替代：算法层取证继续可用注入表。
+1. **U-8 已收口**（见 §2）⇒ 真实场景取证通路解锁，M4 后续增量不再受他包阻塞，可直接开做。
 2. M4 后续增量建议先做 **剪枝①**（改动小、收益实测可得：horizon 480×11664 的重搜成本直接降），
    再 **数据集导出注入**（组 E round-trip 是静态4 收口条件），slack 最后（要先定参数口径）。
 3. 任何求解侧新代码：判据只准调 `PhaseReachability.ExpandSuccessors/BuildBlockedMask/TryBuildNoData`，
