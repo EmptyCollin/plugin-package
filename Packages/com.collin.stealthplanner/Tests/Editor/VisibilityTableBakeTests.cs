@@ -341,5 +341,36 @@ namespace Collin.StealthPlanner.Tests
             one.AddSlice(1, "a", 20f, 40);
             Assert.AreEqual(perSlice + 10000, one.PackedByteCount);
         }
+
+        [Test]
+        public void ZeroVisibilityGuard_IsReported_AndPersistedOnTable()
+        {
+            // D-17 的第二道防线必须有**出口**。此前 ScanZeroVisibility 只在 runner 内部记一份、
+            // 无人可读 ⇒ 烘出「全场安全」的表被下游当可信数据（本轮实测撞见：切场景后视野体没注册，
+            // 三个哨兵全瞎，永久安全格算成 11664=全部格，日志与表里都没有任何痕迹）。
+            var table = NewTable(3, 1, 1f, 1f);
+            var src = new FakeSource();
+            src.Guards.Add(new GuardInfo { actorId = 1, displayName = "瞎子", cycleSeconds = 2f });
+            src.Guards.Add(new GuardInfo { actorId = 2, displayName = "正常", cycleSeconds = 2f });
+            src.See = (actorId, __, ___) => actorId == 2;     // 1 号整条周期一个格都没看见
+
+            var runner = new VisibilityBakeRunner(table, src, AllCells(table), 1f);
+            Assert.True(runner.Step(10000), "应一次跑完并收尾");
+
+            Assert.AreEqual(1, runner.ZeroVisibilityGuards.Count, "零可见必须被扫出");
+            Assert.AreEqual("瞎子", runner.ZeroVisibilityGuards[0]);
+
+            // 关键断言：名单必须落到**表**上（持久化出口），否则面板/资产读取方拿不到警告
+            Assert.AreEqual(1, table.UnknownGuardNames.Count,
+                "零可见哨兵必须写进表级留痕；只在 runner 内存里等于没有防线");
+            Assert.AreEqual("瞎子", table.UnknownGuardNames[0]);
+
+            // 且「正常」那个不得被误报（防线不能顺手把可信数据也涂脏）
+            Assert.DoesNotThrow(() =>
+            {
+                foreach (var n in table.UnknownGuardNames)
+                    Assert.AreNotEqual("正常", n, "看得见的哨兵不得进可疑名单");
+            });
+        }
     }
 }

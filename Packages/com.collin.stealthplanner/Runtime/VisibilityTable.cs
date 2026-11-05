@@ -252,10 +252,11 @@ namespace Collin.StealthPlanner
             return true;
         }
 
-        // ── 数据缺失留痕（表级）：被跳过的单位在这里显式记账 ────────
+        // ── 数据缺失留痕（表级）：视野在表里等于不存在的单位，在这里显式记账 ────────
         [SerializeField] List<string> _unknownNames = new List<string>();
 
-        /// <summary>没有参与烘焙的单位名（位姿不可解析 ⇒ 其视野在表里等于不存在）。</summary>
+        /// <summary>视野<b>没有真正进入这张表</b>的单位名。两类来源（<c>VisibilityBakeRunner</c> 收尾合并登记）：
+        /// ①位姿不可解析而被<b>整片跳过</b>；②跑完了但<b>整条周期一个格都没看见</b>（D-17 第二道防线）。</summary>
         public IReadOnlyList<string> UnknownGuardNames => _unknownNames;
 
         /// <summary>

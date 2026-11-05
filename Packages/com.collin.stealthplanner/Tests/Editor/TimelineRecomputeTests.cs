@@ -45,6 +45,7 @@ namespace Collin.StealthPlanner.Tests
                            table.Slices.Count, table.PermanentlySafeCellCount, 0L);
 
             var w = (EditorWindow)ScriptableObject.CreateInstance(WinType);
+            Created.Add(w);                                    // 供 TearDown 精确回收
             WinType.GetField("_tableAsset", Priv).SetValue(w, asset);
             WinType.GetField("_settings", Priv).SetValue(w, null);
             WinType.GetField("_buckets", Priv).SetValue(w, Mathf.Max(1, table.Slices[0].buckets));
@@ -87,12 +88,19 @@ namespace Collin.StealthPlanner.Tests
             return c;
         }
 
+        static readonly System.Collections.Generic.List<Object> Created =
+            new System.Collections.Generic.List<Object>();
+
         [TearDown]
-        public void CloseAllWindows()
+        public void CloseCreatedWindows()
         {
-            // 窗口 OnEnable 挂了 SceneView.duringSceneGui，留着会在后续用例的重绘里继续画本用例的表
-            foreach (var o in Resources.FindObjectsOfTypeAll(WinType))
-                if (o != null) Object.DestroyImmediate(o);
+            // 只销毁**本用例自己** CreateInstance 出来的窗口。
+            // 早期版本用 FindObjectsOfTypeAll 扫全部窗口，会把「用户/其他 AI 会话正开着的时间轴窗口」
+            // 一起 DestroyImmediate —— 那是动他人现场（AGENTS.md §2/§9 的纪律），且窗口是
+            // ScriptableObject 型对象，销毁库内关联资产还会打出 error 破归零门禁（版本用例实测踩过）。
+            for (var i = 0; i < Created.Count; i++)
+                if (Created[i] != null) Object.DestroyImmediate(Created[i], true);
+            Created.Clear();
         }
 
         // ── 1. 改起点必须立即生效（实测踩过的缓存 bug）──────────

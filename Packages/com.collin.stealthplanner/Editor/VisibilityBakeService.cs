@@ -18,6 +18,10 @@ namespace Collin.StealthPlanner.EditorTooling
     {
         public VisibilityTable Table { get; }
         public IReadOnlyList<string> Skipped => _runner.SkippedGuards;
+        /// <summary>D-17 的第二道防线：<b>整条周期一个格都没看见</b>的哨兵名。
+        /// <para>此前它<b>只存在 runner 里、没有任何出口</b> ⇒ 防线算出来了却没人能读，
+        /// "三个哨兵全瞎"的表照样被下游当可信数据（本轮实测撞见）。必须有出口才算防线。</para></summary>
+        public IReadOnlyList<string> ZeroVisibilityGuards => _runner.ZeroVisibilityGuards;
         public long Queries => _runner.Queries;
         public long TotalQueries => _runner.TotalQueries;
         public float Progress => _runner.Progress;

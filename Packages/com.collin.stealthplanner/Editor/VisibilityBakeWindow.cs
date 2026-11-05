@@ -99,7 +99,12 @@ namespace Collin.StealthPlanner.EditorTooling
                 + " footprint耗时=" + session.FootprintSeconds.ToString("0.00")
                 + "s 跳过=" + session.Skipped.Count
                 + (session.Skipped.Count > 0
-                    ? "（" + string.Join("、", session.Skipped.ToArray()) + "）" : ""));
+                    ? "（" + string.Join("、", session.Skipped.ToArray()) + "）" : "")
+                // ⚠️ 必须打印：整片零可见 = 该哨兵视野在表里不存在 ⇒ 热区谎报安全。
+                // 这道防线若只存在内存里、日志与表都不出口，等于没有防线（本轮实测撞见）。
+                + " 零可见=" + session.ZeroVisibilityGuards.Count
+                + (session.ZeroVisibilityGuards.Count > 0
+                    ? "（" + string.Join("、", session.ZeroVisibilityGuards.ToArray()) + "）" : ""));
         }
 
         void OnEnable()

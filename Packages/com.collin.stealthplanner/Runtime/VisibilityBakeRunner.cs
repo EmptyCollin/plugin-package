@@ -196,9 +196,15 @@ namespace Collin.StealthPlanner
                 // 先留足迹再派生永久安全层：墙体/掩体内部的格从未被射线打过，
                 // 若不记「哪些格真被探测过」，下游 BuildDangerMask 会把它们当安全 ⇒ 玩家穿墙。
                 _table.MarkEvaluated(_cells);
-                _table.SetUnknownGuardNames(SkippedGuards);
-                _table.RebuildPermanentSafeLayer();
                 ScanZeroVisibility();
+                // 两类来源在<b>表侧语义相同</b>：该哨兵的视野在这张表里等于不存在 ⇒ 它的视野区
+                // 会被画成安全（谎报安全）。故合并进同一份表级留痕，面板一条横幅即可覆盖。
+                // 顺序必须是「先 Scan 再登记」：零可见只有跑完全部片才判得出。
+                var suspect = new List<string>(SkippedGuards.Count + ZeroVisibilityGuards.Count);
+                for (var i = 0; i < SkippedGuards.Count; i++) suspect.Add(SkippedGuards[i]);
+                for (var i = 0; i < ZeroVisibilityGuards.Count; i++) suspect.Add(ZeroVisibilityGuards[i]);
+                _table.SetUnknownGuardNames(suspect);
+                _table.RebuildPermanentSafeLayer();
                 _finalized = true;
             }
             return _finalized;

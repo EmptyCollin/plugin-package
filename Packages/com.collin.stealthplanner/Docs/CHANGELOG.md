@@ -81,6 +81,41 @@
   修法：无表分支补 `ReleaseGfx()` + 清三张掩码与泳道缓存；失败分支补 `_field = null`。
   （这条由我自己写的断言首次运行即失败暴露——**断言先于实现生效**，正是它该有的样子。）
 
+### Changed（M2 收口轮：U-5 定案，session planner-m2fix-2026-11-05）
+- ⚠️ **破坏性变更（用户 2026-11-05 拍板）：`VisibilityTableAsset.LayoutVersion` 1 → 2**。
+  v1 的表资产**一律判过期、拒绝使用**，面板与查询都会给出「表结构版本 1 ≠ 当前 2，请重烘」。
+  原因：足迹栏（D-19）是 v2 才有的字段，v1 缺这一栏 ⇒ 墙与掩体内部会被读成「安全可走」，
+  热区把墙涂绿、求解器可规划穿墙路线，且**全程不报错**。只增字段不抬版本 = 新加的保护区静默失效。
+  **已有表请重新烘焙**（菜单 `Tools ▸ Collin ▸ Stealth Planner ▸ 烘焙可见性表`，实测 0.82~0.88s；
+  表本就是场景派生产物、不入库，故新克隆环境不受影响）。
+- **D-17 第二道防线补上三处出口**（新增决策 **D-23**）：`ScanZeroVisibility()` 此前只在 runner 内存里
+  记名单、**无人可读**，所以「三个哨兵全瞎」的表能被下游当可信数据。现出口为：
+  ① `VisibilityBakeSession.ZeroVisibilityGuards` 对外暴露；② 脚本模式日志追加 `零可见=N（名字…）`；
+  ③ **写进表**——与被跳过的哨兵合并登记进 `VisibilityTable.UnknownGuardNames`（二者表侧语义相同：
+  该哨兵的视野在这张表里等于不存在 ⇒ 其视野区会被画成安全），时间轴窗口据此出警告横幅。
+  回归 `ZeroVisibilityGuard_IsReported_AndPersistedOnTable` 断言名单**必须落到表上**。
+- 新增决策 **D-22**（版本随字段新增必须抬升）、验收条目 25~28、`VisibilityTableAssetVersionTests` **5 条**
+  → 本包 **54 条**（明细：`PlannerBakeSettingsTests` 7 + `VisibilityTableBakeTests` 16 +
+  `PhaseReachabilityTests` 18 + `GracefulDegradationTests` 4 + `TimelineRecomputeTests` 4 +
+  `VisibilityTableAssetVersionTests` 5）。全量 **316/316**
+  （CityMap 141 + Stealth 121 + StealthPlanner 54，按 `FullName` 命名空间统计）。
+
+### Fixed（M2 收口轮实测发现的两处缺陷）
+- 🐛 **测试清理越界，差点删掉库内真实资产**：`Resources.FindObjectsOfTypeAll<T>()` 会把
+  **磁盘上的真实资产**一并列出（本包 `Sample/VisibilityTable.asset` 正在其中），
+  `TearDown` 里直接 `DestroyImmediate` 被 Unity 拦下并打 error，**5 条用例断言全对却全红**。
+  修法：清理前判 `EditorUtility.IsPersistent(obj)`，为 true（磁盘资产）一律不碰。
+  同类隐患一并修掉：`TimelineRecomputeTests` 原本扫全部窗口销毁，会连带销毁
+  **用户/其他 AI 会话正开着的时间轴窗口**（动他人现场，违反 AGENTS.md §2/§9），
+  改为 `Created` 清单只回收**本用例自己**创建的实例。
+- 🐛 **默认起点被如实拒绝，但探针写法会误导取证**：A 包出生点 `(0,-22)` 在可信表上 **t=0 即被看见**，
+  工具报「出发格在 t=0 已被看见…换个起点」——这是**正确的保守拒绝**，不是缺陷。
+  教训记进 ACCEPTANCE 条目 28：验成功路径必须**从表里筛合格格**
+  （`IsEvaluated(c) && !IsDangerousAt(c, 0f)`）做起点，别拿猜来的坐标当"工具坏了"。
+- 🐛 **切场景同一帧立刻烘焙会产出全瞎表**（`视野体=0 巡逻单位=3` ⇒ 永久安全格=全部格）。
+  根因在 A 包编辑态的服务/注册表时机，**属他包、本会话未代修**；本包的处置是上面那条 D-23 出口，
+  使这类数据**不再静默**（日志、表、面板三处都会留痕）。取证纪律：切场景后先过一帧再烘。
+
 
 ### Fixed（M1 实测发现的严重缺陷 ⇒ DESIGN 新增 **D-17**）
 - **冷启动首烘静默给出荒谬数据**：重开场景后第 1 次烘焙把永久安全格算成 **11664 = 全部格**

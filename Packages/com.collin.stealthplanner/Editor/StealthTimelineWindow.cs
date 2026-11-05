@@ -265,10 +265,12 @@ namespace Collin.StealthPlanner.EditorTooling
 
             if (_settings != null && _settings.BucketsPerPhase > 0) _buckets = _settings.BucketsPerPhase;
 
-            // 「跳过的哨兵 = 其视野在表里不存在」⇒ 热区的“安全”偏乐观，必须显式警告
+            // 两类来源合并在这份名单里：①位姿不可解析被整片跳过 ②跑完了但整条周期零可见。
+            // 二者在表侧语义相同 —— 该哨兵的视野在表里等于不存在 ⇒ 它的视野区会被画成安全（谎报安全）。
             var unknown = _table.UnknownGuardNames;
             _warning = unknown != null && unknown.Count > 0
-                ? unknown.Count + " 名哨兵未参与烘焙，热区的「安全」对它们偏乐观："
+                ? unknown.Count + " 名哨兵的视野在这张表里等于不存在（未参与烘焙，或整条周期零可见），"
+                  + "热区的「安全」对它们偏乐观，请核对场景后重烘："
                   + string.Join("、", unknown)
                 : null;
             Recompute();

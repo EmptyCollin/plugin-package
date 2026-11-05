@@ -17,8 +17,16 @@ namespace Collin.StealthPlanner
     public sealed class VisibilityTableAsset : ScriptableObject
     {
         /// <summary>结构版本。烘焙器与查询都先校验它——字段布局变更后读旧资产会给出错误数据（静默污染），
-        /// 故版本号不匹配一律拒绝使用、要求重烘。</summary>
-        public const int LayoutVersion = 1;
+        /// 故版本号不匹配一律拒绝使用、要求重烘。
+        /// <para><b>1 → 2（用户 2026-11-05 拍板）</b>：v2 起表带<b>足迹</b>（<c>_evaluated</c>，D-19）。
+        /// v1 的资产没有这一栏，读进来时"未被射线探测过的格"（墙、掩体内部）会被当成<b>安全可走</b>——
+        /// 于是热区把墙涂成绿色、求解器能规划出穿墙路线，且<b>全程不报错</b>。
+        /// 这类"看起来能用其实数据不对"的失效不能靠兼容默认值掩盖（默认"全都有数据"正是最危险的方向），
+        /// 所以直接抬版本号让 v1 资产<strong>一律作废重烘</strong>；代价可控：实测重烘仅 0.82s、菜单一键，
+        /// 且表是场景的派生产物、本就不入库。</para></para>
+        /// <para>抬版本号同时修掉一个此前的洞：只增字段不抬版本 ⇒ 旧资产仍被判"版本相符"，
+        /// 新加的保护区静默失效而面板照常出图（ACCEPTANCE 原 U-5）。</para></summary>
+        public const int LayoutVersion = 2;
 
         [SerializeField] int _version;
         [SerializeField] VisibilityTable _table = new VisibilityTable();
