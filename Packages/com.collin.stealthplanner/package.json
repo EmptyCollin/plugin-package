@@ -1,0 +1,10 @@
+{
+  "name": "com.collin.stealthplanner",
+  "version": "0.0.1",
+  "displayName": "Collin Stealth Planner 潜行关卡设计辅助台",
+  "description": "面向潜行关卡策划的编辑器辅助工具 + 运行期数据提供者：把玩法包（com.collin.stealth）的 NPC 巡逻与视野烘焙成一张「时空可见性查找表」，据此在设计态离线求解整条对局的可行解（在 N 个相位内抵达撤离点），驱动可拖动的时间轴回溯展示每个 NPC 各时刻的位置与危险/安全区域，枚举并导出玩家路点数据集，以及按给定玩家动线反向规划 NPC 巡逻路点。安全岛判定经 core 契约反向注入玩法包。本包只依赖 com.collin.core、经 Services 消费玩法包契约，玩法包缺席时优雅降级。",
+  "unity": "6000.6",
+  "dependencies": {
+    "com.collin.core": "0.2.0"
+  }
+}
