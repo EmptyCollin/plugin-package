@@ -184,5 +184,104 @@ namespace Collin.CityMap.Tests
             Assert.AreEqual(0.5f, SculptBrush.StepDistanceM, 1e-6f, "01 §5.1 固定步长");
             Assert.AreEqual(1f, SculptBrush.StrengthPerMeter, 1e-6f);
         }
+
+        // ─────────────── H-63：长笔划的影响面必须覆盖整条轨迹 ───────────────
+
+        /// <summary>
+        /// 状态机必须累积<b>整条轨迹</b>的范围，而不是只记最后一步。
+        /// <para>用户反馈：点下后拖较长距离，"最后落在编辑器上的只有最后一截拖拽操作生效"。
+        /// 隔离探针实测：写入侧覆盖格号 x[238,411]（中段最大值 53.6m 也写进去了），
+        /// 而松手时提交给脏区的盒只有以<b>落点</b>为圆心的 202m ⇒ 中段那些格落在脏盒外
+        /// ⇒ S1b 与显示层都不重算它们 ⇒ 数据改了、画面没动。根因在提交侧，不在笔刷数学侧。</para>
+        /// </summary>
+        [Test]
+        public void Stroke_Accumulates_Track_Extent_Across_Steps()
+        {
+            var s = new SculptStroke();
+            const float x0 = 1000f, x1 = 1600f, z = 4000f, r = 50.5f;
+            s.Begin(new Vector2(x0, z));
+
+            // 与真实流程一致：BeginStroke 会先刷一次起笔点，再逐个 MouseDrag 事件刷（工具里都是走 StampRadius）
+            s.AccumulateExtent(new Vector2(x0 - r, z - r), new Vector2(x0 + r, z + r));
+            for (var px = x0 + 20f; px <= x1; px += 20f)
+                s.AccumulateExtent(new Vector2(px - r, z - r), new Vector2(px + r, z + r));
+
+            Vector2 min, max;
+            Assert.IsTrue(s.TryGetExtentWorld(out min, out max), "累积过范围必须可取回");
+            Assert.LessOrEqual(min.x, x0 - r, "起笔侧（含半径外扩）必须在范围内");
+            Assert.GreaterOrEqual(max.x, x1 + r, "落笔侧必须在范围内");
+            Assert.Greater(max.x - min.x, 600f,
+                $"长笔划范围必须远大于笔刷直径（实得 {max.x - min.x:0.#}）：只记最后一步 = 用户说的「只有最后一截生效」");
+
+            // 新笔不得残留上一笔范围：否则第二笔会白白重建上一大片的 chunk
+            s.Begin(new Vector2(10f, 20f));
+            Assert.IsFalse(s.TryGetExtentWorld(out min, out max),
+                "Begin 必须清空轨迹范围，否则脏区会越拖越大");
+        }
+
+        /// <summary>
+        /// 端到端口径：600m 长笔划提交后，脏区必须完整包住整条轨迹；
+        /// 同时保留**逐轴尺寸**（不得把长方形折成正方形取长轴——那会漏掉长轴末端以外的形状信息，
+        /// 且横向笔划会被虚报成 600×600 的大盒，白白多刷一片 chunk）。
+        /// <para>防恒真对照：圆心口径仍给出小盒 ⇒ 证明两条路径各自有效，不是同一个盒子。</para>
+        /// </summary>
+        [Test]
+        public void Long_Stroke_Dirty_Bounds_Covers_Track_Without_Becoming_A_Square()
+        {
+            var go = new GameObject("h63_stroke");
+            var terr = go.AddComponent<CityTerrain>();
+            try
+            {
+                const float x0 = 1000f, x1 = 1600f, z = 4000f, r = 50.5f;
+                var track = new Bounds(new Vector3((x0 + x1) * 0.5f, 0f, z),
+                                       new Vector3(x1 - x0 + 2f * r, 1f, 2f * r));
+                terr.MarkDeltaChanged(track);
+                var b = terr.Ledger.BoundsOf(IntentKind.DeltaStroke);
+
+                Assert.LessOrEqual(b.center.x - b.size.x * 0.5f, x0, "脏区必须覆盖起笔侧");
+                Assert.GreaterOrEqual(b.center.x + b.size.x * 0.5f, x1, "脏区必须覆盖落笔侧（旧口径正是漏在这里）");
+                Assert.LessOrEqual(b.center.z - b.size.z * 0.5f, z - r, "z 向须覆盖笔刷半径边缘");
+                Assert.GreaterOrEqual(b.center.z + b.size.z * 0.5f, z + r);
+
+                Assert.Greater(b.size.x, 600f, $"长轴应≈笔划长度（实得 {b.size.x:0.#}）");
+                Assert.Less(b.size.z, b.size.x * 0.5f,
+                    $"短轴不得被拉成方形（x={b.size.x:0.#} z={b.size.z:0.#}）：" +
+                    "取长轴当正方形边长会把 600×101 的笔划虚报成 600×600");
+
+                // 对照组：圆心口径仍是小盒（两条路径各守各的语义，不是同一实现）
+                terr.MarkDeltaChanged(new Vector2(x1, z), r);
+                var c = terr.Ledger.BoundsOf(IntentKind.DeltaStroke);
+                Assert.Less(c.size.x, 300f,
+                    $"圆心口径仍应是笔刷量级（实得 {c.size.x:0.#}）——否则上面两条断言是恒真的");
+                Assert.Less(Mathf.Abs(c.size.x - c.size.z), 1f, "圆心口径本应是正方形（长宽相等）");
+
+                Debug.Log($"[M4k] 长笔划脏区 {b.size.x:0.#}×{b.size.z:0.#}m（笔划 600m）；" +
+                          $"对照圆心口径 {c.size.x:0.#}×{c.size.z:0.#}m");
+            }
+            finally
+            {
+                Object.DestroyImmediate(go);
+            }
+        }
+
+        /// <summary>退化输入不得产出"零尺寸脏盒"（会被 AddDirtyBound 当无脏区丢掉 ⇒ 静默不重建）。</summary>
+        [Test]
+        public void Degenerate_Stroke_Extent_Still_Produces_Usable_Bounds()
+        {
+            var go = new GameObject("h63_degenerate");
+            var terr = go.AddComponent<CityTerrain>();
+            try
+            {
+                // 每个用例各自的 CityTerrain 实例自带独立账本，无需额外隔离
+                terr.MarkDeltaChanged(default(Bounds));           // 全零包围盒（被阻断/未落笔的极端路径）
+                var b = terr.Ledger.BoundsOf(IntentKind.DeltaStroke);
+                Assert.Greater(b.size.x, 0f, "零尺寸盒会被下游当『无脏区』丢掉 ⇒ 必须兜底成最小盒");
+                Assert.Greater(b.size.z, 0f);
+            }
+            finally
+            {
+                Object.DestroyImmediate(go);
+            }
+        }
     }
 }

@@ -256,6 +256,13 @@ namespace Collin.CityMap.EditorTooling
             if (cell <= 1e-5f) return;
             var span = Mathf.CeilToInt(RadiusMeters / cell) + 1;
 
+            // H-63：登记本步的**实际影响面**（笔刷中心 ± 半径，半径外衰减核恒为 0）。
+            // 放在所有早退之后、循环之前：真正要写格了才计入，避免无写入却虚报脏区。
+            // 累积整条笔划的范围，松手时按它提交脏区 —— 只报终点会让中段改了却不重建。
+            _stroke.AccumulateExtent(
+                new Vector2(center.x - RadiusMeters, center.y - RadiusMeters),
+                new Vector2(center.x + RadiusMeters, center.y + RadiusMeters));
+
             // 从世界中心反推起始格（内联 floor，避免 center 略越界时 CellIndex 返回错序 index）
             var bcx = Mathf.FloorToInt((center.x - _grid.Origin.x) / cell);
             var bcz = Mathf.FloorToInt((center.y - _grid.Origin.y) / cell);
@@ -313,12 +320,25 @@ namespace Collin.CityMap.EditorTooling
         static void EndStroke()
         {
             _stroking = false;
-            _stroke.End();
-            if (_terrain == null) return;
+            if (_terrain == null) { _stroke.End(); return; }
 
+            // H-63：按**整条笔划的轨迹包围盒**提交脏区。
+            // 旧口径 MarkDeltaChanged(落点, 半径) 只报终点圆 —— 长笔划中段已写进 delta 的格
+            // 落在脏盒外 ⇒ S1b 与显示层都不重算 ⇒ 用户看到的"只有最后一截拖拽生效"。
+            // 必须在 End() 之前取范围（End 之后语义上这笔已结束，不该再改它的记账）。
+            Vector2 emin, emax;
+            if (_stroke.TryGetExtentWorld(out emin, out emax))
+                _terrain.MarkDeltaChanged(new Bounds(
+                    new Vector3((emin.x + emax.x) * 0.5f, 0f, (emin.y + emax.y) * 0.5f),
+                    new Vector3(emax.x - emin.x, 1f, emax.y - emin.y)),
+                    // 每边再加一档笔刷半径：与旧圆心口径的侧向外扩**逐轴等价**（50.5 → 边缘外 50.5）。
+                    // 只报包围盒而不给外扩，会让平整开启时的侧向约束带漏重建（自查发现的退化，见 D-38）。
+                    RadiusMeters);
+            else
+                _terrain.MarkDeltaChanged(_lastCenter, RadiusMeters);   // 没刷到任何格（被阻断）：退回点口径
+
+            _stroke.End();
             EditorUtility.SetDirty(_terrain.Delta);           // 雕刻资产是 ScriptableObject，改动须标脏才持久化
-            // 用笔刷中心而非 transform.position 提交脏区（H-42 同族：算错影响范围→雕了别处画面不动）
-            _terrain.MarkDeltaChanged(_lastCenter, RadiusMeters);
             if (_stroke.Truncated)
                 BlockReason = "笔刷过大：单笔已截断于 " + _stroke.CellCount + " 格，建议缩小半径或分次雕刻";
             SceneView.RepaintAll();

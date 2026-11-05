@@ -86,6 +86,12 @@
 | 77 | **M4-j 自造缺陷 H-58：`OnEnable` 直接 Bind 会让画面全白（比修复前更糟）** | 探针实测 `runner 阶段数=1 [S0_Assemble]`、`ctx.HasSlot(S1a)=False`、`stageKey=14695981039346656037`（= 素数，即 `_terrain`/`Profile` 当时均为 null 未参与混列）⇒ 面板已接管、显示层已放弃自建路径，但高度场永不产出 | 同上 | 2026-11-05 | **已当场纠正**（改为更新循环重试装配）。纪律补条：**"修 A 导致 B"的验证必须跑到"画面真有东西"**，只断言"装配标志已置位"会漏掉这类更严重的回归 |
 | 78 | **M4-j 测试口径自纠错 H-62**：第一版用例用 `UndoHistoryTracker.MarkIntent()` 断言"只脏 Flatten"，实跑得 `Terrain, Flatten, Building` → 红 | 查清 `MarkIntent` 是**粗粒度**入口（并对象当前**全部**通道），rig 建时 `SetProfile` 已 bump `TerrainModel` ⇒ 必带 `Terrain`；面板真实驱动是 `Scan()` 基线差分。**不是实现有 bug**（`DirtyOf(DeltaStroke)=Flatten,Building` 传播表本就正确） | 同上 | 2026-11-05 | 改为两轨断言：传播表 `DirtyOf` 精确判 + `Scan()` 真实口径判；**133/133** 全绿。教训与 H-43 同族：断言红先查自己的口径，别急着改实现 |
 | 79 | **M4-j 交锁门禁（§1.6 三项）** | 清台 → 静默 60s 取基线（`0/0/0 seeded=True`，无噪声需归因）→ 重跑本会话全部验证动作（`script recompile` → 本包 `test run` → `verify_project.py`）→ `console status` | 同上 | 2026-11-05 | `RECOMPILE failed=false errors=[]`；`Tests.dll` mtime ≥ 测试源 mtime（H-36 第二检）；**133/133 Failed 0**；`consoleErrors=0 consoleWarnings=0 seeded=True`（error/warning 明细条数 = 0）；校验器 **`FAIL 0`、结论: 绿灯**（2 项 WARN：`lock-active` 本会话自持锁 + `pkg-sample` 属他包 `com.collin.stealthplanner`，非本会话产物） |
+| 80 | **M4-k 根因取证（用户反馈「拖较长距离后只有最后一截操作生效」）** | 隔离探针（内存 CityTerrain + 内存 delta + 真实 grid，`HideAndDontSave`，测完销毁并复原工具静态字段）按真实代码路径跑 600m 长笔划：写入侧 `delta 非零格=4068`、格号 `x[238,411]`，采样起笔 `20.805` / 中点 `53.612` / 落点 `33.307`；而同笔划提交的脏区 `center=(1600,0,4000) size=(202,1,202)` ⇒ 世界 x 仅 `[1499,1701]` | qianwen-work-assistant（会话 `2026-11-05 m4-k-stroke`） | 2026-11-05 | **根因确认＝提交侧少报范围，笔刷数学侧无错**：笔划含半径真实跨度 701m，脏盒只盖 **21.6%**、**78.4% 已写进 delta 却不在重建范围**（换算：写入格号 x[238,411] 中约 136 列落在脏盒外） |
+| 81 | **M4-k 修复：轨迹包围盒提交（D-38 / H-63）** | `SculptStroke.AccumulateExtent/TryGetExtentWorld`（与 `Collect` 解耦：截断停写入格数、不停影响面记账）；`StampRadius` 在所有早退之后登记 `center ± RadiusMeters`；`EndStroke` 在 `End()` **之前**取轨迹盒并按 `MarkDeltaChanged(Bounds, RadiusMeters)` 提交，取不到范围才退回圆心口径 | 同上 | 2026-11-05 | **端到端实测终态**：脏区 `center=(1300,0,4000) size=(802,1,202)` ⇒ 长轴 x[899,1701] **完整覆盖**笔划含半径区间 [949.5,1650.5]；短轴 202 == 旧圆心口径 202 ⇒ **侧向无退化**；面积 162 千m² vs 旧 40.8 千m² |
+| 82 | **M4-k 自查纠正（侧向外扩退化风险，我自己引入后当场修）** | 第一版 `MarkDeltaChanged(Bounds)` 每边加 `MinAffectedRadius`(16) ⇒ 短轴 202→**133m**，长轴修好但平整开启时的侧向约束带反而漏重建。逐轴比对新旧口径发现，改为 `perSideMargin` 由调用方按笔刷半径传入 | 同上 | 2026-11-05 | **已修**；教训入 D-38：修「少报范围」类 bug 必须**逐轴**核对新旧口径，只确认"覆盖写入区"会漏掉侧向退化 |
+| 83 | **M4-k 新增回归用例（3 条）+ 一次口径自纠错** | `Stroke_Accumulates_Track_Extent_Across_Steps`（含"新笔不得残留上一笔范围"）、`Long_Stroke_Dirty_Bounds_Covers_Track_Without_Becoming_A_Square`（含圆心口径**防恒真对照**）、`Degenerate_Stroke_Extent_Still_Produces_Usable_Bounds` | 同上 | 2026-11-05 | 首跑 1 条红（`min.x 969.5 > 949.5`）＝**我测试漏喂 `BeginStroke` 的起笔那一步**、实现侧无误（与 H-62 同族）；按真实流程补正后 **136/136** |
+| 84 | **M4-k 交锁门禁（§1.6 三项）** | 清台 → 静默 60s → 重跑本会话全部验证动作（recompile → 本包 test run → `verify_project.py`）→ `console status` | 同上 | 2026-11-05 | `RECOMPILE failed=false errors=[]`；`Tests.dll` mtime ≥ 测试源 mtime（H-36）；**136/136 Failed 0**；控制台 `error=1 warning=0` → 校验器判定 **`全部命中豁免清单（§1.8 已批准，命中 1 条）`转 WARN**：该条为 Unity Connect `services-gateway` KeyNotFound，堆栈仅 `UnityEditor.Connect.ServicesConfiguration`、**不含任何项目程序集**，且在静默窗口内自行复现（§1.8 三条件齐）|
+| 85 | **M4-k 交锁时的锁状态（如实上报，未代删他人锁）** | `python Tools/verify_project.py` 的 `lock-stale` 项 + 逐把读 `.locks/*.lock` 的 `session` 字段核对归属 | 同上 | 2026-11-05 | 两条 `lock-stale` FAIL：① `com.collin.citymap.lock` `session=2026-11-05 m4-k-stroke` ＝**本会话**，交锁时删除自己的锁文件；② `com.collin.stealthplanner.lock` `session=planner-m1-2026-11-05` ＝**另一会话的进行中工作**（该包有 13 个未提交新文件在写），按 §3「心跳超时锁不得自动删除，报告用户处理」**未代删、未改其内容**，仅如实上报 |
 
 ## 未通过项
 
@@ -781,7 +787,7 @@ S1b 重算，否则从关到开画面仍是旧的未平整态）；S1b 在 `Comm
 
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~79）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~85）。
 - **M4-e/M4-f 的实机闭环待用户验证**（§M4-e-3）：场景内创建地形实例后拖笔，看是否即时起伏、
   一笔一撤销是否成立、超格数提示是否出现。这是"雕刻笔刷"从"代码正确"到"手感成立"的最后一跳。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。

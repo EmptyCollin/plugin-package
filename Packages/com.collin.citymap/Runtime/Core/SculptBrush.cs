@@ -88,6 +88,11 @@ namespace Collin.CityMap
     {
         readonly System.Collections.Generic.HashSet<int> _cells = new System.Collections.Generic.HashSet<int>();
 
+        // 整条笔划的世界轨迹范围（含笔刷半径外扩）。H-63 的修复载体：
+        // 提交脏区必须覆盖"笔划经过的全部位置"，只报终点会让中段改了却不重建。
+        Vector2 _minXZ, _maxXZ;
+        bool _hasExtent;
+
         public bool Active { get; private set; }
         /// <summary>被 maxCells 截断过：工具须提示"笔刷过大，建议分次编辑"（01 §5.4）。</summary>
         public bool Truncated { get; private set; }
@@ -100,7 +105,27 @@ namespace Collin.CityMap
             Active = true;
             Truncated = false;
             _cells.Clear();
+            _hasExtent = false;
             LastCenter = centerWorld;
+        }
+
+        /// <summary>
+        /// 登记本步实际刷到的世界范围（调用方传<b>已含笔刷半径</b>的外扩盒角点）。
+        /// <para>与 <see cref="Collect"/> 分开是有意的：<c>Collect</c> 会在截断后停止记账，
+        /// 而轨迹范围仍要连续累积——截断只说明"写入的格数到顶"，不代表影响面可以少报。</para>
+        /// </summary>
+        public void AccumulateExtent(Vector2 min, Vector2 max)
+        {
+            if (!_hasExtent) { _minXZ = min; _maxXZ = max; _hasExtent = true; return; }
+            _minXZ = Vector2.Min(_minXZ, min);
+            _maxXZ = Vector2.Max(_maxXZ, max);
+        }
+
+        /// <summary>整条笔划的影响范围（未落笔时返回 false，调用方须退回"以某点为圆心"的旧口径）。</summary>
+        public bool TryGetExtentWorld(out Vector2 min, out Vector2 max)
+        {
+            min = _minXZ; max = _maxXZ;
+            return _hasExtent;
         }
 
         /// <summary>登记一笔触及的格。超出上限后停止收集并置 Truncated（不抛、不静默）。</summary>

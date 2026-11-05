@@ -195,6 +195,32 @@ namespace Collin.CityMap
                            new Vector3(r * 2f, 1f, r * 2f)));
         }
 
+        /// <summary>
+        /// 按<b>整条笔划的实际影响包围盒</b>提交（H-63）。
+        /// <para>存在理由：长笔划"点下→拖 600m→松手"时，若脏区仍以**落点**为圆心的圆，
+        /// 中段那些已经写进 delta 的格就落在脏盒外 ⇒ S1b 与显示层都不重算它们
+        /// ⇒ 用户看到"只有最后一段生效"（隔离实测：写入侧覆盖格号 x[238,411]，
+        /// 而终点口径的脏盒只报世界 x[1499,1701]，中段全部漏报）。</para>
+        /// <para>调用方传入的范围已含"笔刷中心 ± 半径"外扩（衰减核在半径外恒为 0）。
+        /// <paramref name="perSideMargin"/> 是**再往外每边加的量**，由调用方按笔刷半径给：
+        /// 平整开启时约束带/过渡带会波及笔刷边缘之外的格，少给就漏重建。
+        /// 取 `R` 与旧圆心口径逐轴等价：旧口径半径 50.5 给到"边缘外 50.5"，这里也给 50.5
+        /// ——**不得沿用 MinAffectedRadius(16)**，那会把短轴从 202m 缩到 133m，
+        /// 长笔划修好了、侧向约束带却开始漏（我第一版正是这样，自查发现）。</para>
+        /// <para>尺寸不做任何比例缩放——包围盒是长方形的，取长轴当正方形边长会漏掉短轴语义。</para>
+        /// </summary>
+        public void MarkDeltaChanged(Bounds strokeExtent, float perSideMargin = 0f)
+        {
+            EnsureStableId();
+            ledger ??= new IntentChangeLedger();
+            var grow = Mathf.Max(0f, perSideMargin) * 2f;
+            // 零/负尺寸会被 PipelineContext.AddDirtyBound 当"无脏区"丢掉 ⇒ 与圆心口径同样兜底成最小盒
+            var side = Mathf.Max(MinAffectedRadius * 2f, strokeExtent.size.x + grow);
+            var front = Mathf.Max(MinAffectedRadius * 2f, strokeExtent.size.z + grow);
+            ledger.Bump(IntentKind.DeltaStroke,
+                new Bounds(strokeExtent.center, new Vector3(side, 1f, front)));
+        }
+
         /// <summary>换 delta 资产：实例引用变了，按当前生效笔刷区域重新提交一次。</summary>
         public void SetDelta(SculptDeltaAsset d)
         {
