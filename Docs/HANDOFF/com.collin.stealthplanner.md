@@ -3,87 +3,98 @@
 > 覆写式交接单（非追加日志），每次交锁前整体重写五部分（AGENTS.md §4）。
 > 只写可观测事实：碰了哪些文件、跑了什么指令、结果如何；不写意图与代码行为解释。
 
-最后交接：qianwen-work-assistant · `planner-m4data-2026-11-05` · 本次提交（M4 数据集增量：`PlayerRouteDataset` D-07 双形态 + 窗口非模态导出 + 8 条回归 + 决策 D-26 + DESIGN §3.2 v0.2 修正）
-> 前序：`78a103a`（骨架+DESIGN）→ `bd0d8b4`（门禁补记）→ `4334661`（DESIGN 定稿）→ `e1e957b`（M1）→ `fe44abe`（M2）→ `4535b3a`（M2 收口轮 表版本1→2）→ `eabaca3`（M3 可行性+Top-K）→ `5952f49`（M4 多条短解+面板）→ `3da5586`+`b8680b6`（U-8 修复在 A 包+本包登记）→ `78b623c`（M4 性能增量 掩码按需建层）
+最后交接：qianwen-work-assistant · `planner-guided-2026-11-05` · 本次提交（M4 引导搜索增量：§6.2 剪枝② 落地 + 决策 D-27 + 本包 79 条）
+> 前序：`78a103a`(骨架+DESIGN) → `bd0d8b4` → `4334661` → `e1e957b`(M1) → `fe44abe`(M2) → `4535b3a`(M2收口轮) → `eabaca3`(M3) → `5952f49`(M4第一增量) → `3da5586`+`b8680b6`(U-8) → `78b623c`(M4性能) → `8f85ce2`(M4数据集)
 
-## 1. 已完成（本轮 = M4 数据集增量，静态设计 4 的导出侧）
+## 1. 已完成（本轮 = M4 引导搜索增量，§6.2 剪枝②）
 
-**Runtime**（纯数据+纯函数，无 UnityEditor 引用）：
-- `PlayerRouteDataset.cs`（新增）：D-07 双形态数据集（SO + `ToJson/FromJson`）。
-  - canonical=**每层站位时间线** `cellsPerLayer`（下标=桶、值=格索引；相邻相等=等待），新增决策 **D-26**
-    （不存稀疏路点的三条理由）；稀疏视图走 `MovementWaypoints()` 派生。
-  - 随存**网格快照**（origin/格长/Δt/维度）+ `GridMatches(table)`；`SchemaVersion=1` 不匹配**拒载**。
-  - 失败路径一律可读原因 + 不留半张（`BuildFromRoutes` 守 null/空、`ToJson` 空集报错、`FromJson` 空串/坏语法/无路线分报）。
-- `StealthTimelineWindow.cs`（改）：「导出为路点数据集（JSON + SO）」按钮（无表/无路线禁用）+ `_exportSummary` 文本。
-  导出到包内固定路径 `Sample/WaypointDataset.json` + `Sample/PlayerRouteDataset.asset`；
-  **SO 从刚落盘的 JSON 读回**（两形态同源 + 顺带证明 JSON 可解析）；临时 SO 在 finally 销毁。
-  ⚠️ **非模态**：DESIGN §3.2 原写「弹窗确认」与 AGENTS §2.1.5 冲突（citymap 刚因同类问题清了零、stretch 仍有 2 处被判红），
-  照原文实现=自造红灯 ⇒ 改三处非模态确认，已在 DESIGN §3.2 标注 **v0.2 修正**、CHANGELOG、ACCEPTANCE 条目 39 各记一笔。
-- `Tests/Editor/PlayerRouteDatasetTests.cs`（新增）**8 条**：逐层往返无损、
-  **手写线上 JSON 字面量钉字段名契约**（JsonUtility 对改名静默补零，这是唯一能抓住它的方式）、
-  版本 999 拒载、四类非法输入、网格不匹配判拒、折叠视图与时间线自洽、BuildFromRoutes 守 null/空、SchemaVersion 单源。
+**Runtime**：
+- `PhaseKShortest.cs`：`SearchEarliest` 从「逐层灌满全图的分层 BFS」改为**可采纳启发式引导 best-first**。
+  - 启发 `GoalHeuristic = ceil(切比雪夫格距 / stepCells)`，**忽略墙与危险窗**（计入就可能高估 ⇒ 破坏可采纳性）；
+    刻意**不用** M3 绕墙距离场当启发（它不含危险窗，绕远即高估）。DESIGN 新增 **D-27**。
+  - **视界剪枝** `layer + h > horizon-1 ⇒ 不入队`；起点下界超视界直接判无解。
+  - ⚠️ **目标改「首次出队」返回**（旧 BFS 是「首次发现」）——引导式乱序发现，沿用旧写法会返回更晚路线。
+  - 堆键 `(f,layer,cell)` 打包进一个 long ⇒ 同分先浅层、同层先小格号，**与插入顺序无关**（确定性未破，实测重复跑逐位相同）。
+  - `(cell,layer)` 发现标志 + `Fill(-1)` 哨兵**原样保留**（D-25 两条坑未复发）。
+  - 新增 `public static long LastExpansionCount`：**只作诊断的出堆计数，不参与任何判定**（D-23 同源要求：收益必须可观测）。
+- `PhaseReachability.cs`：`ExpandSuccessors` 新增**带层偏移**重载（`maskHere/hereOffset`+`maskNext/nextOffset`），
+  `IntermediateCellsClear` 同步加偏移；**旧签名转为 `hereOffset=0` 别名** ⇒ M2 传播与既有测试仍走同一份实现，
+  未造第二套判据。加此重载的原因：引导式乱序弹节点，若仍每次弹节点整层拷贝 11664 格，拷贝会把省下的展开吃回去。
 
-**实测（真实烘焙表，U-8 修复后首次全程用真场景，未再退回注入内存表）**：
-反射驱动窗口 `SolveRoutes()`+`ExportRoutesAsDataset()` → 落盘核验：JSON 7454 字节
-（schema=1、108×108、格长0.5、Δt0.5）**5 条**、SO 5 段 `_schemaVersion: 1`；
-逐条断言 `层数=到达桶+1`、`首=startCell`、`末=goalCell` 全通过；#1 到达桶 55（=先前同表可行性读数）、#2~#5 桶 57。
-⚠️ 探针自身 `[EXP]` 日志两次读取为空缓冲（重编译后 console 缓冲重置）⇒ 证据改为**落盘产物+解析**；
-"当时视野体非 0"只有**控制流推论**（探针在 `vols<=0` 会中止而产物写出了），U-8 直接确证仍以 A 包条目 121 为准——已如实写进条目 38。
+**测试**：本包 `PhaseKShortestTests` 7 → **8 条**（本包 78 → **79**）。
+- 新增 `ForcedReentry_NoTie_UniqueEarliestRoute`：四格走廊手工推演出**折返被强制 + 最早到达层唯一**
+  （路线唯一 `[0,1,0,1,2,3]`、到达层唯一 5），并断言首条到达层 == `PhaseSolver`。
+- ⚠️ **改写了一条旧断言**：`ReentryAfterForbidden` 原「第二条必含折返」在全量首跑变红。根因**不是求解器坏**——
+  该场景有**两条并列最早解**（到达层同为 4：`[0,0,0,1,2]` 与 `[0,1,0,1,2]`），BFS 与引导式各取其一、都正确；
+  旧断言实为**把某种搜索顺序当契约**。改为钉「≥2 条 + 两两边不相交 + 逐跳合法」，折返迁往新用例。
 
-**测试与门禁**：本包 **70→78**；全量 **367/367**（CityMap 166 + Stealth 123 + StealthPlanner 78）。
-`compilationFailed=false`（本包 0 错误）；归零后 `error=0/warn=0`；校验器本包相关检查全 ok，
-整体 FAIL 2 = `com.collin.stretch` 的 `DisplayDialog`（他会话，未代修）。场景末态 TerrainTest（非脏）。
+**实测（真实烘焙表 108×108/n=11664、horizon=480、step=3、M=5；同会话带 JIT 预热；结果落盘取证）**：
+- 基线 BFS（改造前逐行复刻，**发现 goal 当场收口**）：**1807ms / 展开 1,311,731**；
+  引导式：**466ms / 展开 244,473** ⇒ **展开削减 5.37×、墙钟加速 3.88×**；
+  首条到达层 **55 = 55**（与条目 29/33/34 同表读数逐位一致）、条数 **5 = 5**、**逐跳合法 5/5**；重复跑逐位相同。
+  （墙钟加速低于展开削减属正常：多了堆维护与逐节点启发计算；**机制指标才是"削掉无用洪水"的证据**。）
+- Python 差分 **4000 例**（两套算法逐行复刻 + 一份独立朴素最早到达真值）：有解性分歧 0、
+  到达层偏离真值 0、非法路线 0、边不相交破坏 0、非确定性 0；**关掉视界剪枝答案不变** ⇒ 剪枝不错杀可行解。
+  中规模网格削减比随规模上升：40²/120=5.1×、60²/200=5.9×、80²/300=6.5×。
 
-**文档**：DESIGN 新增 **D-26** + §3.2 v0.2 修正 + 里程碑 M4 清单更新（导出侧收口/注入器归 M5）；
-ACCEPTANCE 状态头、组 E 转"部分取证"、新增条目 **37~39**、U-6 更新、补 M4 数据集交锁门禁行；
-CHANGELOG 新增 Added(M4 数据集增量) 段 + 版本行更新；HANDOFF 覆写（本文件）。
+**门禁（最终代码状态）**：`compilationFailed=false`（本包 0 错误）；
+`console clear` → 重编译 → 重放 A/B 探针 → 静默 72s ⇒ **error=0 / warning=0**；
+校验器**本包相关检查全 ok**（pkg-layout / runtime-purity 等）。
+全量 **377**：本包 **79/79 全绿**；CityMap 175（**7 条失败全在他包水路功能进行中改动**）、Stealth 123。
+⚠️ 校验器整体 FAIL 3 = citymap 超时锁（381s，按 §3 未删）+ stretch 两处 `DisplayDialog`（他包，未代修）。
+
+**文档**：DESIGN 新增 **D-27** + §6.2 末段实施记录 + 里程碑 M4 ①标达成（含受阻与补跑经过）；
+ACCEPTANCE 状态头 + 条目 **40~42**；CHANGELOG 新增 M4 引导搜索段（含三条过程教训）；HANDOFF 覆写（本文件）。
 
 ## 2. 未完成
 
-- **M4 剩余**：① **§6.2 剪枝②（可采纳启发式引导搜索）**——实测真瓶颈（洪水占 ~81%），下一个增量就做它；
-  ② 规模化耗时基准 N∈{4,8,16}（等引导搜索落地后一起测才有意义）。
-- **M5**：实跑复现器 + **注入器**（沿 `cellsPerLayer` 逐层驱动、复现同一条动线）——组 E 后半条靠它收口；
+- **M4 只剩一项**：规模化耗时基准 N∈{4,8,16}（引导式已落地，现在测才有意义）。
+- **M5**：实跑复现器 + 注入器（读 `PlayerRouteDataset` 沿 `cellsPerLayer` 逐层驱动，收组 E 后半条）；
   slack（§6.5，用户已拍板挪 M5/M7）。
-- §6.7 参考相位时长（U-2）、增量重烘（U-3）、M6 反推路点、M7 安全岛端到端、M8 UMPM、M9 收版+两段式视频。
-- `.gitignore` 表资产忽略行仍未加（工具 ACL 拒改，未绕过）；本轮把 `WaypointDataset.json(.meta)`、
-  `PlayerRouteDataset.asset(.meta)` 也按**派生产物不入库**处理（内容来自探针端点参数），继续靠逐文件精确 add。
+- 剪枝③（Pareto 支配）、剪枝④（相位 mod 归并）、§6.7 参考相位时长（U-2）、增量重烘（U-3）、M6~M9。
 
 ## 3. 已知坏
 
-- **本包无红灯**。
-- **本轮自查拦下三处（均在提交前修正，无遗留）**：
-  ① 我把条目 38 初稿写强了（"与可行性逐位一致"像是本探针做的程序化断言、"SO 读回 5 条"像是看到了探针输出）
-     ——按实际证据改写并标注推论边界；② 里程碑里同样的措辞随之收紧；③ `RoundTrip` 用例初稿含凑数重复调用与恒真断言，删净。
-  教训沿用：**写文档/断言时"我知道的"和"我看到的"必须分开**。
-- **console 日志缓冲在重编译后会重置**、`--level log` 可能读到空 ⇒ 取证别只依赖日志回读，
-  **落盘产物/资产文件是更硬的证据**；必要时让探针把结论写进文件再解析。
-- 会话中两次 Edit 因我把"Grep/Bash 检索结果"当已读范围而遭拒（工具规则：必须用 Read 覆盖）；
-  一次 Edit 参数漏 `file_path`/`old_string` 被 schema 拒。都按提示重发，无副作用。
-- citymap 会话活跃中（`0e767ba` 刚落，自报已清 DisplayDialog）；stretch 2 处 channel-discipline FAIL 仍在，未代修。
-- 环境噪声豁免清单不变；未新增。
+- **本包无红灯。**
+- **本轮三次自造问题，均在提交前修掉、无遗留**（如实记）：
+  ① 追加用例 8 时替换锚点选错，**把用例 7（墙阻断）整条删掉** ⇒ Read 复核后原样补回；
+  ② A/B 基线第一版写成「整层展完才收口」，而改造前实际是「发现 goal 当场 return」⇒
+     **会把基线改贵、加速比虚高**，逐行比对旧实现后改正（对照实验的基线必须与原实现逐位一致）；
+  ③ `eval_file` 探针三连坑（`using`、裸 `return;`、`System.HashSet<>` 应为 `System.Collections.Generic.HashSet<>`）
+     + 参数是 `--file` 而非位置参数。
+- **外部阻塞的处理方式值得沿用**：本轮曾被 citymap 会话半成品挡住全域编译约 1 小时（一度 104 处 CS 错误、
+  锁心跳 >2300s）。本包 0 错误 ⇒ 未代修、未删他人超时锁、未带红提交；
+  经用户拍板「等对方自己修」，等待期先完成不依赖编译域的 Python 差分验证，恢复后立刻补跑 C# 套件与真实表 A/B。
+- 环境噪声豁免清单不变（`services-gateway` 等 3 条），本轮未新增。
 
 ## 4. 下一步（建议顺序）
 
-1. **剪枝②引导搜索**（M4 最后一个大件）：`h(cell)=绕墙格距离×Δt`（现成多源 BFS 距离场可复用，天然可采纳）。
-   ⚠️ 硬约束：只许加"搜索策略/出队顺序"，**发现表与每跳合法性仍走 `ExpandSuccessors`/`BuildBlockedMask`**；
-   回归网是 `PhaseKShortestTests` 7 条（首层=可行性解、折返、墙阻断）——改完必须原样绿。
-2. 引导搜索落地后补 **规模化基准 N∈{4,8,16}**（一次测两套：BFS vs 引导）。
-3. 然后进 **M5**：复现器 + 注入器（读 `PlayerRouteDataset`，沿 `cellsPerLayer` 逐层驱动），收组 E 后半条。
-4. 门禁老三样 + 静默 70s；探针创建的窗口/SO 同次销毁；文档数字从 `test run` 输出回填后才落笔。
+1. **规模化基准 N∈{4,8,16}**：沿用 `.tmp-inspect/guided_ab.cs` 的写法（同会话预热 + 落盘取证 +
+   `LastExpansionCount` 机制指标），对比引导式在不同相位轮数下的展开数/耗时增长曲线，
+   并核 `VisibilityTableAsset` 表体积是否仍 <4MB（DESIGN 预算）。
+2. 然后进 **M5**：复现器 + 注入器（组 E 后半、动态设计 1）；实跑前须确认真实场景视野体在场（U-8 已修）。
+3. 门禁老三样：`"script recompile"` → `test run`（一次交锁只跑一次）→ `console clear` →
+   重放本会话验证动作 → 静默 70s → `console status` → `verify_project.py`；心跳每 60s 续。
 
 ## 5. 勿碰项
 
 - **不入库（派生产物）**：`Sample/VisibilityTable.asset(.meta)`、`Sample/WaypointDataset.json(.meta)`、
   `Sample/PlayerRouteDataset.asset(.meta)`。**入库（源）**：`PlannerBakeSettings.asset`、全部代码/测试/文档。
-- **单一口径纪律**：`BuildBlockedMask`=唯一阻断掩码入口（含按需建层的 `EnsureLayer` 也只调它）；
-  `ExpandSuccessors`=唯一邻居展开；`StepCellsFor`=唯一步长；`PhaseSolver.Horizon`=唯一视界；
-  `BucketOf`=唯一填/取桶；`EnumerateWalkableCells`=唯一 footprint；`7200` 仅一处；
-  **数据集唯一真相=`cellsPerLayer`**（D-26），注入/展示都从它派生，别在下游另存一套时间语义。
-- **表/数据格式加"缺省即危险"字段必须抬版本**（D-22 表、D-26 `SchemaVersion`）；防线必须有可观测出口（D-23）；
-  短解口径=D-25（边不相交≠Yen）；M3 可行性口径=D-24（层序传播≠A*）。
-- **编辑器一律非模态**：禁 `DisplayDialog`/`SaveFilePanel`（§2.1.5，校验器判红）；确认=文本+日志+产物。
-- SceneView 回调禁 `Gizmos.*`（用 `Handles.*`）；窗口视图态不写静态；测试清理判 `EditorUtility.IsPersistent` 或只回收自建实例。
-- `com.collin.core`（契约签名改动走 ADR）；`com.collin.citymap`、`com.collin.stealth`、`com.collin.stretch`、
-  `com.collin.citymap` 工作区现场（`CityWindow.cs` 等）、`Assets/*`、`README.md`、`packages-lock.json`、
-  `AGENTS.md`、`Tools/verify_project.py`（他会话在改）——**本轮均未动、不要提交**。
-- `.locks/com.collin.stealthplanner.lock`：本会话持有、**随本次提交释放**；长序列每 60s 续心跳。
+- **单一口径纪律**：`BuildBlockedMask`=唯一阻断掩码入口；`ExpandSuccessors`=唯一邻居展开
+  （**两个签名是同一实现**，旧签名=新签名 hereOffset=0，别再加第三种）；`StepCellsFor`=唯一步长；
+  `PhaseSolver.Horizon`=唯一视界；`BucketOf`=唯一填/取桶；`EnumerateWalkableCells`=唯一 footprint；
+  `7200` 仅一处；数据集唯一真相=`cellsPerLayer`（D-26）。
+  **`LastExpansionCount` 只许读、不许被任何求解分支读取**——它是诊断量，进判定就等于把观测做成第二套口径。
+- **启发式必须保持"忽略墙与危险窗"**（D-27）：想提精度而引入绕墙距离场/危险窗 ⇒ 可能高估 ⇒
+  破坏可采纳性 ⇒ 首条不再是解、与 M3 自相矛盾。回归网：`FirstRouteArrival_MatchesPhaseSolver`、
+  `ForcedReentry_NoTie_UniqueEarliestRoute`、`.tmp-inspect/guided_diff_test.py`（Python 差分）。
+- **并列最优之间选哪条不是契约**（D-27 末段）：写用例钉"某走法必须存在"时，必须构造**无并列、该走法被强制**的场景。
+- 表/数据格式加"缺省即危险"字段必须抬版本（D-22/D-26）；防线必须有可观测出口（D-23）。
+- **编辑器一律非模态**：禁 `DisplayDialog`/`SaveFilePanel`（§2.1.5，校验器判红）；
+  SceneView 回调禁 `Gizmos.*`（用 `Handles.*`）；测试清理判 `EditorUtility.IsPersistent` 或只回收自建实例。
+- **`eval_file` 戒律**（本轮各踩一次）：无 `using`、无裸 `return;`、泛型写全 `System.Collections.Generic.*`、
+  参数 `--file`、每节即时 `Debug.Log` + **落盘**（日志缓冲重编译后会读空）。
+- `com.collin.core`（契约签名改动走 ADR）、`com.collin.citymap`（**另一会话活跃中，水路功能改到一半**）、
+  `com.collin.stealth`、`com.collin.stretch`（2 处 DisplayDialog 待其会话自修）、`Assets/*`、`README.md`、
+  `packages-lock.json`、`AGENTS.md`、`Tools/verify_project.py`、`Tools/console_allowlist.json`——**本轮均未动、不要提交**。
+- `.locks/com.collin.stealthplanner.lock`：本会话持有、**随本次提交释放**。

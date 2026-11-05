@@ -9,10 +9,14 @@ namespace Collin.StealthPlanner.Tests
     /// 多条短解搜索（静态设计 4 地基）的守卫用例。
     /// <para>全部用<b>手工拼的假表</b>断言（同 `PhaseReachabilityTests` 的取证方式：
     /// 让哨兵周期 = 桶数 × Δt，分片桶与全局桶一一对应，「桶 b 危险」可直接写进分片）。</para>
-    /// <para>最重要的两条：<see cref="ReentryAfterForbidden_NumericallyExact"/>（禁边后第二条路线
-    /// 必须能<b>折返</b>走过已在更早层到过的格——旧实现按「格级永久首达」跳过会丢它，
-    /// 从而比 M2 传播少找路线，制造「M3 判可行、M4 给不出动线」的自相矛盾）；
-    /// <see cref="FirstRouteArrival_MatchesPhaseSolver"/>（第一条路线的到达层必须与 M3 可行性一致）。</para>
+    /// <para>最重要的三条：
+    /// ① <see cref="FirstRouteArrival_MatchesPhaseSolver"/>——首条路线到达层必须与 M3 可行性一致
+    ///    （引导搜索只改展开顺序、不改答案，见 D-27）；
+    /// ② <see cref="ForcedReentry_NoTie_UniqueEarliestRoute"/>——折返被<b>强制且无并列最优</b>的场景，
+    ///    钉住「节点按 (cell,layer) 建模」：旧实现按「格级永久首达」跳过会直接找不到路线，
+    ///    制造「M3 判可行、M4 给不出动线」的自相矛盾；
+    /// ③ <see cref="ReentryAfterForbidden_NumericallyExact"/>——禁边后仍须给出多条、两两边不相交、
+    ///    逐跳合法（⚠️ 不再断言"第二条必含折返"：该场景有两条并列最早解，落到哪条属搜索取舍，见组 2 注释）。</para>
     /// </summary>
     public class PhaseKShortestTests
     {
@@ -91,19 +95,19 @@ namespace Collin.StealthPlanner.Tests
                     "路线 " + i + "：到达层必须非降");
         }
 
-        // ── 2. 折返：禁边后的第二条路线必须能重走已在早期层到过的格 ──
+        // ── 2. 禁边后必须还能给出第二条（折返断言已迁往组 8，见下方说明）─────
 
         [Test]
         public void ReentryAfterForbidden_NumericallyExact()
         {
             // 精构场景（手工推演逐层验证过）：走廊 [0,1,2]，goal=2，
             //   cell1 仅桶 2 危险、cell2 仅桶 1、2 危险（其余桶全安全），horizon=6。
-            // 路线1 = [0,0,0,1,2]（在起点等两轮再冲，到达层 4），用边
-            //   {(0,l0,0),(0,l1,0),(0,l2,1),(1,l3,2)}；
-            // 路线2 被迫：0→1(l1) 后原路折返 1→0(l2，此处正是「离开再回到 0」)，
-            //   再 0(l3 等待)→1(l4)→2(l5)，含到达层 5。
-            // ⚠️ 旧实现「格级永久首达跳过」会让路线2 无法回到 0 ⇒ 只找到 1 条（比 M2 少 ⇒ 自相矛盾），
-            //   本用例正是钉这个回归的。
+            // 存在两条<b>并列最早</b>（到达层同为 4）：
+            //   A = [0,0,0,1,2]（在起点等两轮再冲）
+            //   B = [0,1,0,1,2]（先踏一步、折返回起点、再冲）
+            // 另有到达层 5 的纯等待变体 [0,0,0,0,1,2]。
+            // 本用例钉的是「<b>至少给出两条、两两边不相交、每条逐跳合法</b>」：
+            // 若实现按「格级永久首达」跳过，第二条会因回不到 0 而丢失 ⇒ 条数变 1、本断言变红即回归。
             var table = Grid(3, 1, 6, new[] { (1, 2), (2, 1), (2, 2) });
             var routes = Run(table, 0, 2, horizon: 6, step: 1, maxRoutes: 3, out var f);
             Assert.True(f.ok, f.reason);
@@ -114,14 +118,14 @@ namespace Collin.StealthPlanner.Tests
             AssertRouteLegal(table, routes[0], 1);
             AssertRouteLegal(table, routes[1], 1);
 
-            // 第二条必须含折返：某格在不相邻两层重复出现（不是连续等待）
-            var second = routes[1].CellsPerLayer;
-            var hasReentry = false;
-            for (var a = 0; a + 2 < second.Count; a++)
-                for (var bb = a + 2; bb < second.Count; bb++)
-                    if (second[a] == second[bb] && second[a + 1] != second[a]) { hasReentry = true; break; }
-            Assert.True(hasReentry, "禁边后的路线必须允许折返（按 (cell,layer) 建模，非格级永久跳过）");
-
+            // ⚠️ 「第二条必含折返」的断言已在 §6.2 剪枝②落地后<b>移除</b>：本场景存在<b>两条并列最早</b>
+            //   （到达层同为 4）——[0,0,0,1,2]（起点等两轮再冲）与 [0,1,0,1,2]（先踏一步再折返）。
+            //   分层 BFS 按层灌前沿先取前者；引导式优先展开离撤离点更近的节点，取后者。
+            //   <b>两者都是正确的最早解</b> ⇒ 禁掉后者的边之后，第二条自然落到层 5 的纯等待变体
+            //   [0,0,0,0,1,2]（合法、边不相交，只是不含折返）。
+            //   拿"第二条长什么样"当硬断言＝把某种搜索取舍顺序当成契约（旧版就是这么写的，
+            //   改造时被自己钉红）。折返能力改由 <see cref="ForcedReentry_NoTie_UniqueEarliestRoute"/>
+            //   钉住：那个场景<b>无并列最优且折返被强制</b>，才是真正的契约。
             // 边不相交：任意两条路线不共用任何 (from,layer,to) 转移
             var seen = new HashSet<(int, int, int)>();
             foreach (var rt in routes)
@@ -242,6 +246,41 @@ namespace Collin.StealthPlanner.Tests
             var routes = Run(table, 0, 4, horizon: 4, step: 2, maxRoutes: 3, out var f);
             Assert.True(f.ok, f.reason);
             Assert.AreEqual(0, routes.Count, "1D 走廊里墙格把两侧完全隔断 ⇒ 无路线，也不得给半条");
+        }
+
+        // ── 8. 折返被强制、且无并列最优（§6.2 剪枝②落地后新增）──────────────
+        // 组 2 的场景存在两条并列最早解，"第二条长什么样"取决于搜索取舍 ⇒ 不能当契约。
+        // 本场景把折返做成<b>唯一走法</b>，因此分层 BFS 与引导式<b>必须</b>给出同一条路线。
+
+        [Test]
+        public void ForcedReentry_NoTie_UniqueEarliestRoute()
+        {
+            // 走廊 [0,1,2,3]、步长 1、horizon=6。危险窗逐格手工推演（层 L 站得住 ⇔ 该格桶 L 安全）：
+            //   格0 安全桶 {0,2,3,4,5}，格1 安全桶 {0,1,3,4,5}，格2 安全桶 {0,3,4,5}，格3 安全桶 {0,4,5}。
+            // ⇒ 层 0 只能 0→1（0 在桶1危险，等不了）；层 1 只能退回 0（1 在桶2危险、2 在桶2危险）
+            //   ⇒ <b>每条合法路线都必须折返</b>，不是取舍问题。
+            // ⇒ 撤离点只在桶 4/5 安全，而格 2 在第 3 层不可达（1 桶2危险、2 桶2危险）⇒ 最早到达层<b>唯一为 5</b>，
+            //   路线<b>唯一</b>为 [0,1,0,1,2,3] ⇒ 无并列最优，引导搜索与分层 BFS 必须给出同一条。
+            var table = Grid(4, 1, 6, new[] { (0, 1), (1, 2), (2, 1), (2, 2), (3, 1), (3, 2), (3, 3) });
+
+            var solver = PhaseSolver.Solve(table, 0, 3, 6, 1, 1, out var fs);
+            Assert.True(fs.ok, fs.reason);
+            Assert.True(solver.Feasible);
+            Assert.AreEqual(5, solver.ArrivalBucket, "手工推演的最早到达层");
+
+            var routes = Run(table, 0, 3, horizon: 6, step: 1, maxRoutes: 1, out var f);
+            Assert.True(f.ok, f.reason);
+            Assert.AreEqual(1, routes.Count, "折返被强制 ⇒ 引导式若按「格级永久首达」建模会直接找不到路线");
+            Assert.AreEqual(solver.ArrivalBucket, routes[0].ArrivalBucket,
+                "并列最优不存在时，引导搜索的到达层必须与 M3 可行性逐位一致");
+            AssertRouteLegal(table, routes[0], 1);
+
+            var cells = routes[0].CellsPerLayer;
+            var reentry = false;
+            for (var a = 0; a + 2 < cells.Count; a++)
+                for (var bb = a + 2; bb < cells.Count; bb++)
+                    if (cells[a] == cells[bb] && cells[a + 1] != cells[a]) { reentry = true; break; }
+            Assert.True(reentry, "本场景折返是强制的 ⇒ 没折返就说明 (cell,layer) 建模被退回格级（回归）");
         }
     }
 }

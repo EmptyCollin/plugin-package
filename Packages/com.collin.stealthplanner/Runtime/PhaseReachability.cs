@@ -289,6 +289,18 @@ namespace Collin.StealthPlanner
         /// </summary>
         public static int ExpandSuccessors(VisibilityTable table, int from, int stepCells,
                                            byte[] maskHere, byte[] maskNext, int[] outBuf)
+            => ExpandSuccessors(table, from, stepCells, maskHere, 0, maskNext, 0, outBuf);
+
+        /// <summary>
+        /// 带<b>层偏移</b>的同判据版本：<c>maskHere/maskNext</c> 允许是「逐桶掩码拼成的大数组」，
+        /// <paramref name="hereOffset"/>/<paramref name="nextOffset"/> 指向相应层的首格。
+        /// 供 <see cref="PhaseKShortest"/> 的引导搜索<b>乱序</b>弹节点时直接查缓存大数组——
+        /// 若每次弹节点都整层拷贝掩码（11664 格/层），拷贝成本会把启发式省的展开全吃回去。
+        /// 判据逻辑与上面完全同一份实现（本方法就是唯一实现，旧签名只是 hereOffset=0 的别名）。
+        /// </summary>
+        public static int ExpandSuccessors(VisibilityTable table, int from, int stepCells,
+                                           byte[] maskHere, int hereOffset,
+                                           byte[] maskNext, int nextOffset, int[] outBuf)
         {
             if (table == null || outBuf == null) return 0;
             var n = table.CellCount;
@@ -314,19 +326,19 @@ namespace Collin.StealthPlanner
                     // ① 原地等待：潜行的命脉。只需下一桶仍安全（to==from）。
                     if (dx == 0 && dz == 0)
                     {
-                        if (maskNext[to] == 0) outBuf[count++] = to;
+                        if (maskNext[nextOffset + to] == 0) outBuf[count++] = to;
                         continue;
                     }
 
                     // ② 终点格只查<b>下一桶</b>（到达时刻 = 下一桶起点）。刻意<b>不查本桶</b>：
                     //    潜行的核心动作是「躲在掩体后等哨兵转身」——若要求终点在本桶也安全，
                     //    则「障碍刚解除的那一格」永远踏不进去，等待就失去意义。
-                    if (maskNext[to] != 0) continue;
+                    if (maskNext[nextOffset + to] != 0) continue;
 
                     // ③ <b>严格中间格</b>须在<b>本桶</b>安全：一步耗时恰为一个 Δt，途中经过的格子
                     //    是在本桶的时间区间内被跨越的。漏掉这步＝玩家能穿掩体「跳」过去。
                     //    起点格不必再查（上一层已保证它在安全桶内），终点格按 ② 的口径处理。
-                    if (!IntermediateCellsClear(fx, fz, tx, tz, table.DimX, maskHere)) continue;
+                    if (!IntermediateCellsClear(fx, fz, tx, tz, table.DimX, maskHere, hereOffset)) continue;
 
                     outBuf[count++] = to;
                     if (count >= outBuf.Length) return count;      // 缓冲写满（尺寸已按上限留足）
@@ -353,7 +365,8 @@ namespace Collin.StealthPlanner
         /// <item><b>中间格</b>必须本桶安全——它们是在桶 b 的时间区间内被跨越的。</item>
         /// </list>
         /// </summary>
-        static bool IntermediateCellsClear(int x0, int z0, int x1, int z1, int dimX, byte[] maskHere)
+        static bool IntermediateCellsClear(int x0, int z0, int x1, int z1, int dimX,
+                                           byte[] maskHere, int hereOffset)
         {
             var dx = Mathf.Abs(x1 - x0);
             var dz = -Mathf.Abs(z1 - z0);
@@ -375,7 +388,7 @@ namespace Collin.StealthPlanner
                 atEnd = x0 == x1 && z0 == z1;
                 if (atEnd) break;                       // 终点格由 ② 负责，此处不查
 
-                var idx = z0 * dimX + x0;
+                var idx = hereOffset + z0 * dimX + x0;
                 if (maskHere[idx] != 0) return false;   // 中间格此刻被看见 ⇒ 这一步走不通
             }
             return true;
