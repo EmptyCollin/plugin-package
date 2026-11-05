@@ -64,14 +64,26 @@ namespace Collin.CityMap.EditorTooling
 
         private void OnEnable()
         {
-            // H-50：静态引用随域重载归零，而 Unity 会用布局恢复窗口实例。
-            // 不在此重绑，CurrentMode 会永远读到 Inspect（面板明明显示着雕刻模式）。
-            // 主门禁已改为读实例真源（CityTerrain.SculptToolActive），这里只是让面板自身
-            // 的静态桥（ActiveProject / ActiveRunner / CurrentMode）重新可用。
+            // M4-j 根因修复：域重载后 _ctx/_runner 是瞬态的会丢，但 _project 是序列化字段能存活。
+            // 不重新装配，面板就退回「未装配」→ ActiveContext=NULL → 显示层落到**自建路径**，
+            // 而自建路径每笔 `MarkDirty(DirtyBits.All)` 会重跑 S1a 噪声（实测 8000m@4m = 4860ms/笔），
+            // 且其 configKey 不含 terrain 实例版本 → 落笔后不重建 mesh。
+            // 一个「未装配」同时造成用户的两个反馈：卡顿 + 地表不动。
+            //
+            // ⚠️ 但**不能在 OnEnable 里直接 Bind**（实测取证）：此刻场景对象的 OnEnable 还没跑完、
+            // 尚未注册进 IntentRegistry ⇒ FindTerrainInstance() 返回 null ⇒ SyncStages 里 profile==null
+            // ⇒ 只注册 S0、不注册 S1a/S1b；而 SyncStages 又只在"有脏待提交"时被调用，
+            // 于是面板看似已装配（ActiveContext 有值，显示层因此放弃自建路径），实际永远算不出高度场
+            // ⇒ **画面直接空白，比原来更糟**。改为标记 + 第一帧（OnEditorUpdate）再装配，
+            // 那时场景对象注册已完成；装配后强制跑一次全量，保证"打开即有地形"。
             _instance = this;
             _runner = new PipelineRunner();
             EditorApplication.update += OnEditorUpdate;
+            _needsFirstBind = _project != null && _ctx == null;
         }
+
+        /// <summary>待装配标记：OnEnable 时机太早，推迟到第一帧（场景对象已注册进 IntentRegistry）。</summary>
+        private bool _needsFirstBind;
 
         private void OnDisable()
         {
@@ -203,7 +215,35 @@ namespace Collin.CityMap.EditorTooling
         /// </summary>
         private void OnEditorUpdate()
         {
+            // M4-j：OnEnable 时机太早（场景对象还没进 IntentRegistry），装配推迟到更新循环里重试。
+            // 实测取证：直接在 OnEnable 里 Bind 会得到 stageKey=素数（= 当时 _terrain/Profile 都是 null）、
+            // runner 只注册了 S0、ctx.HasSlot(S1a)=False ⇒ 面板已接管却永远算不出高度场 ⇒ 画面反而空白，
+            // 比原来更糟。窗口恢复与场景对象 OnEnable 的先后**没有保证** ⇒ 不赌时序，探测到实例才装配。
+            // 探测不到就直接返回：这里**不动 _stageKey、不碰 runner**，否则每帧都会重注册一次阶段（自造churn）。
+            if (_needsFirstBind)
+            {
+                var ready = FindTerrainInstance();
+                if (ready == null || ready.Profile == null) return;   // 下一帧再试
+                _needsFirstBind = false;
+
+                Bind(_project);                   // 内含 _stageKey=0 + SyncStages（此刻才注册得出 S1a/S1b）
+                if (_ctx != null && _runner != null)
+                {
+                    _runner.MarkDirty(DirtyBits.All);
+                    CommitAndNotify(DirtyBits.All);   // 脏区 null = 全图；首帧本来就该整张算一遍
+                }
+                Repaint();
+                return;
+            }
+
             if (_ctx == null || _runner == null) return;
+
+            // M4-j 自愈（终测实测缺口）：面板 _ctx 有值、但 CityRuntime.ActiveContext 可能已是 NULL
+            // ——静态桥会被关闭它的人清零（OnDisable / 测试里的 Deactivate / 域重载后的 Reset），
+            // 而面板这边并不知道。此时显示层判定"无权威上下文"就**无声回落到自建路径**，
+            // 于是"面板看起来已装配、画面却仍按每笔全量重算"——用户遇到的正是这一类卡顿。
+            // 每帧比一次对象身份并重新接桥（幂等，成本一次引用比较），断桥不可能长期存在。
+            if (!ReferenceEquals(CityRuntime.ActiveContext, _ctx)) CityRuntime.Activate(_ctx);
 
             UndoHistoryTracker.Scan();
             DetectDirectProfileEdit();                  // 第二检：Inspector 直改 SO 字段不 bump 序列号
@@ -215,6 +255,11 @@ namespace Collin.CityMap.EditorTooling
             if (dirty == DirtyBits.None) return;
 
             SyncStages();                             // Profile 可能刚被换/清空
+            // M4-j：笔刷/参数的脏区只存在 Tracker.LastDirtyBounds 里，而 MarkDirty(dirty) 单参调用
+            // 不带 bound ⇒ ctx.DirtyBounds 为空 ⇒ CommitAndNotify 取到 null = 按全图重建
+            // （实测：全量 289ms/笔 vs 增量 0~2ms/笔）。这里显式搬一次，增量重建才有依据。
+            var bounds = UndoHistoryTracker.LastDirtyBounds;
+            if (bounds.size.x > 0f || bounds.size.z > 0f) _ctx.AddDirtyBound(bounds);
             _runner.MarkDirty(dirty);
             CommitAndNotify(dirty);
             Repaint();

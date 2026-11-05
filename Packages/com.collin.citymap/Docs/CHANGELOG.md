@@ -5,6 +5,39 @@
 ## [Unreleased]
 
 ### Fixed
+- **M4-j（用户反馈「抬升后地表不同步」+「每笔卡得要读条」的根因修复）**（本包 **133/133** Failed 0）：
+  实测量化（8000m / 4m 逻辑格 / 2000²=400 万格 / 3969 显示 chunk，修复前 3 轮稳定）：
+  **每笔 5253 / 5234 / 5529 ms → 修复后 4 ms**；耗时分解 `S1a=4860ms、S0=114ms、S1b≈0ms` ⇒
+  卡顿不是"算法慢"，而是**每笔都在重跑噪声基底**。修复后执行阶段数 **3 → 1**（只跑 S1b）。
+  - **H-57（阻断级）面板"未装配"使显示层无声回落到慢路径**：`_ctx/_runner` 是瞬态字段、域重载即丢，
+    而序列化的 `_project` 存活 ⇒ `ActiveContext=NULL` ⇒ 自建路径每笔 `MarkDirty(DirtyBits.All)` 重跑 S1a
+    （**违反 D-31/A-2「雕刻绝不脏 S1a」**）+ 新分配两张 400 万格数组（≈40MB）与阶段 scratch（≈50MB）
+    ⇒ 大对象堆 ⇒ 阻塞 GC = 用户看到的读条。登记 **D-36**。
+  - **H-58（自造，已当场纠正）`OnEnable` 直接 Bind 会让画面全白**：实测此刻场景对象尚未进
+    `IntentRegistry` ⇒ `FindTerrainInstance()` 返回 null ⇒ `SyncStages` 只注册得出 S0（`runner 阶段数=1`、
+    `ctx.HasSlot(S1a)=False`）⇒ 面板已接管、显示层放弃自建、却永远拿不到高度场 ⇒ **比修复前更糟**。
+    正解：标记 `_needsFirstBind` + 更新循环里"探测到实例才装配"，找不到下一帧再试（探测失败时**不动
+    `_stageKey`、不碰 runner**，否则每帧重注册一次阶段 = 自造 churn）。
+  - **H-59 自建路径按「变化来源」分层重算**：项目变→重建上下文（Mask/场数组尺寸绑死格网，必须全量）；
+    仅 Profile 变→复用上下文只重跑 S1a；**仅实例版本变（雕刻）→只重放 delta + S1b**。
+    `PipelineContext` 与阶段对象长期复用，消除每笔几十 MB 大对象分配。
+    判据用**哨兵法**（往 `BaseHeights` 种 `123.456f`，只有 S1a 会整表覆盖它）——噪声是确定性的、
+    重跑得逐位相同，所以"基底没变"证明不了没重跑，**必须靠哨兵存活 + 上下文对象身份不变**两条同时成立。
+  - **H-60「算得出但画不出」（反馈①的真根因）**：`ComputeConfigKey()` 不含 `_terrain.ManualVersion`
+    （实测落笔后指纹逐位不变 `14071847608170291442`）⇒ 旧版只认 `cfgChanged` 一条判据 ⇒ 高度场抬了
+    **181.11m**（`BaseHeights` 全图最大才 5.36m）而一张 mesh 都不重建。登记 **D-37**：
+    改由 `_ownDataChanged` 驱动重建 + 按笔刷脏盒 `RebuildRegion`；**刻意不把实例版本补进 configKey**
+    （那会触发 `RebuildAll`，实测全量 289ms vs 增量 0~2ms）。
+  - **H-61 脏区从未搬进上下文**：`MarkDirty(dirty)` 单参不带 bound ⇒ `UnionOfDirtyBounds()=null` = 全图，
+    增量重建形同虚设。补 `_ctx.AddDirtyBound(Tracker.LastDirtyBounds)`（须在 `ConsumeDirty` 之后立刻取，
+    该入口会把 `LastDirtyBounds` 复位）。修后实测状态串：`增量重建 9/9 chunk（脏盒 202×202m，全图 3969）`。
+  - **新增 3 条回归用例**（`TerrainViewTests`）：雕刻须驱动 mesh 抬起（取"最近顶点 y"而非全图极值，
+    避免被自然噪声峰值淹没成假红）、雕刻不得重跑噪声/重建上下文（含"改噪声须覆盖哨兵"的**防恒真对照组**）、
+    笔刷脏区须是笔刷量级且可被上下文取到。
+  - **测试口径自纠错（H-62）**：我第一版用 `UndoHistoryTracker.MarkIntent()` 断言"只脏 Flatten"，
+    红了。查清是**测试入口选错**而非实现有 bug——`MarkIntent` 是粗粒度入口（并对象**当前全部通道**），
+    rig 建时 `SetProfile` 已 bump 过 `TerrainModel` ⇒ 必然带上 `Terrain`；面板真实驱动是 `Scan()` 基线差分。
+    改为"传播表 `DirtyOf(DeltaStroke)` 精确断言 + `Scan()` 真实口径断言"两轨，并把误判写进注释留痕。
 - **M4-i（笔刷不可用的四处断链，用户反馈①②根因修复）**（本包 **130/130** Failed 0，校验器 **`FAIL 0`、结论: 绿灯**，
   `consoleErrors=0 / consoleWarnings=0 / seeded=True`，`RECOMPILE failed=False errors=0`）：
   - **H-50 门禁真源错位（反馈①②同源）**：笔刷接管判据原先读 `CityWindow.CurrentMode`，那是

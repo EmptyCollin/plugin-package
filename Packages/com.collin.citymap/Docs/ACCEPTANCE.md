@@ -81,6 +81,11 @@
 | 72 | **M4-i H-54 附带发现：包内资产导入记录损坏**（控制台 warning `No script asset for TerrainProfile` 的真因） | 对照实验：`GetMainAssetTypeAtPath(原文件)=NULL`；**同内容复制文件（新 GUID）同样 NULL**；Unity 自身 `CreateAsset` 产物 `可加载=True`；`ImportAsset(ForceUpdate)` 无效（内容哈希未变复用旧 artifact）⇒ 判定为 Library 侧该 GUID 记录坏，非 YAML 内容坏（两者逐字节一致）。处置：`CreateAsset` 覆盖同路径重建，实测 **GUID 不变**（`49770fd0…→同值`，既有引用不失效）、类型恢复 `TerrainProfile` | 同上 | 2026-11-04 | **已修复**；`LoadAssetAtPath(原路径)=True`，副本 `TerrainProfile 1.asset` 一并删除 |
 | 73 | **M4-i 交锁门禁** | 清台 → 静默 60s 取基线（`error=0 warning=0`，无噪声需归因）→ 重跑本会话全部验证动作（recompile → 本包 test run → `verify_project.py`）→ `console status` | 同上 | 2026-11-04 | `RECOMPILE failed=False errors=0`；`Tests.dll` mtime ≥ 测试源 mtime（H-36 第二检）；**130/130**；`consoleErrors=0 consoleWarnings=0 seeded=True`；校验器 **`FAIL 0`、结论: 绿灯** |
 | 74 | **M4-i 校验器红灯成因与处置（非本会话产物）**：`assets-layout: Assets/Scenes/TerrainTest.unity` | 取证三项：该场景 mtime `22:12:16` **早于本会话首个动作（22:25 之后）**；`EditorBuildSettings.scenes` 仅含 SampleScene（不命中本场景）；全工程 `.asset/.unity/.prefab/.json` 文本扫描**外部引用计数 = 0** | 同上 | 2026-11-04 | **经用户裁定"移进包内 Sample/"**：`AssetDatabase.MoveAsset` → `Packages/com.collin.citymap/Sample/Scenes/TerrainTest.unity`，返回空串（成功）、**GUID 不变**（`d159991b…` → 同值）、旧路径 `AssetPathToGUID=""` 且磁盘旧文件已消失；`OpenScene` 复验 `有效=True 根物体=2 脏=False`。另按用户裁定删除根目录 5 个上一会话残留 `.tmp-*.json`（mtime 11:14–11:46，逐个核过内容为 `test run` 输出） |
+| 75 | **M4-j 卡顿根因量化取证（用户反馈「每笔非常卡、要读条」）** | 三轮 `script eval_file` 探针：① 耗时分解 `S1a=4860ms / S0=114ms / S1b≈0ms`（⇒ 卡顿不是算法慢，是每笔重跑噪声）；② 自建路径完整重跑 3 轮 **5253 / 5234 / 5529 ms/笔**，`new ctx + 3 阶段 + MarkDirty(All) + Tick`；③ 面板路径对照 `MarkDirty(Flatten|Building)` = **3~9ms**；另 `ComputeConfigKey` 落笔前后逐位不变（`14071847608170291442`）证明"算了不画"；数据侧 `Heights−BaseHeights` 最大正差 **181.11m**（BaseHeights 全图最大 5.36m）证明雕刻确实生效 | qianwen-work-assistant（会话 `2026-11-05 m4-j-perf`） | 2026-11-05 | **根因确认**：面板「未装配」（`_ctx` 瞬态丢失）⇒ 显示层无声回落自建路径 ⇒ 违反 D-31/A-2 重跑噪声 + 每笔 ≈90MB 大对象分配 ⇒ 阻塞 GC。**修复后实测 4ms/笔、执行阶段 3→1** |
+| 76 | **M4-j 修复：装配自愈 + 自建路径分层 + 数据变更独立判据（D-36 / D-37）** | `CityWindow`：`_needsFirstBind` 标记 + 更新循环探测到实例才装配（找不到下一帧再试，探测失败不动 `_stageKey`/不碰 runner）、每帧 `!ReferenceEquals(ActiveContext,_ctx)` 重接桥、提交前 `_ctx.AddDirtyBound(Tracker.LastDirtyBounds)`；`CityTerrainView`：按来源分层（项目变→全量／Profile 变→只 S1a／实例变→只 delta+S1b）+ ctx 与阶段对象长期复用 + `_ownDataChanged`/`_ownRegion` 驱动增量重建 | 同上 | 2026-11-05 | **通过**；实测终态 `status=[增量重建 9/9 chunk（脏盒 202×202m，全图 3969）]`、`chunks=3969`、`field=有`、空转两次 0/0ms（序号防抖成立）；mesh 顶点 y 范围 `[-7.6,5.3]` 对上数据 `[-7.6,5.4]` ⇒ **画面与数据一致** |
+| 77 | **M4-j 自造缺陷 H-58：`OnEnable` 直接 Bind 会让画面全白（比修复前更糟）** | 探针实测 `runner 阶段数=1 [S0_Assemble]`、`ctx.HasSlot(S1a)=False`、`stageKey=14695981039346656037`（= 素数，即 `_terrain`/`Profile` 当时均为 null 未参与混列）⇒ 面板已接管、显示层已放弃自建路径，但高度场永不产出 | 同上 | 2026-11-05 | **已当场纠正**（改为更新循环重试装配）。纪律补条：**"修 A 导致 B"的验证必须跑到"画面真有东西"**，只断言"装配标志已置位"会漏掉这类更严重的回归 |
+| 78 | **M4-j 测试口径自纠错 H-62**：第一版用例用 `UndoHistoryTracker.MarkIntent()` 断言"只脏 Flatten"，实跑得 `Terrain, Flatten, Building` → 红 | 查清 `MarkIntent` 是**粗粒度**入口（并对象当前**全部**通道），rig 建时 `SetProfile` 已 bump `TerrainModel` ⇒ 必带 `Terrain`；面板真实驱动是 `Scan()` 基线差分。**不是实现有 bug**（`DirtyOf(DeltaStroke)=Flatten,Building` 传播表本就正确） | 同上 | 2026-11-05 | 改为两轨断言：传播表 `DirtyOf` 精确判 + `Scan()` 真实口径判；**133/133** 全绿。教训与 H-43 同族：断言红先查自己的口径，别急着改实现 |
+| 79 | **M4-j 交锁门禁（§1.6 三项）** | 清台 → 静默 60s 取基线（`0/0/0 seeded=True`，无噪声需归因）→ 重跑本会话全部验证动作（`script recompile` → 本包 `test run` → `verify_project.py`）→ `console status` | 同上 | 2026-11-05 | `RECOMPILE failed=false errors=[]`；`Tests.dll` mtime ≥ 测试源 mtime（H-36 第二检）；**133/133 Failed 0**；`consoleErrors=0 consoleWarnings=0 seeded=True`（error/warning 明细条数 = 0）；校验器 **`FAIL 0`、结论: 绿灯**（2 项 WARN：`lock-active` 本会话自持锁 + `pkg-sample` 属他包 `com.collin.stealthplanner`，非本会话产物） |
 
 ## 未通过项
 
@@ -776,7 +781,7 @@ S1b 重算，否则从关到开画面仍是旧的未平整态）；S1b 在 `Comm
 
 ## 遗留（不属于失败项，按里程碑推进）
 
-- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~74）。
+- A-1~A-44 中与算法/工具绑定的条目：随 M2~M11 实现逐条取证。已实测的是规则表与结构类条目（见上表 9~79）。
 - **M4-e/M4-f 的实机闭环待用户验证**（§M4-e-3）：场景内创建地形实例后拖笔，看是否即时起伏、
   一笔一撤销是否成立、超格数提示是否出现。这是"雕刻笔刷"从"代码正确"到"手感成立"的最后一跳。
 - A-45~A-51（Modules/11 冻结项）**已实测通过**；`BuildingRecord` 结构**已冻结**（用户 2026-11-03 确认）。

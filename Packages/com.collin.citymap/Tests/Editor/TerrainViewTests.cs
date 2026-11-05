@@ -562,5 +562,182 @@ namespace Collin.CityMap.Tests
             StringAssert.Contains("TerrainProfile", view2.LastStatus,
                 $"缺 Profile 的分支必须单独报因（实得：{view2.LastStatus}）");
         }
+
+        // ─────────── M4-j：自建路径必须"算得出也画得出"，且雕刻不得重跑噪声 ───────────
+
+        /// <summary>
+        /// 用户反馈「抬升后地表没有同步变动」的直接判据：<b>只改雕刻，常规一帧后 mesh 必须抬起来</b>。
+        /// <para>根因（实测）：自建路径的重建判据只有 <c>cfgChanged</c>（配置指纹），而
+        /// <c>ComputeConfigKey()</c> 不含 <c>_terrain.ManualVersion</c>；雕刻走 DeltaStroke 通道
+        /// 不改任何显示参数 ⇒ 指纹逐位不变 ⇒ 高度场算完了却一张 mesh 都不重建。
+        /// 现场取证：数据侧 <c>Heights−BaseHeights</c> 最大差 181m，画面纹丝不动。</para>
+        /// <para>取"离中心格最近的 mesh 顶点 y"而不是全图最大值：自然噪声峰值本身十几米，
+        /// 拿全局极值比会把局部抬升淹没（断言假红）。</para>
+        /// </summary>
+        [Test]
+        public void Standalone_Sculpt_Rebuilds_Mesh_Without_Touching_Display_Params()
+        {
+            CityRuntime.Deactivate();
+            var rig = MakeRig(4801);
+            rig.View.RebuildNow();
+
+            var grid = rig.View.BoundGrid;
+            Assert.IsTrue(grid.HasValue, "重建后应已绑定逻辑格");
+            var g = grid.Value;
+            var cx = g.Columns / 2; var cz = g.Rows / 2;
+            var c = g.CellCenterWorld(cx, cz);
+            var before = YNearVertex(rig.View, c);
+
+            // 只动雕刻：写 delta + bump 实例版本；不碰显示参数/世界参数/Profile
+            var d = Track(ScriptableObject.CreateInstance<SculptDeltaAsset>());
+            rig.Terrain.SetDelta(d);
+            for (var z = cz - 10; z <= cz + 10; z++)
+            for (var x = cx - 10; x <= cx + 10; x++)
+                d.AddDelta(g, x, z, 12f);
+            rig.Terrain.MarkDeltaChanged(c, 20f);
+
+            rig.View.TickOnce();                       // 常规一帧（不是强制重建）
+
+            var after = YNearVertex(rig.View, c);
+            Assert.Greater(after - before, 6f,
+                $"只改雕刻也必须让 mesh 抬起来（{before:0.##} → {after:0.##}，应≈+12）：" +
+                "旧实现判据不含实例版本 ⇒ 算进高度场却不重建 = 用户看到的「地表不同步」");
+            Debug.Log($"[M4j] 雕刻驱动画面：最近顶点 {before:0.##} → {after:0.##}（抬 12m，未碰任何显示参数）");
+        }
+
+        /// <summary>
+        /// 卡顿根因判据（<b>D-31 / A-2 在自建路径同样成立</b>）：只改雕刻时不得重跑噪声、不得重建上下文。
+        /// <para>实测：旧实现每次版本指纹变化就 <c>new PipelineContext</c> + 重注册阶段 +
+        /// <c>MarkDirty(All)</c> ⇒ 落一笔雕刻也重跑 S1a 噪声（8000m@4m 实测 4860ms/笔），
+        /// 并新分配上下文两张 400 万格数组（≈40MB）+ 阶段 scratch（≈50MB），全落在大对象堆
+        /// ⇒ 阻塞式 GC = 用户看到的「每笔都要读条」。</para>
+        /// <para>手法：往 <c>BaseHeights</c> 种一个哨兵值。<b>只有 S1a 会整表写 BaseHeights</b>
+        /// （delta 只进 Heights，M4-b 的防漂移不变量），所以哨兵存活 ⇔ 噪声没重跑。
+        /// 噪声是确定性的、重跑会得到逐位相同的值 ⇒ 比"基底没变"证明不了任何事，必须用哨兵。</para>
+        /// </summary>
+        [Test]
+        public void Standalone_Sculpt_Does_Not_Rerun_Noise_Or_Rebuild_Context()
+        {
+            CityRuntime.Deactivate();
+            var rig = MakeRig(4802);
+            rig.View.RebuildNow();
+
+            var field = rig.View.BoundField;
+            Assert.IsNotNull(field, "首帧必须已产出高度场");
+            var g = rig.View.BoundGrid.Value;
+            var cx = g.Columns / 2; var cz = g.Rows / 2;
+            var idx = cz * g.Columns + cx;
+            var c = g.CellCenterWorld(cx, cz);
+
+            const float Sentinel = 123.456f;
+            field.BaseHeights[idx] = Sentinel;
+            var ctx0 = OwnCtxOf(rig.View);
+            Assert.IsNotNull(ctx0, "自建路径应已建立上下文");
+
+            var d = Track(ScriptableObject.CreateInstance<SculptDeltaAsset>());
+            rig.Terrain.SetDelta(d);
+            d.AddDelta(g, cx, cz, 9f);
+            rig.Terrain.MarkDeltaChanged(c, 20f);
+            rig.View.TickOnce();
+
+            Assert.AreEqual(Sentinel, field.BaseHeights[idx], 1e-4f,
+                "只改雕刻时 S1a 噪声绝不能重跑（重跑会整表覆盖 BaseHeights = 4860ms/笔 的卡顿根因）");
+            Assert.Greater(field.Heights[idx] - Sentinel, 8.5f,
+                "delta 必须重放进工作数组 Heights（且不得污染 BaseHeights）");
+            Assert.AreSame(ctx0, OwnCtxOf(rig.View),
+                "只改雕刻时不得重建 PipelineContext（重建 = 每笔新分配两张全区数组 ⇒ 大对象堆 ⇒ GC 读条）");
+
+            // 对照组：改噪声参数**必须**重跑并覆盖哨兵，否则上面三条是恒真的空断言
+            rig.Profile.SetBaseShape(30f, 520f, 4, 0.5f, 2f, 0.35f);
+            rig.View.TickOnce();
+            Assert.That(rig.View.BoundField.BaseHeights[idx],
+                Is.Not.EqualTo(Sentinel).Within(1e-3f),
+                "对照组：改噪声参数须重跑 S1a（哨兵被覆盖）⇒ 证明哨兵法可分辨");
+            Debug.Log("[M4j] 哨兵存活（雕刻不重跑噪声）+ 对照组被覆盖 ⇒ 两条判据均有效");
+        }
+
+        /// <summary>
+        /// 增量重建的前提（面板路径）：笔刷脏区必须是"笔刷量级"而非空/全图，
+        /// 否则 <c>UnionOfDirtyBounds()</c> 返回 null ⇒ 按全图重建（实测全量 289ms vs 增量 0~2ms/笔）。
+        /// <para>M4-j 补的是"脏区只存在于 Tracker、从未搬进上下文"这一环。</para>
+        /// </summary>
+        [Test]
+        public void Brush_Dirty_Bounds_Is_Brush_Sized_And_Reachable_By_Panel()
+        {
+            Collin.CityMap.EditorTooling.UndoHistoryTracker.Reset();
+            try
+            {
+                var rig = MakeRig(4803);
+                Collin.CityMap.EditorTooling.UndoHistoryTracker.RebuildBaseline();
+                var grid = new PipelineContext(rig.Project).Grid;
+                var c = grid.CellCenterWorld(grid.Columns / 2, grid.Rows / 2);
+
+                // ① 传播表本身（精确、不受对象历史通道干扰）：D-31/A-2 的硬约束
+                var fromTable = IntentChangePlanner.DirtyOf(IntentKind.DeltaStroke);
+                Assert.IsTrue((fromTable & DirtyBits.Flatten) != 0, "雕刻须脏 Flatten（D-31）");
+                Assert.IsFalse((fromTable & DirtyBits.Terrain) != 0,
+                    "雕刻不得脏 Terrain（A-2/D-31：不重跑噪声基底）——脏了它就是实测 4860ms/笔");
+
+                // ② 面板真实驱动口径 = Scan() 的基线差分。
+                // ⚠️ 不能用 UndoHistoryTracker.MarkIntent() 断言"只脏 Flatten"：它是**粗粒度**入口
+                //（并对象当前全部通道），rig 建时 SetProfile 已 bump 过 TerrainModel ⇒ 必然带上 Terrain。
+                //   我第一版就是这样误判实现有 bug（测试口径错，不是代码错）。
+                Collin.CityMap.EditorTooling.UndoHistoryTracker.RebuildBaseline();
+
+                rig.Terrain.MarkDeltaChanged(c, 30f);     // r = max(16, 2*30) = 60 ⇒ 脏盒边长 120m
+                var changed = Collin.CityMap.EditorTooling.UndoHistoryTracker.Scan();
+
+                Assert.IsTrue((changed & DirtyBits.Flatten) != 0, "扫描须把雕刻识别为 Flatten 脏");
+                Assert.IsFalse((changed & DirtyBits.Terrain) != 0,
+                    $"扫描不得因雕刻标脏 Terrain（实得 {changed}）：那会让每笔重跑噪声");
+
+                var b = Collin.CityMap.EditorTooling.UndoHistoryTracker.LastDirtyBounds;
+                Assert.Greater(b.size.x, 60f, $"脏区须是笔刷量级（实得 {b.size.x:0.#}m）");
+                Assert.Less(b.size.x, grid.WorldSize,
+                    $"脏区须小于图幅，否则增量重建退化成全量（{b.size.x:0.#} vs {grid.WorldSize:0}）");
+
+                // 上下文侧：面板把脏区搬进来后，并集必须是笔刷量级而非 null
+                var ctx = new PipelineContext(rig.Project);
+                Assert.IsNull(ctx.UnionOfDirtyBounds(), "未登记时并集为 null（= 全图），这是旧行为");
+                ctx.AddDirtyBound(b);
+                var union = ctx.UnionOfDirtyBounds();
+                Assert.IsTrue(union.HasValue, "登记后并集须存在 ⇒ RebuildRegion 才有依据");
+                Debug.Log($"[M4j] 笔刷脏区 {b.size.x:0.#}m（图幅 {grid.WorldSize:0}m）⇒ 增量重建可行");
+            }
+            finally
+            {
+                Collin.CityMap.EditorTooling.UndoHistoryTracker.Reset();
+                CityRuntime.Deactivate();
+            }
+        }
+
+        /// <summary>离指定世界坐标最近的 mesh 顶点 y（跨全部 chunk）。</summary>
+        static float YNearVertex(CityTerrainView view, Vector2 world)
+        {
+            var root = view.transform.Find("terrain_chunks (derived)");
+            Assert.IsNotNull(root, "必须能读到派生 chunk 根节点");
+            var best = float.MaxValue; var y = 0f; var found = false;
+            foreach (Transform ch in root)
+            {
+                var mf = ch.GetComponent<MeshFilter>();
+                if (mf == null || mf.sharedMesh == null) continue;
+                var vs = mf.sharedMesh.vertices;
+                for (var i = 0; i < vs.Length; i++)
+                {
+                    var dx = ch.position.x + vs[i].x - world.x;
+                    var dz = ch.position.z + vs[i].z - world.y;
+                    var dd = dx * dx + dz * dz;
+                    if (dd < best) { best = dd; y = vs[i].y; found = true; }
+                }
+            }
+            Assert.IsTrue(found, "至少应命中一个 mesh 顶点");
+            return y;
+        }
+
+        /// <summary>读自建路径当前上下文实例（判"有没有被重建"必须比对象身份，值比不出来）。</summary>
+        static object OwnCtxOf(CityTerrainView view)
+            => typeof(CityTerrainView).GetField("_ownCtx",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .GetValue(view);
     }
 }

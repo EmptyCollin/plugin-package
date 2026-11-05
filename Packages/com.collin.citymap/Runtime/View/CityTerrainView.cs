@@ -135,7 +135,13 @@ namespace Collin.CityMap
         // 自建路径
         private PipelineContext _ownCtx;
         private PipelineRunner _ownRunner;
-        private ulong _ownVersion;
+        // M4-j：按变化来源拆分的版本（项目/Profile/实例三者各自单调），
+        // 用于分辨"该重跑噪声"还是"只需重放 delta+平整"。
+        private long _ownProjVer = -1, _ownProfileVer = -1, _ownTerrainVer = -1;
+        private TerrainProfile _ownProfile;
+        private CityTerrain _ownStageTerrain;
+        private Bounds? _ownRegion;
+        private bool _ownDataChanged;
 
         // 重建请求：本帧是否需要全量重建（同帧合并见 00 §4.2；增量路径由提交序号驱动，不需列表）
         private bool _wantFull;
@@ -242,12 +248,20 @@ namespace Collin.CityMap
             }
 
             // ② 自建路径（Play / 无面板）：没有提交序号，退化为"意图版本 + 配置指纹"驱动。
-            //    Inspector 直接改显示字段不 bump 意图版本 ⇒ 只靠配置指纹发现（指纹已含项目/Profile 版本，
-            //    所以生成结果一变必然被捕获，无需定时轮询）。
-            if (!_wantFull && !cfgChanged) return;
+            //    Inspector 直接改显示字段不 bump 意图版本 ⇒ 靠配置指纹发现（指纹含项目/Profile 版本与显示参数）。
+            //    ⚠️ 但 ComputeConfigKey() **不含 _terrain.ManualVersion**（实测：落笔后指纹逐位不变）——
+            //    这不是遗漏可补：补进指纹会让 cfgChanged=true ⇒ 走 RebuildAll（289ms/笔），
+            //    而雕刻只波及笔刷脏盒。所以"雕刻必须重建显示"改由下面的 _ownDataChanged 驱动 + 脏盒增量。
+            //    M4-j 根因之一：旧版只有 cfgChanged 一条判据 ⇒ 雕刻算进了场、却一张 mesh 都不重建
+            //    = 用户看到的「地表不同步」（数据侧实测 Heights−BaseHeights 最大差 181m，画面却没变）。
+            var dataChanged = _ownDataChanged;
+            _ownDataChanged = false;
+            if (!_wantFull && !cfgChanged && !dataChanged) return;
 
             _seenSeq = CityRuntime.CommitSeq;
-            RebuildAll();
+            if (_wantFull || cfgChanged || !_ownRegion.HasValue) RebuildAll();
+            else RebuildRegion(_ownRegion.Value);        // 只重建笔刷波及的 chunk（实测 0~2ms vs 全量 289ms）
+            _ownRegion = null;
             _wantFull = false;
         }
 
@@ -289,25 +303,63 @@ namespace Collin.CityMap
                 return false;
             }
 
-            // 自建路径：意图版本驱动（意图没变 = 不重跑生成，只按配置指纹重建显示）
-            var ver = unchecked((ulong)(projectForStandalone.ManualVersion * 1000003L
-                                        + profile.ManualVersion * 31L
-                                        + (_terrain != null ? _terrain.ManualVersion : 0L)));
-            if (_ownCtx != null && _ownVersion == ver && _field != null)
+            // ── M4-j：自建路径按「变化来源」决定重算范围，不再无差别全量 ──
+            // 实测根因：旧实现每次版本指纹变化就 `new PipelineContext` + 重注册阶段 + `MarkDirty(All)`，
+            // 于是**落一笔雕刻也会重跑 S1a 噪声**（8000m@4m 实测 4860ms/笔）并重新分配
+            // 上下文两张 4M 格数组（≈40MB）+ 阶段 scratch（≈50MB）⇒ 全部落在大对象堆 ⇒ 阻塞式 GC
+            // = 用户看到的「每笔都要读条」。而 DESIGN **D-31 / A-2** 早已规定「雕刻不得脏 S1a」，
+            // 自建路径没遵守 ⇒ 既慢、又与面板路径行为不一致（两套世界各算一份）。
+            // 分层判据：
+            //   项目/实例引用或版本变 → 必须重建上下文（Mask 与场数组尺寸绑死格网）⇒ 全量
+            //   仅 Profile 变        → 复用上下文，只重跑 S1a（噪声参数）
+            //   仅实例版本变（雕刻等）→ 复用上下文，只重放 delta + 平整（S1b），**绝不重跑噪声**
+            var proj = projectForStandalone;
+            var projVer = proj.ManualVersion;
+            var profVer = profile.ManualVersion;
+            var terrVer = _terrain != null ? _terrain.ManualVersion : 0L;
+
+            var needCtx = _ownCtx == null
+                          || !ReferenceEquals(_ownCtx.Project, proj)
+                          || projVer != _ownProjVer
+                          || (_terrain != null && !ReferenceEquals(_ownStageTerrain, _terrain));
+            var needS1a = needCtx || !ReferenceEquals(_ownProfile, profile) || profVer != _ownProfileVer;
+            var replayOnly = !needS1a && terrVer != _ownTerrainVer;
+
+            if (!needS1a && !replayOnly && _field != null)
             {
                 _vp = MakeParams();
-                return true;
+                return true;                                  // 无事发生（显示参数变化由 cfgChanged 负责）
             }
 
-            _ownVersion = ver;
-            _ownCtx = new PipelineContext(projectForStandalone);
+            if (needCtx) _ownCtx = new PipelineContext(proj);
             _ownRunner ??= new PipelineRunner();
-            _ownRunner.Unregister(StageId.S1a_TerrainBase);
-            _ownRunner.Unregister(StageId.S1b_Flatten);
-            _ownRunner.Register(new TerrainBaseStage(profile, projectForStandalone));
-            _ownRunner.Register(new FlattenSolveStage(profile, _terrain));
-            _ownRunner.MarkDirty(DirtyBits.All);
+
+            // 阶段对象只在 Profile/实例换了之后重注册并**长期复用**：FlattenSolveStage 的 scratch
+            // 是实例级缓冲（见上方拆分说明），每笔重建就是每笔几十 MB 的 LOH 分配。
+            if (needCtx || !ReferenceEquals(_ownProfile, profile) || !ReferenceEquals(_ownStageTerrain, _terrain))
+            {
+                _ownRunner.Unregister(StageId.S1a_TerrainBase);
+                _ownRunner.Unregister(StageId.S1b_Flatten);
+                _ownRunner.Register(new TerrainBaseStage(profile, proj));
+                _ownRunner.Register(new FlattenSolveStage(profile, _terrain));
+                _ownProfile = profile;
+                _ownStageTerrain = _terrain;
+            }
+
+            _ownRunner.MarkDirty(needCtx ? DirtyBits.All
+                                 : needS1a ? DirtyBits.Terrain
+                                           : DirtyBits.Flatten);
+            _ownRegion = null;
+            if (replayOnly && _terrain != null && _terrain.Ledger != null)
+            {
+                var b = _terrain.Ledger.BoundsOf(IntentKind.DeltaStroke);
+                if (b.size.x > 0f || b.size.z > 0f) _ownRegion = b;   // 只重建笔刷波及的 chunk
+            }
             _ownRunner.Tick(_ownCtx, RunMode.Commit);
+
+            _ownProjVer = projVer;
+            _ownProfileVer = profVer;
+            _ownTerrainVer = terrVer;
 
             _field = _ownCtx.GetSlot<TerrainField>(StageId.S1a_TerrainBase);
             if (_field == null)
@@ -319,6 +371,7 @@ namespace Collin.CityMap
             _grid = _ownCtx.Grid;
             _hasGrid = true;
             _vp = MakeParams();
+            _ownDataChanged = true;      // 数据算过就必须重建显示（cfgChanged 抓不到实例版本，见字段注释）
             return true;
         }
 

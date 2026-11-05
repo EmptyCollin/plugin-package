@@ -1,9 +1,36 @@
 # 交接单 — com.collin.citymap
 
-> 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-04（会话 `2026-11-04 m4-brush-rootcause`）
+> 覆写式，非追加日志（AGENTS §4）。最近更新：2026-11-05（会话 `2026-11-05 m4-j-perf`）
 > 代码阶段：本会话按 §3 原子取锁开工，按 §1.6 三项门禁交锁。**未 push。**
 
-## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a~h + M4-i 笔刷不可用四处断链修复）
+## 1. 已完成（M3 显示层 + M3-b 参数链路 + M4-a~h + M4-i 断链修复 + M4-j 性能与同步根因修复）
+- **M4-j（用户反馈「抬升后地表不同步」+「每笔非常卡、要读条」，2026-11-05，本包 **133/133**、校验器 `FAIL 0` 绿灯）**：
+  两现象**同源**——面板「未装配」使显示层**无声回落到自建慢路径**。探针逐句复刻调用组合实测
+  **5253 / 5234 / 5529 ms/笔**，耗时分解 `S1a=4860 / S0=114 / S1b≈0ms`；另每笔新分配
+  ctx 两张 400 万格数组（≈40MB）+ 重建阶段 scratch（≈50MB）⇒ 大对象堆 ⇒ 阻塞 GC = 读条。
+  登记 **D-36 / D-37**，四处修复：
+  ① **装配自愈**：`_needsFirstBind` + 更新循环"探测到实例才装配"（找不到下一帧再试）
+     + 每帧 `!ReferenceEquals(ActiveContext,_ctx)` 重接桥；
+  ② **自建路径按变化来源分层**（项目变→全量／仅 Profile 变→只 S1a／仅实例版本变→只重放 delta + S1b）
+     + ctx 与阶段对象长期复用 ⇒ 使 **D-31「雕刻不得脏 S1a」在两条路径同时成立**（旧版只在面板侧成立）；
+  ③ **「数据算过」独立成重建判据** `_ownDataChanged` + 按笔刷脏盒 `RebuildRegion`
+     （**刻意不把 `_terrain.ManualVersion` 补进 configKey**——补进去 ⇒ `cfgChanged=true` ⇒ 全量 289ms）；
+  ④ **脏区显式搬入上下文** `_ctx.AddDirtyBound(Tracker.LastDirtyBounds)`，须在 `ConsumeDirty()` **之后立刻取**
+     （该入口会把 `LastDirtyBounds` 复位成 default）。
+  **修后同口径实测**：重算 **5253ms → 4ms**、执行阶段 **3 → 1**、重建 `不重建／289ms → 增量 0~2ms`
+  （状态串 `增量重建 9/9 chunk（脏盒 202×202m，全图 3969）`）、mesh 顶点 y `[-7.6,5.3]` == 数据 `[-7.6,5.4]`
+  ⇒ **画面已同步**；空转一帧 0ms。新增 3 条回归用例（哨兵法判"噪声没重跑"，含防恒真对照组）。
+  - **两处自造当场纠正**：**H-58** 我第一版把装配写在 `OnEnable` 里 —— 此刻场景对象尚未进 `IntentRegistry`
+    ⇒ `SyncStages` 只注册得出 S0（实测 `runner 阶段数=1`、`ctx.HasSlot(S1a)=False`）而 `ActiveContext` 已非空
+    ⇒ 显示层放弃自建又拿不到场 ⇒ **画面全白，比修复前更糟**。纪律：**"修 A 引入 B"的验证要跑到"画面真有东西"**。
+    **H-62** 第一版用例误用粗粒度入口 `UndoHistoryTracker.MarkIntent()`（并对象**当前全部通道**，rig 建时
+    `SetProfile` 已 bump `TerrainModel`）断言"雕刻只脏 Flatten"→ 红；实为**测试口径错、实现无 bug**
+    （传播表 `DirtyOf(DeltaStroke)=Flatten,Building` 一直正确），改两轨断言。
+  - **技术路线已向用户交代**：自研高度场 + 程序化分块网格（非 Unity Terrain），三条硬约束 =
+    逻辑格与渲染档位分辨率解耦、delta 可重放（D-01-1）、平整是约束求解（Terrain 无该算子）。
+    **混合方案（Terrain 做手感）的成本实测没做成**：探针两度踩臆造 API（`Apply` 在 `Terrain` 不在
+    `TerrainData`；`TerrainData` 非 `ScriptableObject` 派生），我一度还在脚本里留了占位假调用
+    （H-47 同族，已停手删脚本）⇒ **混合方案目前只有定性评估，勿当成已量化**。
 - **M4-i（用户要求"先定根因再改"，2026-11-04，本包 130/130）**：反馈①「无光圈」与②「左键变框选」**同源于 H-50**，
   全部由反射探针实测取证（非推测），四项修复：
   - **H-50 门禁真源错位**：笔刷判据读 `CityWindow.CurrentMode`（`EditorWindow` **静态**字段，域重载归零且不被
@@ -145,40 +172,60 @@
 - **新增第二检/兜底逻辑时，先问"第一检已经覆盖的那部分，我会不会再做一遍"**：面板滑条走 `SetXxx()` 已 bump 版本，
   值指纹第二检若不加区分就**双重提交**（表现是"手感发黏"而非崩溃，难归因）。
   按 `ManualVersion` 分辨来源即可消除——与 H-30「记账粒度到可变面而非对象」同构。
+- **`script recompile` 期间 Pipeline 服务会短暂不可达**：`unity command ...` 报
+  `No Unity Editor instances found with reachable Pipeline servers` **不代表失败**（域重载断连）。
+  正解：轮询 `unity status` 直到出现 `ready`（同 PID 会回来），再读 `script recompile_status`；**不要重发 recompile**。
+- **Unity 6 Terrain API 两处实测坑**（混合方案取证时撞上，脚本已删、结论未取到）：
+  `TerrainData` **不是** `ScriptableObject` 派生 ⇒ `CreateInstance<TerrainData>()` 编译即错，须 `new TerrainData()`；
+  `Apply(...)` 在 **`Terrain`** 上、不在 `TerrainData` 上。
+- **`eval_file` 脚本禁止留"占位假调用"**：我曾写 `tr.ApplyEmbeddedTreePrefabsIfAny()` 当占位准备"下面再改真路径"，
+  这类写法若编译侥幸通过就是**运行时炸**、不通过就是**假象取证**（H-47 同族）。宁可整脚本删掉重写。
+- **探针取到"意外的 NULL/矛盾读数"时，先怀疑探针自身**：本轮 `field=NULL / chunks=0` 我一度判为"逻辑真断"，
+  实际是**跨探针取到的状态串属于上一帧**（`_status` 是残留字符串）+ `FindAnyObjectByType` 可能命中别的实例。
+  正解：把"所有同类实例 + 它们各自的字段"全列出来（本轮 `[z]` 探针一次列清 `CityTerrainView 实例数=1`），
+  不要拿单个实例的单次读数下结论。
+- **性能取证必须"逐句复刻调用组合"**：只测 `EnsureField`+S1a 得 8ms，与用户每笔实际执行的
+  `new PipelineContext + 重注册 3 段 + MarkDirty(All) + Tick` = 5253ms 差 600 倍 ⇒ **测函数不等于测路径**。
+- **本包测试解析口径**：`test run` 的 stdout 尾部还跟一列参数 ⇒ 必须 `json.JSONDecoder().raw_decode`；
+  且 `Summary` 与失败详情在**同一次返回**的 `Results` 数组里（`Status != "Passed"`），
+  **不必为取失败原因重跑一遍**（重跑一次要等全量执行，本轮白等了一轮）。
 
 ## 3. 未完成
 - **显示层只做地形 mesh**。道路条带 mesh、建筑 prefab 实例、SceneView overlay（城心圆环、约束带可视化、光标读数）未做（01 §3.3/§4.4）。
-- **雕刻笔刷链：断链已在 M4-i 修复（门禁真源 + 雕刻层就位 + 光圈取数），但"实机手感"仍待用户验证**
-  （这是当前最大的未闭环项，数据侧与端到端探针已断言 ≠ 手感成立）：
-  ①进入 ② 雕山水后**贴地预览环是否真的看得见**（SceneView 渲染 EditMode 无从断言）
-  ②拖笔是否即时起山、左键是否**不再变框选**、Ctrl+Z 是否整笔回退、delta 是否跨域重载留存
-  ③面板是否还长出 `TerrainProfile 1/2/3` 副本（H-52 修法已生效于探针，需用户操作复核）。
-  验证路径：面板点 **② 雕山水**（自动关闸门 + 写接管权 + 建绑雕刻层）→ 直接拖笔 → 完事点 **③ 平整出地表**。
-- **校验器已转 `FAIL 0` 绿灯**。原先唯一剩项 `assets-layout: Assets/Scenes/TerrainTest.unity`（非本会话产物，
-  场景 mtime `22:12:16` 早于本会话首个动作 22:25）**经用户裁定移进包内**：
-  `Packages/com.collin.citymap/Sample/Scenes/TerrainTest.unity`，`MoveAsset` 返回空串、**GUID 不变**
-  （`d159991b…`）、零外部引用、`OpenScene` 复验可正常打开。根目录 5 个上一会话残留 `.tmp-*.json` 亦经裁定删除。
-- **⚠️ 实机验证的前置条件（务必先告知用户）**：该场景现在**只剩 Main Camera + Directional Light**
-  ——`CityTerrain` 实例已被用户删除（探针实测 `内存 CityTerrain 数 = 0`）。
-  直接点「② 雕山水」会因找不到实例而不写接管权（面板此时不强弹模式，见 SyncStepFromState 的例外分支），
-  **必须先点「创建地形实例（含显示层）」**，再点 ②。本轮修复已让该按钮自动建并绑雕刻层（H-51）。
+- **「地表不同步 + 每笔读条」两个性能/同步问题已在 M4-j 修复并实测**（5253ms→4ms、增量重建生效、画面与数据吻合）。
+  仍待用户实机复核的是**手感类**判据（EditMode 无从断言）：
+  ①进入 ② 雕山水后**贴地预览环是否真的看得见**；②拖笔是否即时起山、左键是否**不再变框选**、
+  **编辑是否还卡**（M4-j 的主验证点）；③Ctrl+Z 是否整笔回退、delta 是否跨域重载留存；
+  ④面板是否还长出 `TerrainProfile 1/2/3` 副本。
+  验证路径：面板点 **② 雕山水** → 直接拖笔 → 完事点 **③ 平整出地表**。
+- **⚠️ 实机验证前置条件**：`CityTerrain` 实例此前被用户删过（探针实测 `内存 CityTerrain 数 = 0`）⇒
+  **必须先点「创建地形实例（含显示层）」**（该按钮已自动建并绑雕刻层，H-51），再点 ②。
+  找不到实例时面板不强弹模式（`SyncStepFromState` 的例外分支），否则会连"缺实例"提示都看不到。
+- **校验器已转 `FAIL 0` 绿灯**（剩 2 项 WARN：本会话自持锁 `lock-active`；他包 `com.collin.stealthplanner`
+  无 `Sample/`，非本会话产物）。演示场景经用户裁定已从 `Assets/Scenes/` 移入
+  `Packages/com.collin.citymap/Sample/Scenes/TerrainTest.unity`（GUID 不变、零引用、复验可打开）。
 - **河流下切层（S2/carve，01 §3.2 第 2 层）完全未做**：delta 与平整已接，河道 carve 还没有。
 - **D-32 坡度三级退让只登记、未实现**：`hardRetreatSlope=18°` 与"早判 steepMask 置 NoBuild"写进 DESIGN D-32/12 文档，
   但 `TerrainProfile` 还没有该参数、代码里没有 `steepMask` 计算。
   **阻塞点如实说明**：S3/S4 至今**只有枚举、无实现体**，"让路网绕行"无处可接；等 S3 落地时一并做掩码写入，
   不空转新建未选的阶段。（我曾误把该任务标 completed，已回退 pending——状态也算证据。）
+- **混合方案（Unity Terrain 做手感、自研场做生成后端）的成本未实测**：已给用户定性对比表，
+  但 Terrain 侧写高度图/烘焙/反查的真实耗时**没测成**（探针两度踩臆造 API 后我主动停手，见 §4）。
+  ⇒ 若用户要继续评估该方案，第一步是**先 grep 出 Unity 6 Terrain 的可用 API**再测，不要复用我这轮的失败脚本。
 - 无 PlayMode 测试；真实 `Ctrl+Z` 端到端链路（A-17 完整形态）待接。
 - `Sample` 小城与演示视频：M10。
 
-## 4. 下一步（笔刷与平整闸门已交付，先让用户实机验手感，再按 12 §4 顺序推进）
-1. **让用户实机验 M4-g**：关平整→雕山水→开平整 这条三段流程是否跟手、贴地环是否可见。
-   现象反馈回来我再按实机归因登记缺陷（本轮已证：只有真跑才暴露 H-38~H-49）。
+## 4. 下一步（M4-j 已解卡顿与同步，先让用户实机复核手感与编辑流畅度）
+1. **让用户实机验 M4-j**：重点问三件事——编辑还卡不卡（修复主目标）、抬升是否即时起山、贴地环是否可见。
+   反馈回来按实机现象归因登记缺陷（连续三轮已证明：只有真跑才暴露 H-38~H-62）。
 2. **S2 河流下切**（Modules/02）：接 01 §3.2 第 2 层（在 delta 之前），与山水笔刷同为"创作自然地表"环节。
-3. **D-32 的 `steepMask` 早判**：待 S3 路网落地才有消费者；先加 `hardRetreatSlope` 参数 + 逐格坡度 + 面板"因坡放弃 N 格"，
-   不空转做路网重排。
-4. ACCEPTANCE 续接编号 **67+**（M4-g 已用到 66）；代码/文档注释继续引用编号（`// 09 H-49`、`// DESIGN D-33`）。
-5. **写代码前先 grep 核实引用**（H-47/H-48 两次教训：臆造 API、写下不存在的 `ManualLocked` 豁免机制）。
-   文档里凡"由 X 机制保证"必须能在代码 grep 到 X 的检查点，grep 不到就是虚构。
+   接好后自建/面板两条路径都要按 D-36 的分层判据复检一次（carve 变更该重跑什么，别又写成 `MarkDirty(All)`）。
+3. **D-32 的 `steepMask` 早判**：待 S3 路网落地才有消费者；先加 `hardRetreatSlope` 参数 + 逐格坡度 + 面板"因坡放弃 N 格"。
+4. ACCEPTANCE 续接编号 **80+**（M4-j 已用到 79）；代码/文档注释继续引用编号（`// 09 H-62`、`// DESIGN D-37`）。
+5. **探针必须复刻"用户实际执行的调用组合"，不能只测单个函数**（H-57 教训：只测 `EnsureField`+S1a 得 8ms，
+   差点反向得出"卡顿与噪声无关"；逐句复刻 `new ctx + 重注册 + MarkDirty(All) + Tick` 才量到 5253ms）。
+6. **写代码前先 grep 核实引用**（H-47/H-58/H-62 三次教训：臆造 API、`OnEnable` 里假设注册表已就绪、
+   误用粗粒度入口做精确断言）。文档里凡"由 X 机制保证"必须能在代码 grep 到 X 的检查点。
 
 ## 5. 勿碰项
 - 不改 AGENTS.md / §8 钉死版本 / `Packages/manifest.json` / `ProjectSettings/**`。
