@@ -370,6 +370,25 @@ namespace Collin.CityMap.Tests
         }
 
         // ───────────────── S1b 求解（01 §3.4） ─────────────────
+        //
+        // **M4-o（D-41）语义迁移**：求解不再挂在管线上，只由「烘焙」触发。
+        //   `Run`  = 重放叠加（复位 → 叠手绘 delta → 叠已烘焙滤镜），管线自动跟随走这条，永不求解；
+        //   `Bake` = 真求解（收集约束 → 拟合 → 融合），产物写进<b>独立滤镜资产</b>，绝不回写手绘 delta。
+        // ⇒ 凡"断言求解结果"的用例必须走 <see cref="BakeS1b"/>；继续用 `Run` 会让断言变成
+        //   <b>恒真的空测试</b>（Run 不求解 ⇒ 跑两次当然一样，幂等就没在被验证）。
+        //   这是本轮改测试的唯一理由，不是写法偏好。
+
+        /// <summary>测试侧烘焙入口：新建滤镜 → Bake → 绑到实例。附带三条前提断言（防"前提没立住"的假绿）。</summary>
+        SculptFilterAsset BakeS1b(Handle h, Setup p)
+        {
+            var f = Track(ScriptableObject.CreateInstance<SculptFilterAsset>());
+            var res = new FlattenSolveStage(p.Profile, p.Terrain).Bake(h.Ctx, f);
+            Assert.IsTrue(res.Success, "烘焙必须成功：" + (res.Message ?? "(无原因)"));
+            Assert.Greater(p.Terrain.LastConstraints, 0, "烘焙必须真的生成约束（0 条=用例前提没立住，后面断言全是空过）");
+            Assert.Greater(f.CountFilledCells(), 0, "烘焙必须产出非空滤镜层");
+            p.Terrain.SetFlattenFilter(f);
+            return f;
+        }
 
         [Test]
         public void A1_3_Constrained_Parcel_Becomes_Within_Slope_Limit()
@@ -379,15 +398,13 @@ namespace Collin.CityMap.Tests
             RunS1a(h, p);
             var before = MaxSlopeInParcelCores(p, h.Field);
 
-            var s1b = new FlattenSolveStage(p.Profile, p.Terrain);
-            var res = s1b.Run(h.Ctx, RunMode.Commit);
-            Assert.IsTrue(res.Success);
-            Assert.Greater(res.Outputs, 0, "必须真的生成了约束");
+            BakeS1b(h, p);
 
             var after = MaxSlopeInParcelCores(p, h.Field);
             // 打点是为了给 ACCEPTANCE 留下可核对的实测数值：H-34/H-35 的修复效果只能靠数字证明。
             Debug.Log($"[M2] A1_3 地块核心最大坡度 {before:0.##}° → {after:0.##}°" +
-                      $"（红线 {p.Profile.MaxParcelSlope:0.#}°，约束 {res.Outputs} 条，改动 {res.CellsTouched} 格）");
+                      $"（红线 {p.Profile.MaxParcelSlope:0.#}°，约束 {p.Terrain.LastConstraints} 条，" +
+                      $"改动 {p.Terrain.LastCells} 格）");
             Assert.Less(after, before, $"约束后地块内最大坡度必须下降（{before:0.##}° → {after:0.##}°）");
             Assert.LessOrEqual(after, p.Profile.MaxParcelSlope + 1.5f,
                 $"A-1-3：地块内坡度 ≤ maxParcelSlope + 容差（实得 {after:0.##}°，上限 {p.Profile.MaxParcelSlope}°）");
@@ -398,22 +415,31 @@ namespace Collin.CityMap.Tests
         public void A1_2_S1b_Is_Idempotent_No_Drift_On_Rerun()
         {
             // 我自己在代码注释里点出的正反馈风险：就地叠加会逐轮漂移。这条断言把它钉死。
+            // M4-o 起要同时钉两件事：①**重放**幂等（Run 反复跑不得把滤镜叠第二遍）；
+            // ②**烘焙**幂等（再点一次按钮不得让地形又悄悄变一次 —— 用户会反复按）。
             var h = Harness(777, out var p, worldSize: 1200f, flatness: 1f);
             p.Terrain.SetAutoFlatten(true, 3);
             RunS1a(h, p);
-            var s1b = new FlattenSolveStage(p.Profile, p.Terrain);
 
-            s1b.Run(h.Ctx, RunMode.Commit);
+            BakeS1b(h, p);
             var first = (float[])h.Field.Heights.Clone();
-            s1b.Run(h.Ctx, RunMode.Commit);
-            var second = h.Field.Heights;
 
-            var worst = 0f;
-            for (var i = 0; i < first.Length; i++)
-                worst = Mathf.Max(worst, Mathf.Abs(first[i] - second[i]));
-            Assert.AreEqual(0f, worst, 1e-5f,
-                "S1b 跑两次结果必须完全相同（不幂等 = 每次保存场景地形都在悄悄变化）");
+            var s1b = new FlattenSolveStage(p.Profile, p.Terrain);
+            s1b.Run(h.Ctx, RunMode.Commit);
+            s1b.Run(h.Ctx, RunMode.Commit);
+            AssertSame(first, h.Field.Heights, "重放（Run）两次结果必须完全相同（漏了复位就会把滤镜叠第二遍）");
+
+            BakeS1b(h, p);                       // 重新烘焙一次（换一个新滤镜资产）
+            AssertSame(first, h.Field.Heights, "重新烘焙结果必须不变（烘焙不幂等=每次点按钮地形都在悄悄变）");
             h.Dispose();
+        }
+
+        static void AssertSame(float[] a, float[] b, string why)
+        {
+            var worst = 0f;
+            for (var i = 0; i < a.Length; i++)
+                worst = Mathf.Max(worst, Mathf.Abs(a[i] - b[i]));
+            Assert.AreEqual(0f, worst, 1e-5f, why + $"（最大偏差 {worst:0.#####}）");
         }
 
         [Test]
@@ -426,7 +452,7 @@ namespace Collin.CityMap.Tests
             // 在城心附近加一个人工平整区
             var c = new Vector2(p.Grid.WorldSize * 0.5f, p.Grid.WorldSize * 0.5f);
             p.Terrain.AddZone(c, new Vector2(120f, 120f));
-            new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit);
+            var filter = BakeS1b(h, p);
 
             var far = FarthestCellIndex(p.Grid, c);
             Assert.AreEqual(baseline[far], h.Field.Heights[far], 0f,
@@ -436,6 +462,11 @@ namespace Collin.CityMap.Tests
             Assert.Greater(near, 0);
             Assert.Less(near, baseline.Length / 2,
                 "被改格数必须远小于全图，否则'只遍历外接盒'没生效");
+
+            // 滤镜层本身也必须是局部的：它是唯一会被叠加进画面的东西，
+            // 若它把远端也写了值，A-2 的局部性就在"烘焙产物"这一层被破坏（画面会整体微动）。
+            Assert.Less(filter.CountFilledCells(), baseline.Length / 2,
+                "滤镜层落格数必须远小于全图（烘焙产物也得守局部性）");
             h.Dispose();
         }
 
@@ -450,17 +481,18 @@ namespace Collin.CityMap.Tests
 
             var sA = new FlattenSolveStage(pA.Profile, pA.Terrain);
             var sB = new FlattenSolveStage(pB.Profile, pB.Terrain);
-            sA.Run(hA.Ctx, RunMode.Commit);
-            sB.Run(hB.Ctx, RunMode.Commit);
+            // scratch 缓冲只在<b>求解</b>期被使用 ⇒ 必须走 Bake（M4-o 后 Run 不再求解，
+            // 用 Run 验证串扰就是验证一件不再发生的事 —— 恒真的空测试）。
+            var fA = Track(ScriptableObject.CreateInstance<SculptFilterAsset>());
+            var fB = Track(ScriptableObject.CreateInstance<SculptFilterAsset>());
+            Assert.IsTrue(sA.Bake(hA.Ctx, fA).Success);
+            Assert.IsTrue(sB.Bake(hB.Ctx, fB).Success);
             var bAlone = (float[])hA.Field.Heights.Clone();
 
-            // 交错执行后再跑 A，结果必须与单独跑一致（缓冲未污染）
-            sB.Run(hB.Ctx, RunMode.Commit);
-            sA.Run(hA.Ctx, RunMode.Commit);
-            var worst = 0f;
-            for (var i = 0; i < bAlone.Length; i++)
-                worst = Mathf.Max(worst, Mathf.Abs(bAlone[i] - hA.Field.Heights[i]));
-            Assert.AreEqual(0f, worst, 1e-5f, "两个上下文不得串用 scratch 缓冲");
+            // 交错执行后再烘焙 A，结果必须与单独烘焙一致（缓冲未污染）
+            Assert.IsTrue(sB.Bake(hB.Ctx, fB).Success);
+            Assert.IsTrue(sA.Bake(hA.Ctx, fA).Success);
+            AssertSame(bAlone, hA.Field.Heights, "两个上下文不得串用 scratch 缓冲");
 
             hA.Dispose(); hB.Dispose();
         }
@@ -474,7 +506,7 @@ namespace Collin.CityMap.Tests
             const float target = 7.5f;
             p.Terrain.AddZone(c, new Vector2(80f, 80f), target);
 
-            new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit);
+            BakeS1b(h, p);
             Assert.AreEqual(target, h.Field.GetHeight(c.x, c.y), 0.25f,
                 "绝对高程模式必须真的落到指定值（±半格容差）");
             Assert.Greater(p.Terrain.LastConstraints, 0);
@@ -489,7 +521,7 @@ namespace Collin.CityMap.Tests
             var id = p.Terrain.AddZone(new Vector2(400f, 400f), new Vector2(60f, 60f));
             Assert.IsTrue(p.Terrain.UpdateZone(id, new Vector2(400f, 400f), new Vector2(60f, 60f),
                                               12f, 0.05f, 0f, true), "改权重必须视为变化");
-            new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit);
+            BakeS1b(h, p);
             Assert.Greater(p.Terrain.LastConstraints, 0, "极小权重仍应参与（不是被丢弃）");
             Assert.IsTrue(p.Terrain.UpdateZone(id, new Vector2(400f, 400f), new Vector2(60f, 60f),
                                               12f, 0.05f, 0f, false), "禁用是变化");
@@ -649,52 +681,114 @@ namespace Collin.CityMap.Tests
         }
 
         /// <summary>
-        /// 用户 2026-11-04 裁定的<b>时序隔离</b>（明确否决"逐格退让"方案）：
-        ///   关＝S1b <b>整段不参与</b>（零约束、零改动），雕刻期内自动平整绝不介入；
-        ///   开＝在"基底+雕刻"的意图地表<b>之上</b>照常整理——这才是平整该发挥作用的时机。
-        /// <para>它同时是用户反馈②「笔刷抬了没反应」的结构性判据：城内 8× 强约束若在雕刻期
-        /// 照常跑，会把刚抬的山当场拟合压回平面，视觉上等于没抬。</para>
+        /// 平整滤镜的完整语义链（M4-o 重写，D-41）。时序隔离（用户否决"逐格退让"）不变，
+        /// 但实现从"Run 内短路求解"改成"Run 只重放、Bake 才求解"，故判据也升级为四条：
+        /// ① 关＝意图地表原样（25m 抬升逐位保留）；
+        /// ② <b>开但从未烘焙＝画面仍等于意图地表</b>，并给可读原因
+        ///    ——这正是用户反馈「开自动平整好像没什么变化」的机制判据；
+        /// ③ 烘焙才生成约束、产物写进<b>独立滤镜层</b>；
+        /// ④ 开/关的差异<b>只来自滤镜</b>，且关掉后必须逐位回到 ① 的意图地表
+        ///    （＝用户要的"一层滤镜、不污染手绘意图层"）。
+        /// 并钉住防污染硬条件：烘焙后手绘 delta 与 BaseHeights 必须<b>逐位不变</b>。
         /// </summary>
         [Test]
-        public void Flatten_Off_Is_Phase_Gate_Not_Per_Cell_Waiver()
+        public void Flatten_Filter_Bakes_Independently_And_Never_Touches_Intent_Layer()
         {
             var h = Harness(2401, out var p, worldSize: 600f, flatness: 0f);
             var g = p.Grid;
             p.Terrain.SetAutoFlatten(true, 3);        // 制造"平整本来会介入"的前提
             var d = Track(ScriptableObject.CreateInstance<SculptDeltaAsset>());
             p.Terrain.SetDelta(d);
-            p.Terrain.SetFlattenEnabled(false);       // 雕刻期：平整关
             RunS1a(h, p);
 
             var cx = g.Columns / 2; var cz = g.Rows / 2;
             for (var z = cz - 8; z <= cz + 8; z++)
             for (var x = cx - 8; x <= cx + 8; x++)
                 d.AddDelta(g, x, z, 25f);
-
-            var res = new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit);
-            Assert.IsTrue(res.Success);
-            Assert.AreEqual(0, res.Outputs,
-                "关平整时必须零约束——是阶段闸门，不是逐格跳过（逐格方案已被用户否决）");
-
             var idx = cz * g.Columns + cx;
-            var carved = h.Field.BaseHeights[idx] + 25f;
-            Assert.AreEqual(carved, h.Field.Heights[idx], 1e-4f,
-                "关平整时抬升的 25m 必须原样保留，不被强约束压回（反馈②的判据）");
+            var intentAt = h.Field.BaseHeights[idx] + 25f;
+            var baseSnapshot = (float[])h.Field.BaseHeights.Clone();
+            var deltaSnapshot = d.ChunkCount;
 
-            // 关平整同样必须幂等：复位后重放，不得把雕刻叠第二遍
-            Assert.IsTrue(new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit).Success);
-            Assert.AreEqual(carved, h.Field.Heights[idx], 1e-4f,
-                "关平整重跑仍只叠一次（短路前已完成复位+重放，幂等不因开关而破）");
+            var s1b = new FlattenSolveStage(p.Profile, p.Terrain);
 
-            // 打开后平整才在雕好的地形上发挥作用：必须真的生成约束并整理
+            // ── ① 关：只重放到意图地表 ──
+            p.Terrain.SetFlattenEnabled(false);
+            var off = s1b.Run(h.Ctx, RunMode.Commit);
+            Assert.IsTrue(off.Success);
+            Assert.AreEqual(0, off.Outputs, "关滤镜时必须零求解（一格未改）");
+            Assert.AreEqual(intentAt, h.Field.Heights[idx], 1e-4f,
+                $"关状态必须是意图地表（{intentAt:0.###}），实得 {h.Field.Heights[idx]:0.###}");
+
+            // ── ② 开但从未烘焙：画面仍=意图地表，且必须给可读原因 ──
             p.Terrain.SetFlattenEnabled(true);
-            var on = new FlattenSolveStage(p.Profile, p.Terrain).Run(h.Ctx, RunMode.Commit);
-            Assert.IsTrue(on.Success);
-            Assert.Greater(on.Outputs, 0,
-                "打开平整后须在意图地表之上生成约束（这才是它发挥作用的实机）");
+            var unbaked = s1b.Run(h.Ctx, RunMode.Commit);
+            Assert.IsTrue(unbaked.Success);
+            Assert.AreEqual(0, unbaked.Outputs,
+                "没有已烘焙内容时开开关不得凭空改动画面（这就是用户看到『没变化』的正解）");
+            Assert.AreEqual(intentAt, h.Field.Heights[idx], 1e-4f, "未烘焙时开开关画面必须不变");
+            Assert.IsNotNull(p.Terrain.FlattenHint, "必须给面板可读原因（不得静默让人以为开关坏了）");
+            Assert.AreEqual(CityTerrain.BakeState.Never, p.Terrain.FilterState);
 
-            Debug.Log($"[M4g] 关平整：雕刻后 {carved:0.###}m 原样保留、约束 0 条；" +
-                      $"开平整：约束 {on.Outputs} 条、改动 {on.CellsTouched} 格");
+            // ── ③ 烘焙：才生成约束，产物进独立滤镜层 ──
+            var filter = Track(ScriptableObject.CreateInstance<SculptFilterAsset>());
+            var bake = s1b.Bake(h.Ctx, filter);
+            Assert.IsTrue(bake.Success);
+            Assert.Greater(bake.Outputs, 0, "烘焙必须在意图地表之上生成约束（D-33 语义未变，只是时机变）");
+            Assert.Greater(filter.CountFilledCells(), 0, "烘焙必须产出非空滤镜层");
+            p.Terrain.SetFlattenFilter(filter);
+            p.Terrain.RecordBake(p.Project);
+
+            // ★ 防污染硬判据：求解器产物绝不允许进手绘意图层或基底
+            Assert.AreEqual(deltaSnapshot, d.ChunkCount, "烘焙不得往手绘 delta 写任何内容（污染设计意图）");
+            for (var i = 0; i < baseSnapshot.Length; i++)
+                Assert.AreEqual(baseSnapshot[i], h.Field.BaseHeights[i], 0f,
+                    $"第 {i} 格基底被烘焙污染（01 §2.4 正反馈漂移根因）");
+
+            // ── ④ 开/关差异只来自滤镜；关掉逐位回到意图地表 ──
+            p.Terrain.SetFlattenEnabled(true);
+            s1b.Run(h.Ctx, RunMode.Commit);
+            var shownOn = (float[])h.Field.Heights.Clone();
+            p.Terrain.SetFlattenEnabled(false);
+            s1b.Run(h.Ctx, RunMode.Commit);
+            var shownOff = (float[])h.Field.Heights.Clone();
+
+            // ★ 真正的不变量：<b>开/关差异必须逐格恰好等于滤镜落位</b>
+            //（"差异数小于半图"是错的口径 —— 该设置下 3×3 试设地块本就合法覆盖图幅 85%，
+            //  局部性由 A1_7 在"单个 zone"场景钉；这里要钉的是更强的一条：<b>画面的差异全部且仅仅
+            //  来自这一层滤镜</b> —— 有任何一格差在滤镜外 ⇒ 说明烘焙偷偷改了别处；
+            //  有任何一格滤镜有值而画面不差 ⇒ 说明叠加链路漏了它，用户会看到"烘焙了但没反应"）
+            var diff = 0;
+            var diffNotFromFilter = 0;
+            var filterNotShown = 0;
+            for (var i = 0; i < shownOn.Length; i++)
+            {
+                var changed = shownOn[i] != shownOff[i];
+                if (changed) diff++;
+                var inFilter = filter.TryGetDelta(p.Grid, i % g.Columns, i / g.Columns, out var fv);
+                if (changed && !inFilter) diffNotFromFilter++;
+                // 滤镜有值但画面没差：只允许浮点相消（值恰为 0 的高度才可能），逐格算一下确认
+                if (inFilter && !changed && Mathf.Abs(shownOff[i] + fv - shownOn[i]) > 1e-4f) filterNotShown++;
+            }
+            Assert.Greater(diff, 0, "开/关必须有可见差异（否则用户那条反馈就复现了）");
+            Assert.AreEqual(0, diffNotFromFilter,
+                $"{diffNotFromFilter} 格画面变了却在滤镜里没有记录 ⇒ 烘焙偷偷改了滤镜之外的内容（不可叠加、不可撤销）");
+            Assert.AreEqual(0, filterNotShown,
+                $"{filterNotShown} 格滤镜有值却没叠进画面 ⇒ 叠加链路漏格（用户会看到「烘焙了但没反应」）");
+
+            // 关态必须逐位回到"未叠滤镜"的意图地表：用一条独立重放核验（不依赖上面的数组自比）
+            Assert.AreEqual(intentAt, h.Field.Heights[idx], 1e-4f,
+                "关掉滤镜后手绘的 25m 必须原样回来（可撤销性：开关来回拨无损设计）");
+
+            // ── ⑤ 改手绘后滤镜必须被判定过期（否则画面挂着旧修正却毫无提示）──
+            Assert.AreEqual(CityTerrain.BakeState.Fresh, p.Terrain.FilterState, "刚烘焙完应判新鲜");
+            d.AddDelta(g, cx + 20, cz, 5f);
+            p.Terrain.MarkDeltaChanged(g.CellCenterWorld(cx + 20, cz), 20f);
+            Assert.AreEqual(CityTerrain.BakeState.Stale, p.Terrain.FilterState,
+                "手绘变过就必须判过期（只比 Profile 版本会漏这一类，而它最常见）");
+
+            Debug.Log($"[M4o] 未烘焙开=0 约束；烘焙生成 {bake.Outputs} 条约束 / 滤镜 {filter.CountFilledCells()} 格；" +
+                      $"开关差异 {diff} 格；关态回到意图地表 {intentAt:0.##}m；手绘变更后可过期=Stale");
             h.Dispose();
         }
 

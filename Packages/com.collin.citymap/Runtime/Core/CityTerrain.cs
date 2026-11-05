@@ -33,9 +33,25 @@ namespace Collin.CityMap
         [Tooltip("SculptDeltaAsset：笔刷增量与绝对压平目标；null = 无人工改动")]
         [SerializeField] SculptDeltaAsset delta;
 
+        /// <summary>
+        /// 平整滤镜层（M4-o，D-41）：<b>烘焙产物</b>，与 <see cref="delta"/> 物理分开存放。
+        /// <para>存在理由（用户裁定的三条都靠这个分离成立）：
+        /// ①「不能污染手绘的意图层数据」——滤镜与手绘若同存一个资产，"自动覆盖人工"就没有结构屏障，
+        /// 一旦写错就永久毁掉用户设计且不可撤销（D-01-1 防的是同一类事故）；
+        /// ②「不实时算」——本层只在按「烘焙平整」时被重写，平时 S1b 只做叠加；
+        /// ③「开=加一层滤镜」——开关只在"叠 / 不叠"之间二选一。</para>
+        /// </summary>
+        [Tooltip("平整烘焙产物（自然化 + 地块/道路约束的合计修正）。与手绘 delta 分离，绝不被自动写入。")]
+        [SerializeField] SculptFilterAsset flattenFilter;
+
+        /// <summary>烘焙快照：三方版本 + 手绘通道序列（新鲜度判据，见 <see cref="FilterState"/>）。</summary>
+        [SerializeField] long bakeProfileVersion, bakeProjectVersion, bakeDeltaSeq;
+        /// <summary>显式作废位：改了「可平整对象」时由写入口置位，烘焙完成时清零。</summary>
+        [SerializeField] bool bakeStale;
+
         [Header("阶段开关：自动平整（12 §2 三步工作流）")]
-        [Tooltip("关＝停在「噪声+雕刻」的意图地表，平整不参与（边雕边看、不被抹平）；"
-                 + "开＝在已定稿的意图地表之上跑自动平整整理。雕刻期建议关。")]
+        [Tooltip("关＝只看「噪声基底 + 手绘雕刻」的原始意图地表；开＝在其上叠加已烘焙的平整滤镜层。\n"
+                 + "本开关只做叠加/不叠加，不触发任何求解（求解＝点「烘焙平整」）。")]
         [SerializeField] bool flattenEnabled = true;
 
         /// <summary>
@@ -60,8 +76,13 @@ namespace Collin.CityMap
         /// 把场景标脏 ⇒ 用户什么都没改却要保存场景。呈现用，重启后归零无影响）。</summary>
         int lastConstraints, lastCells, lastRejectedConstraints;
 
+        /// <summary>平整相关的<b>呈现用</b>提示（同上不序列化）：为空 = 无需提示。</summary>
+        string flattenHint;
+
         public TerrainProfile Profile => profile;
         public SculptDeltaAsset Delta => delta;
+        /// <summary>已烘焙的平整滤镜层（null = 从未烘焙）。</summary>
+        public SculptFilterAsset FlattenFilter => flattenFilter;
         public bool AutoFlattenAtCenter => autoFlattenAtCenter;
         public bool FlattenEnabled => flattenEnabled;
         /// <summary>山水笔刷是否接管场景视图鼠标（H-50 真源，见字段注释）。纯工具态：改它不 bump 任何意图通道。</summary>
@@ -74,6 +95,97 @@ namespace Collin.CityMap
         public int LastConstraints => lastConstraints;
         public int LastCells => lastCells;
         public int LastRejectedConstraints => lastRejectedConstraints;
+        public string FlattenHint => flattenHint;
+        public long BakeProfileVersion => bakeProfileVersion;
+        public long BakeProjectVersion => bakeProjectVersion;
+
+        /// <summary>
+        /// 滤镜新鲜度。判据＝<b>「烘焙时那份意图地表还在不在」</b>，不能用实例总版本号。
+        /// <para>我第一版用 <c>ManualVersion</c>（所有通道的累计），被自己的用例抓出真 bug：
+        /// <c>SetFlattenEnabled</c> 也 bump 总版本 ⇒ "烘焙完 → 拨一下开关 → 面板立刻提示已过期"，
+        /// 自己把自己的成果判脏，用户会以为烘焙白做。开关是"叠/不叠"，不是"意图变了"。</para>
+        /// <para>拆成两条正交判据：
+        /// ① <b>连续量</b>：手绘通道序列（<c>DeltaStroke</c>，只有落笔才动）+ Profile 版本（噪声/求解参数）
+        ///    + 项目版本（世界尺寸、城心锚点）——三者都是"内容通道"，开关与换滤镜都碰不到；
+        /// ② <b>显式作废位</b> <see cref="InvalidateBake"/>：改「可平整对象」（人工平整区 / 试设地块）时
+        ///    由写入口点名置位。这类改动与开关共用 <c>ParcelModel</c> 通道，靠嗅探必然误报，
+        ///    所以必须显式声明 —— 宁可不自动，也不误报"已过期"。</para>
+        /// <para>序列号都是 <c>[SerializeField]</c>，Ctrl+Z 回滚会连它一起还原 ⇒ 判据自洽，
+        /// 无需每帧遍历百万格（面板每帧都要读这个属性）。</para>
+        /// </summary>
+        public BakeState FilterState
+        {
+            get
+            {
+                if (flattenFilter == null || flattenFilter.IsEmpty) return BakeState.Never;
+                if (bakeStale) return BakeState.Stale;
+                if (profile != null && profile.ManualVersion != bakeProfileVersion) return BakeState.Stale;
+                if (_bakeProjectProbe != null && _bakeProjectProbe.ManualVersion != bakeProjectVersion)
+                    return BakeState.Stale;
+                if (DeltaSequence != bakeDeltaSeq) return BakeState.Stale;
+                return BakeState.Fresh;
+            }
+        }
+
+        /// <summary>手绘（落笔）通道的序列号 —— 内容变化的唯一连续判据。</summary>
+        long DeltaSequence => ledger != null ? ledger.SequenceOf(IntentKind.DeltaStroke) : 0L;
+
+        /// <summary>烘焙判据需要项目版本，但实例不持有项目引用（项目由面板/上下文供给）。</summary>
+        [System.NonSerialized] CityProject _bakeProjectProbe;
+
+        /// <summary>面板在读取新鲜度前把项目交给实例做版本探针（无副作用，不进序列化）。</summary>
+        public void SetBakeProjectProbe(CityProject p) => _bakeProjectProbe = p;
+
+        /// <summary>滤镜新鲜度三态。</summary>
+        public enum BakeState { Never, Fresh, Stale }
+
+        /// <summary>
+        /// 改「可平整对象」时由写入口点名调用：把已烘焙滤镜标为过期。
+        /// 不复用通道嗅探的理由见 <see cref="FilterState"/>。
+        /// </summary>
+        public void InvalidateBake() => bakeStale = true;
+
+        /// <summary>烘焙完成后记录快照：三方版本 + 手绘通道序列，并清发作废位。</summary>
+        public void RecordBake(CityProject project)
+        {
+            bakeProfileVersion = profile != null ? profile.ManualVersion : 0L;
+            bakeProjectVersion = project != null ? project.ManualVersion : 0L;
+            bakeDeltaSeq = DeltaSequence;
+            bakeStale = false;
+            _bakeProjectProbe = project;
+        }
+
+        /// <summary>由 S1b 回填的呈现值（不参与判定，重启即清）。</summary>
+        public void ReportFlattenHint(string hint) => flattenHint = hint;
+
+        /// <summary>
+        /// 烘焙完成后由面板调用：bump 一次让画面重放新滤镜（求解已在 Bake 里做完，这里只是叠加刷新）。
+        /// </summary>
+        public void MarkFilterBaked() => Bump(IntentKind.ParcelModel);
+
+        /// <summary>
+        /// 换滤镜资产。走 <see cref="IntentKind.ParcelModel"/> 通道：换层必须触发一次 S1b <b>重放</b>
+        /// 才能立刻看到画面 —— 是"叠加重放"不是"重新求解"。<b>不影响新鲜度</b>（不碰作废位与快照）。
+        /// </summary>
+        public void SetFlattenFilter(SculptFilterAsset f)
+        {
+            if (ReferenceEquals(f, flattenFilter)) return;
+            flattenFilter = f;
+            Bump(IntentKind.ParcelModel);
+        }
+
+        /// <summary>
+        /// 自动平整开关（12 §2 三步工作流）。M4-o 起语义＝<b>叠加 / 不叠加已烘焙滤镜</b>的二选一。
+        /// <para>仍走 ParcelModel 通道：不 bump 的话"从关到开"画面不会重放叠加，看着就像开关失效
+        ///（正是上一轮用户反馈「开平整没变化」的机制之一）。<b>它不得让滤镜判过期</b>——
+        /// 新鲜度不看总版本号，见 <see cref="FilterState"/>。</para>
+        /// </summary>
+        public void SetFlattenEnabled(bool on)
+        {
+            if (on == flattenEnabled) return;
+            flattenEnabled = on;
+            Bump(IntentKind.ParcelModel);
+        }
 
         public void SetProfile(TerrainProfile p)
         {
@@ -85,23 +197,21 @@ namespace Collin.CityMap
         }
 
         /// <summary>
-        /// 自动平整阶段开关（12 §2 三步工作流）。<b>关闭</b>时 S1b 只重放到"噪声基底+雕刻"的
-        /// 意图地表就返回（平整不参与，雕刻不被抹平）；<b>开启</b>时在已定稿的意图地表之上跑平整。
-        /// <para>走 ParcelModel 通道（S4→S1b→S6）：切换本身必须触发一次 S1b 重算，
-        /// 否则从关到开时画面仍是旧的未平整态（所见即所得要求即时响应）。</para>
-        /// </summary>
-        public void SetFlattenEnabled(bool on)
-        {
-            if (on == flattenEnabled) return;
-            flattenEnabled = on;
-            Bump(IntentKind.ParcelModel);
-        }
-
-        /// <summary>
         /// 读写雕刻工具接管态（H-50）。<b>不走 Bump</b>：这是纯交互态，不影响任何派生层，
         /// 若误 bump 会让每次切工具都白跑一遍 S1b+S6（所见即所得≠每次都全重算）。
         /// </summary>
         public void SetSculptToolActive(bool on) => sculptToolActive = on;
+
+        /// <summary>
+        /// 改「可平整对象」的写入口统一走这里：bump 地块通道 + <b>点名作废旧滤镜</b>。
+        /// <para>必须显式作废、不能靠通道嗅探：开关 <c>SetFlattenEnabled</c> 也 bump 同一通道，
+        /// 嗅探会把"拨开关"误判成"可平整对象变了"（M4-o 自查，被自己的用例抓出）。</para>
+        /// </summary>
+        void BumpFlattenSource()
+        {
+            Bump(IntentKind.ParcelModel);
+            bakeStale = true;
+        }
 
         public void SetAutoFlatten(bool on, int tiles)
         {
@@ -110,7 +220,7 @@ namespace Collin.CityMap
             autoFlattenAtCenter = on;
             autoTileCount = tiles;
             // 地块级意图：走 ParcelModel 通道（S4→S1b→S6），不是地形噪声通道
-            Bump(IntentKind.ParcelModel);
+            BumpFlattenSource();
         }
 
         /// <summary>新增一个人工平整区（意图提交点）。返回该区的 id。</summary>
@@ -125,7 +235,7 @@ namespace Collin.CityMap
                 absoluteHeight = Mathf.Max(0f, absoluteHeight),
             };
             manualZones.Add(zone);
-            Bump(IntentKind.ParcelModel);
+            BumpFlattenSource();
             return zone.stableId;
         }
 
@@ -147,7 +257,7 @@ namespace Collin.CityMap
             z.absoluteHeight = Mathf.Max(0f, absoluteHeight);
             z.enabled = enabled;
             manualZones[idx] = z;
-            Bump(IntentKind.ParcelModel);
+            BumpFlattenSource();
             return true;
         }
 
@@ -155,7 +265,7 @@ namespace Collin.CityMap
         {
             var removed = manualZones.RemoveAll(z => z.stableId == zoneId);
             if (removed == 0) return false;
-            Bump(IntentKind.ParcelModel);
+            BumpFlattenSource();
             return true;
         }
 

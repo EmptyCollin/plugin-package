@@ -139,6 +139,32 @@ namespace Collin.CityMap
             return true;
         }
 
+        /// <summary>
+        /// 自然化滤镜参数（M4-o / D-41）：烘焙时先<b>软化手绘痕迹</b>，再叠地块/道路压平。
+        /// <para>口径关键：低通只作用在<b>人工层（Heights − BaseHeights）</b>上，绝不碰 S1a 自然噪声
+        /// ——否则"消除手绘痕迹"会顺手把山体的自然碎纹一起抹平，用户看到的是"整张图糊了"。</para>
+        /// </summary>
+        [Header("平整滤镜：自然化（烘焙时先软化手绘痕迹）")]
+        [Tooltip("软化核半径(m)：把多尺度的手绘折痕抹到多大范围。越大越「化」，但会把设计意图也带走。")]
+        [SerializeField, Range(4f, 400f)] float naturalizeRadius = 40f;
+
+        [Tooltip("软化强度 0~1：0=原样保留手绘；1=人工层完全变成其邻域均值（折痕消失）")]
+        [SerializeField, Range(0f, 1f)] float naturalizeAmount = 0.7f;
+
+        public float NaturalizeRadius => naturalizeRadius;
+        public float NaturalizeAmount => naturalizeAmount;
+
+        public bool SetNaturalize(float radiusMeters, float amount)
+        {
+            var r = Mathf.Clamp(radiusMeters, 4f, 400f);
+            var a = Mathf.Clamp01(amount);
+            if (Mathf.Approximately(r, naturalizeRadius) && Mathf.Approximately(a, naturalizeAmount)) return false;
+            naturalizeRadius = r;
+            naturalizeAmount = a;
+            Touch();
+            return true;
+        }
+
         public bool SetUrbanFlatness(float flatness, float centerX = 0f, float centerZ = 0f, float radius = 0f)
         {
             var same = Mathf.Approximately(flatness, urbanFlatness)
@@ -149,6 +175,42 @@ namespace Collin.CityMap
             urbanFlatness = Mathf.Clamp01(flatness);
             if (centerX > 0f) urbanCenterFallback = new Vector2(centerX, centerZ);
             if (radius > 0f) urbanRadius = radius;
+            Touch();
+            return true;
+        }
+
+        /// <summary>
+        /// 城区几何（面板显式写入口，M4-o）。与 <see cref="SetUrbanFlatness"/> 的区别：
+        /// 本入口<b>允许写 0 表示"回退自动"</b> —— 那个入口用 <c>&gt;0f</c> 当"参数未提供"的哨兵，
+        /// 所以半径只能变大不能归零，面板上就永远退不回"0.45×图幅"的默认口径。
+        /// <para>中心写 0,0 = 清除回退值（改由城心锚点或图幅中心决定）。哨兵语义必须与"未提供"区分开，
+        /// 故这里用显式 bool 参数而非靠 0 值推断（D-01-1 同族教训：0 是合法值时不能拿 0 当哨兵）。</para>
+        /// </summary>
+        public bool SetUrbanGeometry(Vector2 fallbackCenter, float radius)
+        {
+            var c = new Vector2(Mathf.Max(0f, fallbackCenter.x), Mathf.Max(0f, fallbackCenter.y));
+            var r = Mathf.Max(0f, radius);
+            if (urbanCenterFallback == c && Mathf.Approximately(r, urbanRadius)) return false;
+            urbanCenterFallback = c;
+            urbanRadius = r;
+            Touch();
+            return true;
+        }
+
+        /// <summary>
+        /// 城区边界比例（面板可调）：内缘=幅度已完全压到 <see cref="UrbanFlatness"/> 的位置（u 值），
+        /// 外缘=完全放开到满幅的位置；两者之间 smoothstep 过渡 ⇒ 不会出现"城内平地/城外大山"的硬边。
+        /// <para>强制 <c>outer &gt; inner</c>：反序会让 smoothstep 的边界对调、过渡带消失，
+        /// 城界直接变成一条硬折线。</para>
+        /// </summary>
+        public bool SetUrbanEdgeRatio(float innerEdge, float outerEdge)
+        {
+            var inner = Mathf.Clamp(innerEdge, 0.1f, 1.45f);
+            var outer = Mathf.Max(inner + 0.05f, Mathf.Clamp(outerEdge, 0.2f, 2f));
+            if (Mathf.Approximately(inner, flatnessInnerEdge) && Mathf.Approximately(outer, flatnessOuterEdge))
+                return false;
+            flatnessInnerEdge = inner;
+            flatnessOuterEdge = outer;
             Touch();
             return true;
         }
@@ -209,6 +271,8 @@ namespace Collin.CityMap
                 h = CityRng.Mix(h, (ulong)Q(constraintInner));
                 h = CityRng.Mix(h, (ulong)Q(constraintExtend));
                 h = CityRng.Mix(h, (ulong)Q(targetPlaneMaxSlope));
+                h = CityRng.Mix(h, (ulong)Q(naturalizeRadius));
+                h = CityRng.Mix(h, (ulong)Q(naturalizeAmount));
                 h = CityRng.Mix(h, (ulong)(roughnessLock ? 1 : 0));
                 return h;
             }

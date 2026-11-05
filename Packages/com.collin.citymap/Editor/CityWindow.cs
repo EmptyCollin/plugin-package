@@ -687,7 +687,38 @@ namespace Collin.CityMap.EditorTooling
                 || !Mathf.Approximately(extend, profile.ConstraintExtend))
                 profile.SetFlattenSolve(slope, freeW, inner, extend, profile.TargetPlaneMaxSlope);
 
-            // ── 自动试设地块（M2 起用于验证约束；M5 后由真实路网供数）──
+            // ── 城区范围（M4-o：用户裁定「城区的设计参数需要允许用户在面板里调整」）──
+            // 「生效值」必须显式呈现：城心/半径都走「锚点→Profile回退→图幅中心/0.45×图幅」三层解析，
+            // 只摆输入框会让用户以为 0 就是「城在 (0,0)、半径 0」——上一轮「开平整没变化」的困惑正源于此。
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("城区范围（压平噪声的作用域）", EditorStyles.boldLabel);
+            var gNow = _ctx != null ? _ctx.Grid : default;
+            var effC = profile.ResolveUrbanCenter(_project, gNow);
+            var effR = profile.ResolveUrbanRadius(_project, gNow);
+            EditorGUILayout.LabelField($"  生效：城心 ({effC.x:0}, {effC.y:0}) · 半径 {effR:0}m", EditorStyles.miniLabel);
+
+            var ucx = EditorGUILayout.FloatField("城心 X（0=自动回退）", profile.UrbanCenterFallback.x);
+            var ucz = EditorGUILayout.FloatField("城心 Z（0=自动回退）", profile.UrbanCenterFallback.y);
+            var ur = EditorGUILayout.Slider("城区半径(m)（0=0.45×图幅）", profile.UrbanRadiusValue, 0f, 6000f);
+            if (!Mathf.Approximately(ucx, profile.UrbanCenterFallback.x)
+                || !Mathf.Approximately(ucz, profile.UrbanCenterFallback.y)
+                || !Mathf.Approximately(ur, profile.UrbanRadiusValue))
+                profile.SetUrbanGeometry(new Vector2(ucx, ucz), ur);
+
+            var inE = EditorGUILayout.Slider("压平内缘（u≤ 完全压平）", profile.FlatnessInnerEdge, 0.1f, 1.45f);
+            var outE = EditorGUILayout.Slider("放开外缘（u≥ 满幅野性）", profile.FlatnessOuterEdge, 0.2f, 2f);
+            if (!Mathf.Approximately(inE, profile.FlatnessInnerEdge) || !Mathf.Approximately(outE, profile.FlatnessOuterEdge))
+                profile.SetUrbanEdgeRatio(inE, outE);
+            if (profile.FlatnessOuterEdge <= profile.FlatnessInnerEdge)
+                EditorGUILayout.HelpBox("外缘必须大于内缘，否则过渡带消失、城界成为硬折线。", MessageType.Warning);
+
+            // ── 自然化（M4-o / D-41：用户原话「消除明显的手绘痕迹」）──
+            var nr = EditorGUILayout.Slider("软化核半径(m)", profile.NaturalizeRadius, 4f, 400f);
+            var na = EditorGUILayout.Slider("软化强度（1=折痕全消）", profile.NaturalizeAmount, 0f, 1f);
+            if (!Mathf.Approximately(nr, profile.NaturalizeRadius) || !Mathf.Approximately(na, profile.NaturalizeAmount))
+                profile.SetNaturalize(nr, na);
+
+            // ── 可平整对象（M2 代演品；M5 起由真实地块/路网供数）──
             var auto = EditorGUILayout.Toggle("自动试设地块", _terrain.AutoFlattenAtCenter);
             var tiles = EditorGUILayout.IntSlider("地块数(N×N)", _terrain.AutoTileCount, 1, 12);
             if (auto != _terrain.AutoFlattenAtCenter || tiles != _terrain.AutoTileCount)
@@ -696,24 +727,112 @@ namespace Collin.CityMap.EditorTooling
             var lockDetail = EditorGUILayout.Toggle("冻结细节(只看规划)", profile.RoughnessLock);
             if (lockDetail != profile.RoughnessLock) profile.SetRoughnessLock(lockDetail);
 
-            // ── 阶段开关：自动平整何时发挥作用（12 §2 三步工作流）──
-            // 放在最末，让它读起来像"流程的下一步"而不是又一个参数。
+            // ── 平整滤镜：烘焙式（M4-o / D-41）——用户裁定「不要实时算，点烘焙才算」──
             EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("③ 平整滤镜（烘焙式，不实时计算）", EditorStyles.boldLabel);
             var flattenOn = EditorGUILayout.ToggleLeft(
-                new GUIContent("③ 自动平整（在雕好的地形上做整理）",
-                    "关＝停在「噪声+你的雕刻」的意图地表，平整完全不参与，边雕边看不被抹平；\n"
-                  + "开＝在已定稿的意图地表之上跑自动平整（城内 8× 强约束会在这里发挥作用）。\n"
-                  + "推荐顺序：① 调参数 → ② 切「雕刻」模式雕山水（此开关保持关）→ ③ 回这里打开。"),
+                new GUIContent("叠加已烘焙的平整层（关＝只显示手绘意图地表）",
+                    "开关只做「叠 / 不叠」，不触发任何求解。\n" +
+                    "关＝你看到的就是「噪声基底 + 手绘雕刻」的原始意图地表；\n" +
+                    "开＝在其上叠加『上一次点烘焙』算出的修正层。\n" +
+                    "改完手绘或参数不会自动重算，需重按烘焙（避免每拖一下都卡、也避免结果意外覆盖设计）。"),
                 _terrain.FlattenEnabled);
             if (flattenOn != _terrain.FlattenEnabled) _terrain.SetFlattenEnabled(flattenOn);
-            if (!flattenOn)
-                EditorGUILayout.HelpBox("自动平整已关闭：当前显示的是「噪声 + 雕刻」的意图地表，"
-                    + "未被平整整理。雕完想收坡/找平请打开上面这个开关。", MessageType.Info);
+
+            _terrain.SetBakeProjectProbe(_project);
+            var bakeState = _terrain.FilterState;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                var bakeLabel = bakeState == CityTerrain.BakeState.Never
+                    ? "烘焙平整（首次）"
+                    : bakeState == CityTerrain.BakeState.Stale ? "重新烘焙（手绘/参数已变）" : "重新烘焙平整";
+                if (GUILayout.Button(new GUIContent(bakeLabel,
+                        "在「噪声基底 + 手绘雕刻」之上跑一次平整求解，结果写成<b>独立滤镜层</b>。\n" +
+                        "绝不写回手绘 delta ⇒ 改参数、继续手绘都不会毁掉设计意图（D-01-1 同源纪律）。\n" +
+                        "求解是全图重计算，故意只由本按钮触发。"), GUILayout.Height(24f)))
+                    BakeFlatten();
+                if (bakeState != CityTerrain.BakeState.Never
+                    && GUILayout.Button("清空滤镜", GUILayout.Width(72f))) ClearFlattenFilter();
+            }
+            if (bakeState == CityTerrain.BakeState.Never)
+                EditorGUILayout.HelpBox("尚未烘焙过 ⇒ 开关开/关看起来一样（没有可叠加的内容）。" +
+                    "先勾「自动试设地块」或添加人工平整区，再点上面「烘焙平整」。", MessageType.Info);
+            else if (bakeState == CityTerrain.BakeState.Stale)
+                EditorGUILayout.HelpBox("手绘或参数在烘焙之后又改过 ⇒ 画面挂的是旧滤镜。点「重新烘焙」刷新。",
+                    MessageType.Warning);
+            if (!string.IsNullOrEmpty(_terrain.FlattenHint))
+                EditorGUILayout.HelpBox(_terrain.FlattenHint, MessageType.Warning);
 
             if (_terrain.LastConstraints > 0)
                 EditorGUILayout.LabelField($"S1b：约束 {_terrain.LastConstraints} 条 · 改动 {_terrain.LastCells} 格" +
                     (_terrain.LastRejectedConstraints > 0 ? $" · 跳过 {_terrain.LastRejectedConstraints}" : string.Empty),
                     EditorStyles.miniLabel);
+        }
+
+        /// <summary>
+        /// 烘焙平整（M4-o）。求解是<b>全图重计算</b>，故只由按钮触发、不挂进管线的自动跟随链路。
+        /// <para>顺序要求：先把挂起的意图改动提交掉再烘焙 —— 否则烘焙会拿上一轮的基底/手绘求解，
+        /// 算出来的滤镜和画面当下状态对不上（表现是"烘一次、画面跳一下"）。</para>
+        /// <para>滤镜资产固定路径（同 <b>D-35</b>：内嵌包资产必须"固定路径 + LoadAssetAtPath"，
+        /// 禁用 <c>FindAssets</c> 与 <c>GenerateUniqueAssetPath</c> —— 后者是副本反复滋生的成因）。</para>
+        /// </summary>
+        private void BakeFlatten()
+        {
+            if (_terrain == null || _project == null) { _lastRunLine = "烘焙失败：缺地形实例或城市项目"; return; }
+            var prof = _terrain.Profile;
+            if (prof == null) { _lastRunLine = "烘焙失败：实例未绑定 TerrainProfile"; return; }
+            if (_ctx == null || _runner == null) { _lastRunLine = "烘焙失败：面板未装配（先绑定城市项目）"; return; }
+
+            // 先冲掉<b>挂起</b>的改动，保证烘焙读的是最新意图地表。
+            // ⚠️ 不能用 DirtyBits.All：那会把 S1a 噪声整表重跑（M4-j 实测 4860ms）——
+            // 烘焙本身已经是重计算，绝不能再白付一遍全量重算（用户刚说过"快了很多"，别把它还回去）。
+            SyncStages();
+            var pending = UndoHistoryTracker.PendingDirty;
+            if (pending != DirtyBits.None)
+            {
+                UndoHistoryTracker.ConsumeDirty();
+                _runner.MarkDirty(pending);
+                CommitAndNotify(pending);
+            }
+
+            var path = DeltaFolder + "/FlattenFilter.asset";
+            var filter = AssetDatabase.LoadAssetAtPath<SculptFilterAsset>(path);
+            if (filter == null)
+            {
+                if (!AssetDatabase.IsValidFolder(DeltaFolder))
+                    AssetDatabase.CreateFolder("Packages/com.collin.citymap/Sample", "Sculpt");
+                filter = CreateInstance<SculptFilterAsset>();
+                AssetDatabase.CreateAsset(filter, path);
+            }
+
+            // 烘焙会整表重写滤镜层 ⇒ 必须可撤销：先登记 undo，让用户按一次 Ctrl+Z 就能退回上一版滤镜
+            //（不可撤销的重计算 = 用户不敢点，等于把功能锁死）。
+            Undo.RecordObject(filter, "烘焙平整");
+            var res = new FlattenSolveStage(prof, _terrain).Bake(_ctx, filter);
+            if (!res.Success) { _lastRunLine = "烘焙失败：" + res.Message; return; }
+
+            EditorUtility.SetDirty(filter);
+            AssetDatabase.SaveAssets();
+            _terrain.SetFlattenFilter(filter);          // 让画面立刻重放新滤镜（只叠加，不再求解）
+            _terrain.RecordBake(_project);              // 快照版本+手绘序列 ⇒ 之后改手绘/参数才判过期
+            Undo.RecordObject(_terrain, "烘焙平整");
+            EditorUtility.SetDirty(_terrain);
+            _lastRunLine = $"烘焙平整完成：约束 {res.Outputs} 条 · 写入滤镜 {res.CellsTouched} 格";
+            Repaint();
+        }
+
+        /// <summary>清空滤镜内容（保留资产文件不动）；手绘 delta 不受影响。</summary>
+        private void ClearFlattenFilter()
+        {
+            var f = _terrain != null ? _terrain.FlattenFilter : null;
+            if (f == null) return;
+            Undo.RecordObject(f, "清空平整滤镜");
+            f.ClearAll();
+            EditorUtility.SetDirty(f);
+            AssetDatabase.SaveAssets();
+            _terrain.MarkFilterBaked();                 // bump 一次让画面重放 ⇒ 立刻回到纯手绘意图地表
+            _lastRunLine = "已清空平整滤镜（手绘意图层未受影响）";
+            Repaint();
         }
 
         /// <summary>创建地形实例 + 显示宿主（派生 View 与意图组件同物体，用户不必手动挂）。</summary>

@@ -28,6 +28,16 @@ namespace Collin.CityMap
         byte[] _exact;
         int _scratchCells;
 
+        /// <summary>自然化用的整图积分图（(cols+1)×(rows+1)）。<b>实例级</b>同 scratch 纪律：
+        /// 静态缓冲会被第二个城市上下文串用。</summary>
+        float[] _natPrefix;
+
+        void EnsurePrefix(int cols, int rows)
+        {
+            var need = (cols + 1) * (rows + 1);
+            if (_natPrefix == null || _natPrefix.Length < need) _natPrefix = new float[need];
+        }
+
         public FlattenSolveStage(TerrainProfile profile, CityTerrain terrain)
         {
             _profile = profile;
@@ -54,33 +64,109 @@ namespace Collin.CityMap
             var d = _terrain.Delta;
             if (d != null) d.ApplyTo(field);
 
-            // ①c 阶段开关（12 §2 三步工作流，用户 2026-11-04 裁定）：
-            //     关闭时**平整不参与**，工作数组停在"噪声基底 + 人工雕刻"的意图地表上直接交出。
-            //     存在的理由：雕刻期若自动平整照常跑，城内 8× 强约束会把刚抬的山当场拟合压回平面
-            //     ——用户反馈"笔刷抬了没反应"的结构性根因。时序隔离而非逐格退让：先雕好地形，
-            //     再开这个开关让平整在<b>定稿的意图地表之上</b>做整理（这才是平整该发挥作用的时机）。
+            // ①c 阶段开关（12 §2 三步工作流）。**语义在 M4-o 改版**（用户裁定）：
+            //     平整不再是"实时求解的开关"，而是**烘焙出来的滤镜结果层**——点「烘焙平整」才计算，
+            //     结果以**独立层**（`SculptFilterAsset`）叠加在意图地表之上，**绝不写回 delta 意图层**。
+            //     关＝只看"噪声基底 + 手绘雕刻"的原始意图地表；开＝在其上叠一层已烘焙的自然化修正。
+            //     因此本方法不再做任何求解：只做"复位 → 叠 delta → 叠滤镜"的重放（三次数组操作），
+            //     开关切换的成本与烘焙解耦，改手绘也不会自动重算滤镜（用户裁定"不实时算"）。
             if (!_terrain.FlattenEnabled)
             {
-                // cells/outputs=0：平整一格未动（delta 叠加不算平整改动），与下方"无约束"分支同口径，
-                // 避免诊断虚报"平整改了 N 万格"。
+                // 关：意图地表原样交出（cells/outputs=0 ⇒ 一格未改，不虚报改动数）
                 _terrain.ReportSolveResult(0, 0, 0);
                 return StageResult.Ok(0, 0);
             }
 
-            // ② 收集约束
-            _constraints.Clear();
-            var skipped = CollectConstraints(ctx, field, grid);
-            if (_constraints.Count == 0)
+            // 开：只叠加**已烘焙**的滤镜层；没烘焙过就不假装整理（并给面板可读原因）
+            var fl = _terrain.FlattenFilter;
+            if (fl == null || fl.IsEmpty)
             {
-                _terrain.ReportSolveResult(0, 0, skipped);
-                return StageResult.Ok(0, 0, skipped);
+                _terrain.ReportSolveResult(0, 0, 0);
+                _terrain.ReportFlattenHint("尚未烘焙平整：点「烘焙平整」生成自然化滤镜层（当前显示=手绘意图地表）");
+                return StageResult.Ok(0, 0);
+            }
+            fl.ApplyTo(field);
+            {
+                var fn = fl.CountFilledCells();
+                _terrain.ReportSolveResult(0, fn, 0);
+                _terrain.ReportFlattenHint(null);
+                return StageResult.Ok(fn, 1);
+            }
+        }
+
+        /// <summary>
+        /// 真正的平整求解：<b>只被「烘焙平整」按钮调用</b>（不再挂在管线里随参数自动跑）。
+        /// <para>产物写进独立的滤镜资产，<b>不碰 <see cref="SculptDeltaAsset"/></b>（D-01-1 同源纪律：
+        /// 自动层一旦混进人工层，用户改噪声参数就会把自己的设计意图毁掉，且再也撤不回）。</para>
+        /// <para>重放次序仍是 01 §3.2 的 <c>base → delta → flatten</c>：烘焙时同样先复位+叠 delta
+        /// 再拟合求解，所以"在定稿的意图地表之上整理"这条 D-33 语义不变，变的只是<b>时机</b>。</para>
+        /// </summary>
+        public StageResult Bake(PipelineContext ctx, SculptFilterAsset outFilter)
+        {
+            if (ctx == null) return StageResult.Fail("ctx 空");
+            if (outFilter == null) return StageResult.Fail("缺滤镜资产");
+            if (_profile == null) return StageResult.Fail("缺 TerrainProfile");
+            if (_terrain == null) return StageResult.Fail("缺 CityTerrain");
+
+            var field = TerrainBaseStage.EnsureField(ctx);
+            var grid = ctx.Grid;
+            var cols = grid.Columns; var rows = grid.Rows;
+
+            // 滤镜以"最后一次烘焙"为准：先清空，否则同一资产被反复烘焙会把修正越叠越大
+            // （视觉表现＝每按一次烘焙地形就更平一分，且无从回溯）。
+            outFilter.ClearAll();
+            field.CommitBaseAsWorking();
+            var d0 = _terrain.Delta;
+            if (d0 != null) d0.ApplyTo(field);
+
+            // ① 自然化（M4-o / D-41，用户原话「消除明显的手绘痕迹」）：
+            //    <b>只软化人工层 (Heights − BaseHeights)，绝不碰 S1a 自然噪声</b>。
+            //    理由：自然碎纹是"地形本来该有的样子"，把它一起抹平用户看到的就是"整张图糊了"；
+            //    而笔刷折痕、光圈边缘、反复叠加留下的硬边才是该被化掉的东西。
+            //    做法：a_soft = 半径窗内人工层的均值（积分图精确、O(1)/格），
+            //          H' = Base + (1−t)·a + t·a_soft。t=0 原样、t=1 人工层完全贴合其邻域趋势。
+            //    窗对称 ⇒ 人工层里"已经做好的斜面"不被推歪（只吃残差与折痕）。
+            var natCells = 0;
+            var tNat = _profile.NaturalizeAmount;
+            if (tNat > 1e-3f)
+            {
+                var cell = grid.CellSize;
+                var half = Mathf.Max(1, Mathf.RoundToInt(_profile.NaturalizeRadius / cell));
+                EnsurePrefix(cols, rows);
+                var hs = field.Heights; var bs = field.BaseHeights;
+                SculptBrush.BuildLocalPrefix((gx, gz) => hs[gz * cols + gx] - bs[gz * cols + gx],
+                                             cols, rows, _natPrefix);
+                for (var cz = 0; cz < rows; cz++)
+                {
+                    var rowBase = cz * cols;
+                    for (var cx = 0; cx < cols; cx++)
+                    {
+                        var i = rowBase + cx;
+                        var a = hs[i] - bs[i];
+                        var soft = SculptBrush.LocalBoxMean(_natPrefix, cols, rows,
+                                                            cx - half, cz - half, cx + half, cz + half);
+                        // 跳过判据必须是「本格与邻域都近乎没有人工层」，<b>不能只看本格</b>：
+                        // 雕刻边界外那圈 a≈0 但 soft≠0 的格正是"把硬边抹开"要动的地方，
+                        // 只按 a≈0 跳过会在笔刷轮廓上留一圈锐利硬环 = 用户要消除的手绘痕迹本身。
+                        if (Mathf.Abs(a) <= 1e-4f && Mathf.Abs(soft) <= 1e-4f) continue;
+                        var nh = hs[i] - tNat * (a - soft);
+                        var dfilt = nh - hs[i];
+                        hs[i] = nh;
+                        if (dfilt != 0f) { outFilter.AddDelta(grid, cx, cz, dfilt); natCells++; }
+                    }
+                    if ((cz & 255) == 0 && ctx.CancelRequested) return StageResult.CancelledResult();
+                }
             }
 
-            EnsureScratch(grid.CellCount);
+            // ② 收集约束（可平整对象）。<b>无对象时自然化仍然生效</b>——这正是用户"开了没变化"的场景：
+            //    滤镜里只有软化成分、没有地块压平，画面照样变（而不是空跑一遍再解释为什么没变）。
+            _constraints.Clear();
+            var skipped = CollectConstraints(ctx, field, grid);
+
+            EnsureScratch(_constraints.Count > 0 ? grid.CellCount : 0);
 
             // ③ 逐约束累加分子/分母（只遍历各自外接盒）
             _touched.Clear();
-            var cols = grid.Columns;
             for (var i = 0; i < _constraints.Count; i++)
             {
                 if (ctx.CancelRequested) return StageResult.CancelledResult();
@@ -108,15 +194,31 @@ namespace Collin.CityMap
                 // 此处直接赋值。若再要求 den/(den+Wfree)>=1 则永不成立（Wfree=0.6 ⇒ 上限 0.94），
                 // 绝对高程仍达不到目标值 —— 这是 M2 实测的第二个根因。
                 // 过渡带内不置位 ⇒ 退回软混合 ⇒ 硬区与软区之间仍连续。
+                var before = heights[idx];
                 heights[idx] = hard
                     ? target
-                    : (heights[idx] * freeW + num) / (freeW + den);
+                    : (before * freeW + num) / (freeW + den);
                 _num[idx] = 0f; _den[idx] = 0f; _target[idx] = 0f; _exact[idx] = 0;
                 touched++;
+
+                // ★ 烘焙产物 = **独立滤镜层的差值**（融合后 − 意图地表），绝不出现在 delta 里。
+                //   <b>必须无条件记录</b>：画面改了而滤镜没记，重放（Run 只叠滤镜）就复现不出烘焙结果
+                //   —— 表现是"烘焙一次后画面回不去/开关拨不动"。容差只能有一个真源：
+                //   落不落格由 `SculptFilterAsset.AddDelta` 内部的 ZeroEps 决定（与 delta 层同口径），
+                //   求解器不得再自行设第二道阈值（M4-o 自查：我第一版在此写了 `>0.005f`，
+                //   被 A1_2 幂等断言抓出，最大偏差恰好等于该阈值）。
+                outFilter.AddDelta(grid, idx % cols, idx / cols, heights[idx] - before);
             }
 
-            _terrain.ReportSolveResult(_constraints.Count, touched, skipped);
-            return StageResult.Ok(touched, _constraints.Count, skipped);
+            // 收口：全零条目一次性丢弃（剪枝放这里而非每次写入，理由见 Compact 注释 ——
+            // 每写都判空曾让 8km 全图烘焙花掉 49.6 秒，M4-o 端到端实测）。
+            outFilter.Compact();
+
+            // cells 读数 = 自然化 + 压平融合的合计改动格（两者都是"这一层滤镜改了多少"，
+            // 只报融合数会让"没有可平整对象但有手绘"的场景虚报 0 改动，面板看起来又像没生效）。
+            var changed = touched + natCells;
+            _terrain.ReportSolveResult(_constraints.Count, changed, skipped);
+            return StageResult.Ok(changed, _constraints.Count, skipped);
         }
 
         void Accumulate(in PlaneConstraint con, CityGrid grid, int cols)
