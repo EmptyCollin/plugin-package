@@ -5,6 +5,10 @@
 ## [Unreleased]
 
 ### Added
+- **展板选中态修复（2026-11-06，用户实机反馈）**：`ShowcaseUI` 的 `Select` 原以「渲染位置 == 全局
+  拓扑下标」判定高亮，与血缘分组渲染序（母体在前）不一致时高亮错位（点 citymap 亮到 stretch）；
+  新增渲染位置→全局下标映射（`_buttonEntryIndex`）后逐条点击实测一一对应。修复在 Assets 展示层，
+  本包无代码改动，证据随本包 ACCEPTANCE #29 登记。
 - **展板抽离谱系（2026-11-06，DESIGN D-8）**：`ShowcaseEntry` 新增可选字段 `tier` / `extractedFrom`；
   `ShowcaseSorter` 新增纯函数 `TierOf` / `LineageGroups` / `ExportClosure` / `ExtractedFromEntry` / `ExtracteesOf`
   （方向化导出闭包：产品携带向下抽离的能力、工具携带向上抽离的运行时；既有 `DependencyClosure` 行为不变）。

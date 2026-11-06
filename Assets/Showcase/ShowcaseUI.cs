@@ -29,6 +29,8 @@ public class ShowcaseUI : MonoBehaviour
     private string _currentVideoPath;
     private string _cycleWarning = "";
     private readonly List<Button> _itemButtons = new List<Button>();
+    // 渲染位置 -> _entries 全局下标 的映射（分组渲染序≠全局拓扑序，高亮必须按此映射判定）
+    private readonly List<int> _buttonEntryIndex = new List<int>();
     private int _selected = -1;
 
     private static readonly Color Bg = new Color(0.10f, 0.11f, 0.13f);
@@ -184,6 +186,7 @@ public class ShowcaseUI : MonoBehaviour
             if (b != null) Object.Destroy(b.gameObject);
         }
         _itemButtons.Clear();
+        _buttonEntryIndex.Clear();
 
         var result = ShowcaseRuntime.LoadAndSort();
         _entries.Clear();
@@ -215,7 +218,8 @@ public class ShowcaseUI : MonoBehaviour
             var img = _itemButtons[i].GetComponent<Image>();
             if (img != null)
             {
-                img.color = i == index ? PanelHi : Panel;
+                img.color = (i < _buttonEntryIndex.Count && _buttonEntryIndex[i] == index)
+                    ? PanelHi : Panel;
             }
         }
 
@@ -361,6 +365,7 @@ public class ShowcaseUI : MonoBehaviour
         label.alignment = TextAnchor.MiddleLeft;
         var btn = MakeButton(rt, null, null);
         btn.onClick.AddListener(() => Select(index));
+        _buttonEntryIndex.Add(index);
         _itemButtons.Add(btn);
     }
 

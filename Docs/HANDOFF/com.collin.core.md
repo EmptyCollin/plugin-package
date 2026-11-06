@@ -14,6 +14,7 @@
   - AGENTS.md §6 增谱系字段定义（用户批准 A 档改造含规则同步）；校验器增 `showcase-lineage` FAIL 项（tier 枚举、extractedFrom 指向存在包）；
   - **校验器 check_console 修复**：原 `"console status"` 两段式传参实测 Command Not Found（错误被吞成 WARN），改分段传参 + 空响应抛错；
 - 门禁实测（2026-11-06 21:0x）：编译 `failed:false`；clear→重跑全部验证→`consoleErrors:0/consoleWarnings:0`；全量 EditMode **386/386**；校验器**绿灯**；截图核验布局无遮挡。
+- **选中态错位修复（2026-11-06 晚，用户实机反馈，ACCEPTANCE #29）**：`ShowcaseUI.Select` 高亮判定从「渲染位置==全局下标」改为经 `_buttonEntryIndex` 映射比对；逐条点击实测 5/5 一一对应；门禁再次三项全绿。
 
 ## 2. 未完成
 - 部分提取执行器（`ExportClosure` 已就绪，缺"复制包目录+生成 manifest+导出 unitypackage"的执行器；注意导出 citymap 时应走 ExportClosure 而非仅 package.json 闭包）；

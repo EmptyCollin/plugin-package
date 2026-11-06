@@ -97,3 +97,22 @@
 - 过程记录（如实）：门禁期间曾两度自造噪声并当场消除——①验证脚本误重复进 Play 产生
   1 条 `Editor is already in play mode` warning（按序重跑归零）；②测试等待期未续锁心跳，
   校验器判 5 条 lock-stale FAIL（§2.1.8 教训重演，续期自身锁后转绿）。
+
+# v0.2.0 增量（展板选中态错位修复，2026-11-06，验证者 qianwen-work-assistant · showcase-fix-2026-11-06）
+
+> 用户实机反馈：UI 面板点「地图工具」（citymap）高亮却画到「建模工具」（stretch）上。
+> 根因：`RebuildLineageList` 按血缘分组渲染（母体在前、抽离品跟随），而 `Select` 用「渲染位置 ==
+> 全局拓扑下标」直接比色——两套序不一致时高亮错位（stretch 在全局序里排在 citymap 之前）。
+> 修复：`Assets/Showcase/ShowcaseUI.cs` 新增 `_buttonEntryIndex`（渲染位置→全局下标映射），
+> AddItem 登记、Reload 清空、Select 按映射判定高亮。
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 日期时间 | 结果与证据 |
+|---|---|---|---|---|
+| 29 | 逐条点击每个 Item，被点项高亮、其余 dim，且高亮项与详情标题一一对应 | Play 模式 `eval_file .tmp-inspect/probe_sel.cs`，逐条 Invoke 后读 Image.color 与 DetailTitle | 2026-11-06 21:3x | core/citymap/stretch/stealth/stealthplanner 五条均 `被点项高亮=True 全局高亮数=1 高亮项=<被点项> 详情=<对应名>`；citymap↔stretch 错位消失 |
+
+## 交锁门禁（2026-11-06 末次实测，三项全绿）
+
+- `console clear` → 重跑本会话全部验证（recompile → Play → 逐条点击探针 → 截图 → stop）→
+  `console status` groundTruth = `compilationFailed:false, consoleErrors:0, consoleWarnings:0`；
+- `script recompile_status` → `failed:false`；`python Tools/verify_project.py` → **结论: 绿灯**。
+- 说明：本轮仅改 `ShowcaseUI.cs`（Assets 展示层），未触碰 core/包代码与测试程序集，全量测试基线 386 不受影响。
