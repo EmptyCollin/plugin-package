@@ -10,7 +10,8 @@ namespace Collin.StealthPlanner.Tests
     /// <para>四条主判据：① 量化到 Δt 栅格再求整数 LCM（不是实数 LCM）；
     /// ② LCM 超 <see cref="PlannerBakeSettings.MaxAlignedBuckets"/> 必须走 max(c_i)×2 兜底并给 Warning；
     /// ③ **绝不自动改写手配 P** —— 算法本身不持有也不触碰任何设置资产；
-    /// ④ 正确性声明（P 不改变「是否存在 ≤N 相位可行解」）必须随文案出现，否则策划会误以为设小 P 会漏解。</para>
+    /// ④ 正确性声明必须随文案出现，且口径是「**不漏解由总视界 N×⌈P/Δt⌉ 决定**」（§6.7 v0.3 / D-29）；
+    ///    旧句「P 取多大不改变是否存在 ≤N 相位的可行解」已由用例**反向断言禁止**回流。</para>
     /// </summary>
     public class PhaseReferenceTests
     {

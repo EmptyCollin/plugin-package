@@ -26,7 +26,8 @@ namespace Collin.StealthPlanner
         [Tooltip("宏观相位窗 P（秒）。由策划手填；面板另给「建议参考时长」，但绝不自动改写此值")]
         [SerializeField, Min(1f)] float _phaseWindow = 60f;
 
-        [Tooltip("相位轮数上限 N（静态设计 2 的可行性封顶）。真正决定是否漏解的是本值，不是 P")]
+        [Tooltip("相位轮数上限 N（静态设计 2 的可行性封顶）。⚠️ 会不会漏解取决于总视界 N×⌈P/Δt⌉，"
+                 + "不是单独的 N——只把 P 调小同样会截断解（口径见 DESIGN §6.7 / D-29）")]
         [SerializeField, Range(1, 64)] int _maxPhases = 4;
 
         [Header("输出规模")]
