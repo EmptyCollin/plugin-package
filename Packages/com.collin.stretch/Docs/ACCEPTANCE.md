@@ -202,3 +202,12 @@
 | 86 | 失误段已剪除 | 剪点前后帧对比抽帧 | 报错条"结构校验未通过"（源 12.2–13.6s）与选中裸桥的警告弹窗（源 65.4–67.6s）在成片剪点两侧画面中均不出现；纯调镜头段（源 27–54s、60.5–67.6s）整段移除，衔接处均为面板操作画面 |
 | 87 | 编码规格达标 | ffprobe + ffmpeg 抽帧 | 55.6s / 1920×1080 / 30fps / h264 Constrained Baseline + bt709 标签 + faststart，无音轨（源音轨 volumedetect mean -43.3dB，环境噪声）；替换入 `ShowcaseMedia/stretch_demo.mp4`（2210395 字节） |
 | 88 | 门禁（§1.6b 三段式） | `console clear` → 重跑探针 → 退 Play → `console status` → `verify_project.py` | 见本会话门禁记录；校验器 showcase-video 检查项对 stretch 由 WARN 转 ok（验收条目已备） |
+
+# v0.4.4 增量（通道纪律合规：阻塞式弹窗改日志，2026-11-06，qianwen-work-assistant，PID 17072 / 端口 7800→7801）
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 结果与证据 |
+|---|---|---|---|
+| 89 | **包内阻塞式弹窗清零**（§2.1.5） | 全包扫描 `EditorUtility.DisplayDialog` | 命中 **0**（仅 `StretchCreateCommand.cs:57` 一条注释含该词，不带 `EditorUtility.` 前缀，不命中校验正则）；`verify_project.py` channel-discipline 由 **FAIL 2 → FAIL 0**，整体结论转「绿灯」 |
+| 90 | **改造后的分支全部可用且不抛异常** | `script eval_file` 内存探针（无选中 ×3 命令 + 无 MeshFilter 物体 ×4 调用 + 菜单特性反射） | 逐节即时输出：`1 CreateProfile OK / 2 EnableReadWriteMenu OK / 3 BakeMenu OK / 4a OK / 4b OK / 4c BakeOne 返回=null err=选中物体没有源网格 / 4d OK`；`5 EnableReadWriteMenu 菜单特性数=1 内容=Tools/Collin/Stretch 拉伸/开启选中模型的 Read/Write`（新菜单确已注册）；开场与收场均 `dirty=False`（探针未落盘、未切场景、未创建物体） |
+| 91 | 失败提示仍可达（能力不减） | 同上探针的日志正文逐字核对 | 原弹窗文案逐字出现在 `Debug.Log`：`请先在 Hierarchy 选中一个含 MeshFilter 的模型对象。`、`选中对象没有 MeshFilter 或网格为空，无法创建拉伸参数。`、`[StretchBake] 未生成子资产：选中物体没有源网格`。「网格不可读」的二选一确认改为提示用户执行新菜单，不再阻塞等待 |
+| 92 | 门禁（§1.6b 三段式） | `console clear` → `script recompile`(completed) → 重跑 89/90 探针 → `console status` → `verify_project.py` | 终读 `groundTruth: consoleErrors=0 consoleWarnings=0 compilationFailed=False`；校验器 **FAIL 0**（结论绿灯）。**过程如实记录**：中途抓到 2 条 error，堆栈全在 `com.unity.pipeline` 服务端、不含任何项目程序集，正文为 `ExecuteCommandByName: No command named 'console status' is available. Did you mean 'console status'?` —— 由**把两段式命令名整体加引号**的调用形式触发（与 AGENTS.md §1.6b 括注相反：实测不整体加引号才可用）。未走豁免，改用可用形式重跑至归零 |

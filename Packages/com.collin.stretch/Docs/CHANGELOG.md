@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-06
+### Changed（通道纪律合规：阻塞式弹窗全部改为日志，AGENTS.md §2.1.5）
+- `StretchBakeCommand`：菜单入口与面板按钮共 4 处 `EditorUtility.DisplayDialog` → `Debug.Log`。
+  模态等待会占住 Unity 主线程 = 卡死所有 AI 的指令通道；失败原因仍逐字可见
+  （`未生成子资产：<原因>` / `烘焙失败：<原因>`）。
+- `StretchCreateCommand`：6 处 `DisplayDialog` 全部去弹窗化 —— 异常兜底那处**保留**
+  `Debug.LogWarning`（真实故障信号不降级为 Log，只删掉伴随的弹窗），其余 5 处提示改 `Debug.Log`。
+- **「模型网格不可读 → 是否现在自动开启 Read/Write」二选一确认框**拆成独立菜单命令
+  `Tools/Collin/Stretch 拉伸/开启选中模型的 Read/Write`（`EnableReadWriteMenu`）：
+  把"创建流程中途询问"换成"用户主动触发的命令"，能力不减、通道不堵。
+- 空守卫分支一并核验：`BakeOne` 仍返回 `null + 原因`（供测试与面板复用，无副作用）。
+- 证据见 ACCEPTANCE 89–92。门禁终态：控制台 0 error / 0 warning、`compilationFailed=False`、
+  校验器 channel-discipline 两项 FAIL 转 0（整体结论绿灯）。
+
 ## [0.4.3] - 2026-11-03
 ### Changed（演示视频按 §6 两点硬性要求重制）
 - `ShowcaseMedia/stretch_demo.mp4` 替换为**真实编辑器实录剪辑**（源=用户手动录屏

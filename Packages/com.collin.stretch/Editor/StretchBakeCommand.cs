@@ -16,13 +16,14 @@ namespace Collin.Stretch.EditorTooling
             var go = Selection.activeGameObject;
             if (go == null)
             {
-                EditorUtility.DisplayDialog("Collin Stretch", "请先选中含 StretchInstance 的物体。", "好");
+                // §2.1.5：禁止阻塞式弹窗，提示一律走日志（Debug.Log 不顶 §1.6b 归零门禁）
+                Debug.Log("[StretchBake] 请先在 Hierarchy 选中含 StretchInstance 的物体。");
                 return;
             }
             var mesh = BakeOne(go, out var err);
             if (mesh == null)
             {
-                EditorUtility.DisplayDialog("Collin Stretch", err, "好");
+                Debug.Log($"[StretchBake] 未生成子资产：{err}");
                 return;
             }
             EditorGUIUtility.PingObject(mesh);
@@ -92,17 +93,17 @@ namespace Collin.Stretch.EditorTooling
             return persisted;
         }
 
-        /// <summary>面板按钮入口：烘焙 + 弹窗结果（P2 规模指引）。</summary>
+        /// <summary>面板按钮入口：烘焙 + 日志报告结果（P2 规模指引；§2.1.5 禁弹窗）。</summary>
         public static void BakeOneAndReport(GameObject go)
         {
             var mesh = BakeOne(go, out var err);
             if (mesh == null)
-                EditorUtility.DisplayDialog("Collin Stretch", "烘焙失败：" + err, "好");
-            else
-                EditorUtility.DisplayDialog("Collin Stretch",
-                    "已烘焙 " + mesh.name + "（" + mesh.vertexCount + " 顶点）到 Profile 子资产。\n"
-                    + "大规模且份数固定时：把实例烘焙后用普通 MeshRenderer 引用子资产，可吃 static batching（§8.2 P2）。",
-                    "好");
+            {
+                Debug.Log("[StretchBake] 烘焙失败：" + err);
+                return;
+            }
+            Debug.Log("已烘焙 " + mesh.name + "（" + mesh.vertexCount + " 顶点）到 Profile 子资产。\n"
+                + "大规模且份数固定时：把实例烘焙后用普通 MeshRenderer 引用子资产，可吃 static batching（§8.2 P2）。");
         }
 
         public static Mesh FindBakedInAsset(string profilePath, string assetName)

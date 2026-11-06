@@ -25,7 +25,8 @@
 
 ## 3. 约束
 - Unity 6000.6.7f1；Runtime asmdef 引用 com.collin.core，Editor asmdef 再加 com.collin.stretch；面板用 IMGUI（CustomEditor）；validateReferences=true（§5）；
-- 输入网格：Readable 且含 UV0；FBX 需先开 Read/Write（README 级说明，工具检测并给修复按钮）；
+- 输入网格：Readable 且含 UV0；FBX 需先开 Read/Write（README 级说明；工具检测到不可读时**只给日志提示 +
+  独立菜单命令** `开启选中模型的 Read/Write`，不再弹窗询问——§2.1.5 禁阻塞主线程）；
 - 拉伸轴语义 = 网格对象**本地空间**单轴（物体旋转不影响分段计算）；
 - 不新增外部包依赖。
 
@@ -55,7 +56,7 @@
 - R-2：复制接缝处几何/光照不连续（顶点不焊接）→ 视觉可能可见硬边。接受（轻量定位），后续版本再评估焊接。
 - R-3：超大网格 × 高倍数内存膨胀 → 结果顶点数超 65535 需 uint32 索引（Mesh.indexFormat），Builder 自动切换。
 - R-4：裁剪分片使跨界三角形顶点数增加（每片独立顶点）→ 仅在边界切中几何时发生，规模可控（G1: 24→96 顶点级）。
-- R-5：真实 DCC 模型（多材质子网格、非单位缩放、pivot 居中、readable=false）会放大实现盲区 → 缓解：示例已改用 CC0 真实资产（见 §7 资产来源），Builder 逐子网格处理，创建命令自动开 Read/Write，面板端点对齐只读源网格。
+- R-5：真实 DCC 模型（多材质子网格、非单位缩放、pivot 居中、readable=false）会放大实现盲区 → 缓解：示例已改用 CC0 真实资产（见 §7 资产来源），Builder 逐子网格处理，**独立菜单命令**开启 Read/Write（0.4.4 起不再弹窗询问，§2.1.5），面板端点对齐只读源网格。
 
 ## 7. 资产来源
 示例模型的第三方资产登记于 `Sample/Models/CREDITS.md`（Poly Haven modular_wooden_pier，CC0）。

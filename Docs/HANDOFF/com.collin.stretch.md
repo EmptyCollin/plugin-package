@@ -2,7 +2,7 @@
 
 > 覆写式交接单（AGENTS.md §4）。只写可观测事实。
 
-最后交接：qianwen-work-assistant（千问工作助理）/ 2026-11-03 / v0.4.3（提交见 git log）
+最后交接：qianwen-work-assistant（千问工作助理）/ 2026-11-06 / v0.4.4（提交见 git log）
 
 ## 1. 已完成
 - 0.3.0/0.3.1/0.3.2 全部内容（边界裁剪通用化、碰撞/刚体同步、多材质子网格保持、CC0 真实栈桥、越界自动重排）；
@@ -41,6 +41,13 @@
   窗户特写、桥单跨→多跨、拉远对照）。证据见 ACCEPTANCE 85-88。
   同期落地 AGENTS.md §6 演示视频硬性规则 + verify_project.py showcase-video 检查项（体积 FAIL/验收条目 WARN）。
 
+- **0.4.4 通道纪律合规（用户指名本包修复项，2026-11-06）**：校验器对本包的两条 **FAIL**（§2.1.5 禁
+  `DisplayDialog`）清零。`StretchBakeCommand` 4 处 + `StretchCreateCommand` 6 处弹窗全部去弹窗化：
+  提示走 `Debug.Log`、异常兜底保留 `Debug.LogWarning`；「网格不可读 → 是否自动开启 Read/Write」的
+  二选一确认框拆成独立菜单 `开启选中模型的 Read/Write`（`EnableReadWriteMenu`，能力不减）。
+  取证：内存探针 6 节全绿（无选中/无 MeshFilter 两条分支 ×3 命令 + 菜单注册 + 场景 dirty 未变）、
+  控制台终读 0 error 0 warning、`compilationFailed=False`、校验器整体转绿灯。证据见 ACCEPTANCE 89–92。
+
 ## 2. 未完成
 - 展板视频"画面真出"待用户前台 Play 目视（无头环境异步解码不推帧，见 ACCEPTANCE 82 后说明）；
   射线组件与命中链已实测贯通，用户现在应当**能点到**「播放演示」。
@@ -55,6 +62,13 @@
   `game_view --save_path` 路径重定位 Assets/.locks（用后清）；**eval 环境不能反射调 OnInspectorGUI**
   （"You can only call GUI functions from inside OnGUI"，引擎限制）——面板验证只能走
   "反射数据方法 + 静态配平"路线，渲染冒烟不可行。
+- **通道实测（0.4.4，2026-11-06）**：两段式命令名**整体加引号**会打到服务端命令索引上并产生一条
+  `LogError`（`No command named 'console clear' is available. Did you mean 'console clear'?`），
+  与 AGENTS.md §1.6b 括注「须整体加引号」**相反**；`unity command console clear`（不加引号）实测可用。
+  同因：`verify_project.py:362` 用 `unity --json command "console status"`，故校验器**每次**都报
+  `[WARN] console: 无法读取控制台状态（'NoneType' object has no attribute 'get'）` —— 这是共享文件
+  `Tools/verify_project.py` 的缺陷（§7 须申报 + §10 规则类变更须先给 diff），**本包未自行修改**。
+  控制台归零一律以手动 `console status` 的 `groundTruth` 读数为准。
 
 ## 4. 下一步
 - 用户在 TestPlayground 复验新面板（边界逐行、插入、拖拽把手、越界重排），反馈定优先级；
