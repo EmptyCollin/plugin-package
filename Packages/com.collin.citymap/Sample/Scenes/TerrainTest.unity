@@ -129,6 +129,7 @@ GameObject:
   m_Component:
   - component: {fileID: 309801772}
   - component: {fileID: 309801771}
+  - component: {fileID: 309801773}
   m_Layer: 0
   m_Name: Directional Light
   m_TagString: Untagged
@@ -216,6 +217,35 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 50, y: -30, z: 0}
+--- !u!114 &309801773
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 309801770}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 474bcb49853aa07438625e644c072ee6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.UniversalAdditionalLightData
+  m_UsePipelineSettings: 1
+  m_AdditionalLightsShadowResolutionTier: 2
+  m_CustomShadowLayers: 0
+  m_LightCookieSize: {x: 1, y: 1}
+  m_LightCookieOffset: {x: 0, y: 0}
+  m_SoftShadowQuality: 0
+  m_RenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_ShadowRenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_Version: 4
+  m_LightLayerMask: 1
+  m_ShadowLayerMask: 1
+  m_RenderingLayers: 1
+  m_ShadowRenderingLayers: 1
 --- !u!1 &511657799
 GameObject:
   m_ObjectHideFlags: 0
@@ -308,9 +338,111 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1352334804
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1352334807}
+  - component: {fileID: 1352334806}
+  - component: {fileID: 1352334805}
+  m_Layer: 0
+  m_Name: City Terrain
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1352334805
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1352334804}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 265271b9e4bed644ba5c622c13a42bd6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: com.collin.citymap::Collin.CityMap.CityTerrainView
+  showTerrain: 1
+  showWater: 1
+  chunkSizeMeters: 128
+  uvTileScale: 16
+  slopeVertexColors: 1
+  materialOverride: {fileID: 0}
+  projectForStandalone: {fileID: 11400000, guid: 6eaae9cb33288974983e9a2c8553d003, type: 2}
+--- !u!114 &1352334806
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1352334804}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2675a328eba35d34c8c341d19ae96218, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: com.collin.citymap::Collin.CityMap.CityTerrain
+  profile: {fileID: 11400000, guid: 4be71d87233d3c6418031e01dd36e05d, type: 2}
+  autoFlattenAtCenter: 1
+  autoTileCount: 8
+  manualZones: []
+  delta: {fileID: 11400000, guid: 142e83d0ddd528c44a802375ff197cbf, type: 2}
+  water: {fileID: 11400000, guid: d188ddd9929c9484a8274232779901cc, type: 2}
+  flattenFilter: {fileID: 11400000, guid: ed1e728584624cd4aad747c71c0edf1f, type: 2}
+  bakeProfileVersion: 313
+  bakeProjectVersion: 16
+  bakeDeltaSeq: 72
+  bakeStale: 0
+  flattenEnabled: 1
+  sculptToolActive: 0
+  waterToolActive: 0
+  waterToolMode: 0
+  askBeforeLandlocked: 1
+  landlockedDepth: 1.8
+  stableId: terrainInst-00000001-ba8eaa
+  ledger:
+    channels:
+    - Kind: 32
+      Sequence: 1
+      Center: {x: 0, y: 0, z: 0}
+      Size: {x: 32, y: 1, z: 32}
+    - Kind: 4096
+      Sequence: 72
+      Center: {x: 2066.956, y: 0, z: 1881.054}
+      Size: {x: 957.3711, y: 1, z: 1054.2118}
+    - Kind: 64
+      Sequence: 121
+      Center: {x: 0, y: 0, z: 0}
+      Size: {x: 32, y: 1, z: 32}
+    - Kind: 2
+      Sequence: 105
+      Center: {x: 0, y: 0, z: 0}
+      Size: {x: 16, y: 16, z: 16}
+    manualVersion: 121
+--- !u!4 &1352334807
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1352334804}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
   - {fileID: 511657802}
   - {fileID: 309801772}
+  - {fileID: 1352334807}

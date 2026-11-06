@@ -23,6 +23,14 @@
         "com.unity.inputsystem": "1.20.1"
       }
     },
+    "com.collin.stealthplanner": {
+      "version": "file:com.collin.stealthplanner",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.collin.core": "0.2.0"
+      }
+    },
     "com.collin.stretch": {
       "version": "file:com.collin.stretch",
       "depth": 0,

@@ -13,7 +13,7 @@ MonoBehaviour:
   m_Name: TerrainProfile
   m_EditorClassIdentifier: com.collin.citymap:Collin.CityMap:TerrainProfile
   schemaVersion: 1
-  stableId: terrain-0000014d-e401d5
+  stableId: terrain-00000002-1c162f
   ledger:
     channels: []
     manualVersion: 0

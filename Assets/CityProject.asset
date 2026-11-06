@@ -10,17 +10,23 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 09f92212d045203459ea66063a1c5afa, type: 3}
-  m_Name: test
+  m_Name: CityProject
   m_EditorClassIdentifier: com.collin.citymap::Collin.CityMap.CityProject
   schemaVersion: 1
-  stableId: city-0000014b-e2ed48
+  stableId: city-0000007d-f105ab
   ledger:
-    channels: []
-    manualVersion: 0
+    channels:
+    - Kind: 2
+      Sequence: 21
+      Center: {x: 4000, y: 0, z: 4000}
+      Size: {x: 8000, y: 1, z: 8000}
+    manualVersion: 21
   worldSize: 8000
   scaleProfile: 1
   buildableInset: 60
   seed: 1700
+  seaLevel: 3
+  waterBuffer: 10
   centerAnchor:
     IsSet: 0
     Position: {x: 0, y: 0}
