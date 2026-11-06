@@ -357,8 +357,12 @@ namespace Collin.StealthPlanner
 
         static long EdgeKey(int fromCell, int fromLayer, int toCell)
         {
-            // 三者各 < 2^21 ⇒ 拼进 long 不串键
-            return ((long)fromLayer << 42) | ((long)fromCell << 21) | toCell;
+            // 三者各 < 2^21 ⇒ 拼进 long 不串键。
+            // 末位必须 (uint)：裸 int 参与 long 的 | 会先做**符号扩展** ⇒ CS0675 warning，
+            // 直接破坏 §1.6b 归零门禁（本包此处曾长期挂着这条告警，属自造红灯，不走 §1.8 豁免）。
+            // 语义不变：toCell 恒 < 2^21 ⇒ 非负 ⇒ 零扩展与符号扩展结果相同，只是编译器无法自行证明。
+            // 同族写法见 PackKey（同样末位转 uint），两处口径一致。
+            return ((long)fromLayer << 42) | ((long)fromCell << 21) | (uint)toCell;
         }
     }
 }

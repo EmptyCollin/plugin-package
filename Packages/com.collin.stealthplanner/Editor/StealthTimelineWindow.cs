@@ -59,6 +59,9 @@ namespace Collin.StealthPlanner.EditorTooling
         string _routesSummary;
         // 静态设计 4：导出结果文本（点「导出为路点数据集」后写入；非模态——§2.1.5 禁阻塞弹窗）
         string _exportSummary;
+        // U-2 / D-13：建议参考相位时长的读数（Reload 时随表刷新，纯派生态、不序列化）。
+        // 只读展示 + 「一键填入」由用户点击触发 ⇒ 算法永不自动改写手配的 P。
+        PhaseReference.Result _phaseRef;
         readonly System.Collections.Generic.List<PhaseKShortest.Route> _routeBuf
             = new System.Collections.Generic.List<PhaseKShortest.Route>();
 
@@ -142,6 +145,41 @@ namespace Collin.StealthPlanner.EditorTooling
                 Recompute();
             }
             EditorGUILayout.EndHorizontal();
+
+            // U-2 / D-13 / §6.7：建议参考相位时长。**只读展示**，不自动回写手配的 P；
+            // 「一键填入」必须由用户点击触发（自动改写=偷改策划的设计意图，正是 D-13 否决的方案）。
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("建议参考相位时长（决议 D-13 / §6.7）", EditorStyles.boldLabel);
+            if (!_phaseRef.Valid)
+            {
+                EditorGUILayout.LabelField(_phaseRef.Note, EditorStyles.wordWrappedMiniLabel);
+            }
+            else
+            {
+                var pv = _settings != null ? _settings.PhaseWindow : 0f;
+                EditorGUILayout.LabelField("建议值（秒）", _phaseRef.ReferenceSeconds.ToString("0.##")
+                    + (_phaseRef.FellBack ? "（近似：LCM 爆炸，已兜底 max(c_i)×2）"
+                                          : "（严格：LCM = " + _phaseRef.AlignedBuckets + " 桶）"));
+                EditorGUILayout.LabelField("当前手配 P（秒）", pv.ToString("0.##")
+                    + "  ·  相位轮数 N=" + (_settings != null ? _settings.MaxPhases.ToString() : "-"));
+                if (_phaseRef.FellBack) EditorGUILayout.HelpBox(_phaseRef.Note, MessageType.Warning);
+                else EditorGUILayout.LabelField(_phaseRef.Note, EditorStyles.wordWrappedMiniLabel);
+
+                using (new EditorGUI.DisabledScope(_settings == null))
+                {
+                    if (GUILayout.Button("一键填入为手配 P（仅此按钮会改设置资产）"))
+                    {
+                        Undo.RecordObject(_settings, "填入建议相位时长");
+                        _settings.SetPhaseWindow(_phaseRef.ReferenceSeconds);
+                        EditorUtility.SetDirty(_settings);
+                        _buckets = _settings.BucketsPerPhase;
+                        Recompute();
+                        Debug.Log("[Planner] 已按用户点击把相位窗 P 填入为 "
+                            + _phaseRef.ReferenceSeconds.ToString("0.##") + "s（建议值="
+                            + (_phaseRef.FellBack ? "兜底近似" : "严格 LCM") + "）");
+                    }
+                }
+            }
 
             // 静态设计 2/3/4：可行性求解 + 前 M 条短解。与热区共用同一张表与人速，结果只以文本呈现，
             // 不驱动逐桶热区（那会再引入一套「什么时候算」的口径）。
@@ -310,6 +348,13 @@ namespace Collin.StealthPlanner.EditorTooling
             }
 
             if (_settings != null && _settings.BucketsPerPhase > 0) _buckets = _settings.BucketsPerPhase;
+
+            // U-2 / §6.7：参考相位时长随表刷新。输入=各哨兵**自身周期**（与烘焙填桶同一份数据），
+            // 时间步长取表的 Δt 而非设置资产的 Δt —— 表是实际烘焙出来的东西，设置可能已被改过未重烘，
+            // 用设置值算会让建议值与表对不上（同一份口径纪律，D-22 同族）。
+            var cycles = new float[_table.Slices.Count];
+            for (var s = 0; s < cycles.Length; s++) cycles[s] = _table.Slices[s].cycleSeconds;
+            _phaseRef = PhaseReference.Suggest(cycles, _table.TimeStep);
 
             // 两类来源合并在这份名单里：①位姿不可解析被整片跳过 ②跑完了但整条周期零可见。
             // 二者在表侧语义相同 —— 该哨兵的视野在表里等于不存在 ⇒ 它的视野区会被画成安全（谎报安全）。

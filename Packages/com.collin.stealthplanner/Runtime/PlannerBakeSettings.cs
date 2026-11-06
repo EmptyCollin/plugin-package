@@ -61,6 +61,19 @@ namespace Collin.StealthPlanner
         /// </summary>
         public const int MaxAlignedBuckets = 7200;
 
+        /// <summary>
+        /// 相位窗 P 的**唯一公开写入口**（§0.1 原则2：Controller 只写 Model）。
+        /// <para>存在的理由：D-13 要求面板「一键填入」必须由**用户主动点击**触发，
+        /// 而 Editor 程序集碰不到私有的 <c>_phaseWindow</c>。留一条反射/SO 字符串写路径
+        /// 等于把字段名变成跨程序集契约（改名即静默失效，本包已因此吃过 JsonUtility 补零的亏）。</para>
+        /// <para>纪律同 <see cref="OnValidate"/>：**只钳自身、不做隐式联动** —— 填 P 不会顺手改 Δt 或格长。</para>
+        /// </summary>
+        public void SetPhaseWindow(float seconds)
+        {
+            if (float.IsNaN(seconds) || float.IsInfinity(seconds)) return;   // 非法输入直接忽略，不写脏值
+            _phaseWindow = Mathf.Max(1f, seconds);
+        }
+
         void OnValidate()
         {
             // 只在越界时钳制，不做隐式联动（所见即所得：改了 Δt 不该偷偷改 P）
