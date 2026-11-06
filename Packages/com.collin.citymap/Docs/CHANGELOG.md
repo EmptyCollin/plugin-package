@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Changed
+- **展板谱系元数据（2026-11-06）**：`Showcase.json` 增 `tier: "product"`——本包是产品层根节点；
+  能力包 stretch 以 `extractedFrom` 声明诞生自本包，展板导出闭包据此呈现「导出 citymap 必带 stretch」。
+  纯元数据变更，无代码改动。
+
 ### Fixed
 - **M6-a/b/c/d/e（用户五项反馈一次收口：面板、即时刷新、平整"灾难"、右上角语义、笔刷撤销）**
   （本包 **184/184** Failed 0，全工程 **386/386** Failed 0；提交 `a220d2a`）：

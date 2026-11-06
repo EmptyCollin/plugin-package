@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Changed
+- **展板谱系元数据（2026-11-06）**：`Showcase.json` 增 `tier: "product"`——本包是产品层根节点；
+  工具包 stealthplanner 以 `extractedFrom` 声明诞生自本包，展板导出闭包据此呈现
+  「导出 stealthplanner 必带 stealth」（向上抽离·工具依赖运行时），而本包独立导出不含工具。
+  纯元数据变更，无代码改动。
+
 ### Fixed（编辑态注册表缓存滞留，session stealth-u8fix-2026-11-05）
 - 🐛 **编辑态切换场景后 `IVisionWorld.Volumes` 静默返回 0**（巡逻单位数正常，唯独视野体为空）。
   由 B 包（设计辅助台）在跨场景取证的探针里撞见并上报（其 ACCEPTANCE **U-8**）；本包侧根因已实测坐实：

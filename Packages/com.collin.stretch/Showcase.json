@@ -3,5 +3,7 @@
   "category": "建模工具",
   "summary": "沿单轴对任意多面体做分段复制式拉伸：跨界三角形自动裁剪分片、切口 UV 插值，边界切在哪都对，窗户永不拉伸；固定段刚性平移、可重复段整数倍复制，拉伸后碰撞体与刚体自动同步视觉尺寸。实例 Inspector 选轴划段填倍数即时预览，共享结构资产可被多实例不同倍数复用。",
   "video": "ShowcaseMedia/stretch_demo.mp4",
-  "order": 10
+  "order": 10,
+  "tier": "capability",
+  "extractedFrom": "com.collin.citymap"
 }

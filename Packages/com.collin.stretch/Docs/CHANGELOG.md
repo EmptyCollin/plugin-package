@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Changed
+- **展板谱系元数据（2026-11-06）**：`Showcase.json` 增 `tier: "capability"` 与
+  `extractedFrom: "com.collin.citymap"`——本包是**向下抽离**的能力包：诞生自 citymap 的建筑拉伸需求，
+  导出 citymap 时必须携带本包。纯元数据变更，无代码改动。
+
 ## [0.4.4] - 2026-11-06
 ### Changed（通道纪律合规：阻塞式弹窗全部改为日志，AGENTS.md §2.1.5）
 - `StretchBakeCommand`：菜单入口与面板按钮共 4 处 `EditorUtility.DisplayDialog` → `Debug.Log`。

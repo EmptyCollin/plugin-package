@@ -5,6 +5,9 @@
 ## [Unreleased]
 
 ### Added
+- **展板抽离谱系（2026-11-06，DESIGN D-8）**：`ShowcaseEntry` 新增可选字段 `tier` / `extractedFrom`；
+  `ShowcaseSorter` 新增纯函数 `TierOf` / `LineageGroups` / `ExportClosure` / `ExtractedFromEntry` / `ExtracteesOf`
+  （方向化导出闭包：产品携带向下抽离的能力、工具携带向上抽离的运行时；既有 `DependencyClosure` 行为不变）。
 - **潜行跨包契约层** `Runtime/StealthContracts/`（3 文件，2026-11-03，DESIGN D-7 / 方案 P）：
   - `StealthDtos.cs`：位姿（含 `valid` 有效性位）、路点、轨迹采样、单位信息、视野快照、时钟状态、察觉事件载荷，
     以及 `StealthLoopMode` / `StealthAlertStage` / `StealthQueryLayers` 三组镜像枚举；

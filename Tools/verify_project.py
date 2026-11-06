@@ -29,6 +29,38 @@ LOCK_TTL = 300
 
 CHECKS = [("PASS", "start", "校验开始")]
 
+# AGENTS.md §2.1.7：SceneView duringSceneGui 回调内禁止 Gizmos.*
+NAMED_SCENE_GUI_RE = re.compile(r"duringSceneGui\s*\+=\s*(\w+)\s*;")
+ANON_SCENE_GUI_RE = re.compile(r"duringSceneGui\s*\+=\s*[(\(]")
+BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+
+
+def method_body(text, name):
+    """按大括号配对取出名为 name 的方法体（用于把 Gizmos 判定限制在回调内部）。"""
+    match = re.search(r"\b(?:void|bool|int|string)\s+%s\s*\([^)]*\)\s*\{" % re.escape(name), text)
+    if not match:
+        return ""
+    depth, start = 0, match.end() - 1
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:idx + 1]
+    return ""
+
+
+def strip_comments(text):
+    """剥离行注释与块注释，避免把注释里的 API 名当成真实调用（曾误判 Gizmos.* 为假阳性）。"""
+    text = BLOCK_COMMENT_RE.sub(" ", text)
+    lines = []
+    for line in text.split("\n"):
+        cut = line.find("//")
+        lines.append(line if cut < 0 else line[:cut])
+    return "\n".join(lines)
+
 
 def add(level, code, msg):
     CHECKS.append((level, code, msg))
@@ -113,6 +145,7 @@ def check_package_layout(packages):
     core_names = [n for n, _ in packages if n.endswith(CORE_SUFFIX)]
     feature_names = [n for n, _ in packages if not n.endswith(CORE_SUFFIX)]
     feature_set = set(feature_names)
+    pkg_names = set(n for n, _ in packages)
 
     if packages and not core_names:
         add("FAIL", "core-missing",
@@ -151,6 +184,20 @@ def check_package_layout(packages):
             for field in ["name", "category", "summary", "order"]:
                 if field not in showcase:
                     add("FAIL", "showcase", "%s Showcase.json 缺字段 %s" % (name, field))
+            tier = showcase.get("tier")
+            if tier is not None and tier not in ("middleware", "capability", "product", "tool"):
+                add("FAIL", "showcase-lineage",
+                    "%s Showcase.tier=%r 非法（§6：middleware/capability/product/tool）"
+                    % (name, tier))
+            src = showcase.get("extractedFrom")
+            if isinstance(src, str) and src:
+                if src == name:
+                    add("FAIL", "showcase-lineage",
+                        "%s Showcase.extractedFrom 指向自身" % name)
+                elif src not in pkg_names:
+                    add("FAIL", "showcase-lineage",
+                        "%s Showcase.extractedFrom=%s 不是本仓库存在的包（§6）"
+                        % (name, src))
             order = showcase.get("order")
             if not isinstance(order, (int, float)) or isinstance(order, bool):
                 add("FAIL", "showcase", "%s Showcase.order 必须是数字" % name)
@@ -327,10 +374,12 @@ def check_console():
 
     try:
         proc = subprocess.run(
-            ["unity", "--json", "command", "console status", "--non-interactive"],
+            ["unity", "--json", "command", "console", "status", "--non-interactive"],
             cwd=ROOT, capture_output=True, timeout=45)
         payload = json.loads(proc.stdout.decode("utf-8", "ignore"))
         gt = payload.get("data", {}).get("result", {}).get("groundTruth", {})
+        if not gt:
+            raise ValueError("响应缺少 groundTruth（命令形式或输出结构变化）")
     except FileNotFoundError:
         add("WARN", "console", "找不到 unity CLI，无法验证控制台归零——交锁前须手动跑 §1.6b")
         return
@@ -355,7 +404,7 @@ def check_console():
     offenders = []
     try:
         proc = subprocess.run(
-            ["unity", "--json", "command", "console get", "--tail", "200",
+            ["unity", "--json", "command", "console", "get", "--tail", "200",
              "--non-interactive"],
             cwd=ROOT, capture_output=True, timeout=45)
         entries = json.loads(proc.stdout.decode("utf-8", "ignore")) \
@@ -393,6 +442,52 @@ def check_console():
                 % (total, exempted, total - exempted))
 
 
+def check_channel_discipline():
+    """AGENTS.md §2.1 通道纪律：可静态判定的阻塞调用与假绿红线。"""
+    offenders = []
+    scene_switchers = []
+    for _name, path in unity_packages():
+        ed = os.path.join(path, "Editor")
+        if not os.path.isdir(ed):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(ed):
+            for fn in filenames:
+                if not fn.endswith(".cs"):
+                    continue
+                fp = os.path.join(dirpath, fn)
+                try:
+                    text = open(fp, encoding="utf-8-sig", errors="ignore").read()
+                except Exception:
+                    continue
+                rp = rel(fp)
+                code = strip_comments(text)
+                if not code.strip():
+                    continue
+                if re.search(r"\bEditorUtility\.DisplayDialog", code):
+                    offenders.append((rp, "调用 DisplayDialog 阻塞主线程 = 卡死指令通道（§2.1.5）"))
+                handlers = set(NAMED_SCENE_GUI_RE.findall(code))
+                for handler in sorted(handlers):
+                    body = method_body(code, handler)
+                    if body and re.search(r"\bGizmos\.", body):
+                        offenders.append((rp, "duringSceneGui 回调 %s 内调用 Gizmos.*，"
+                                             "每帧抛 error 顶爆 §1.6b 门禁，须改用 Handles.*（§2.1.7）"
+                                             % handler))
+                if not handlers and ANON_SCENE_GUI_RE.search(code) \
+                        and re.search(r"\bGizmos\.", code):
+                    offenders.append((rp, "以匿名 lambda 挂 duringSceneGui 且同文件出现 Gizmos.*，"
+                                         "无法静态定位回调体，须人工确认（§2.1.7）"))
+                if re.search(r"OpenSceneMode\.Single", code):
+                    scene_switchers.append(rp)
+    for rp, why in offenders:
+        add("FAIL", "channel-discipline", "%s：%s" % (rp, why))
+    for rp in scene_switchers:
+        add("WARN", "channel-scene",
+            "%s 以 Single 模式切场景，调用前须确认目标场景 dirty==false（§2.1.6）" % rp)
+    if not offenders:
+        add("PASS", "channel-discipline",
+            "Editor 代码未见阻塞式弹窗，SceneView 回调内未见 Gizmos 调用")
+
+
 def main():
     as_json = "--json" in sys.argv[1:]
     check_unity_version()
@@ -404,6 +499,7 @@ def main():
     check_runtime_purity()
     check_locks()
     check_hygiene()
+    check_channel_discipline()
     check_console()
 
     fails = [c for c in CHECKS if c[0] == "FAIL"]

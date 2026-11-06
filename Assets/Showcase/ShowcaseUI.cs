@@ -20,6 +20,7 @@ public class ShowcaseUI : MonoBehaviour
     private Text _detailTitle;
     private Text _detailCategory;
     private Text _detailSummary;
+    private Text _detailLineage;
     private Text _detailDeps;
     private RawImage _videoImage;
     private VideoPlayer _videoPlayer;
@@ -101,35 +102,51 @@ public class ShowcaseUI : MonoBehaviour
         scroll.viewport = viewport;
         _listRoot = content;
 
-        // 右栏：详情
+        // 右栏：详情（文本区可滚动，避免长摘要被截断；底部固定视频区）
         var right = CreateRect("Right", transform,
             new Vector2(0.34f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero);
         var rightBg = right.gameObject.AddComponent<Image>();
         rightBg.color = Bg;
 
-        _detailTitle = CreateText("DetailTitle", right, 40, TextMain,
-            new Vector2(0f, 1f), new Vector2(1f, 1f),
-            new Vector2(24f, -72f), new Vector2(-24f, -20f));
-        _detailCategory = CreateText("DetailCategory", right, 22, TextDim,
-            new Vector2(0f, 1f), new Vector2(1f, 1f),
-            new Vector2(24f, -106f), new Vector2(-24f, -76f));
-        _detailSummary = CreateText("DetailSummary", right, 24, TextMain,
-            new Vector2(0f, 1f), new Vector2(1f, 1f),
-            new Vector2(24f, -230f), new Vector2(-24f, -114f));
-        _detailSummary.horizontalOverflow = HorizontalWrapMode.Wrap;
-        _detailDeps = CreateText("DetailDeps", right, 18, TextDim,
-            new Vector2(0f, 1f), new Vector2(1f, 1f),
-            new Vector2(24f, -268f), new Vector2(-24f, -238f));
+        var textScrollRt = CreateRect("TextScroll", right,
+            new Vector2(0f, 0f), new Vector2(1f, 1f),
+            new Vector2(12f, 380f), new Vector2(-12f, -12f));
+        var textScroll = textScrollRt.gameObject.AddComponent<ScrollRect>();
+        textScroll.horizontal = false;
+        textScroll.vertical = true;
+        var textViewport = CreateRect("Viewport", textScrollRt,
+            new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero);
+        textViewport.gameObject.AddComponent<RectMask2D>();
+        var textContent = CreateRect("Content", textViewport,
+            new Vector2(0f, 1f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero);
+        textContent.pivot = new Vector2(0.5f, 1f);
+        var tvlg = textContent.gameObject.AddComponent<VerticalLayoutGroup>();
+        tvlg.spacing = 8f;
+        tvlg.padding = new RectOffset(12, 12, 6, 12);
+        tvlg.childControlWidth = true;
+        tvlg.childControlHeight = true;
+        tvlg.childForceExpandWidth = true;
+        tvlg.childForceExpandHeight = false;
+        textContent.gameObject.AddComponent<ContentSizeFitter>().verticalFit =
+            ContentSizeFitter.FitMode.PreferredSize;
+        textScroll.content = textContent;
+        textScroll.viewport = textViewport;
+
+        _detailTitle = CreateAutoText("DetailTitle", textContent, 40, TextMain);
+        _detailCategory = CreateAutoText("DetailCategory", textContent, 22, TextDim);
+        _detailSummary = CreateAutoText("DetailSummary", textContent, 24, TextMain);
+        _detailLineage = CreateAutoText("DetailLineage", textContent, 19, TextDim);
+        _detailDeps = CreateAutoText("DetailDeps", textContent, 18, TextDim);
 
         var videoNode = CreateRect("Video", right,
             new Vector2(0.5f, 0f), new Vector2(0.5f, 0f),
-            new Vector2(-480f, 84f), new Vector2(480f, 444f));
+            new Vector2(-263f, 64f), new Vector2(263f, 360f));
         _videoImage = videoNode.gameObject.AddComponent<RawImage>();
         _videoImage.color = new Color(0f, 0f, 0f, 1f);
 
         var playBtnRt = CreateRect("PlayBtn", right,
             new Vector2(0.5f, 0f), new Vector2(0.5f, 0f),
-            new Vector2(-90f, 20f), new Vector2(90f, 64f));
+            new Vector2(-90f, 4f), new Vector2(90f, 56f));
         MakeButton(playBtnRt, "播放演示", OnPlayClicked);
 
         _videoPlayer = gameObject.AddComponent<VideoPlayer>();
@@ -183,7 +200,7 @@ public class ShowcaseUI : MonoBehaviour
             _videoImage.texture = null;
             return;
         }
-        RebuildList();
+        RebuildLineageList();
         Select(0);
     }
 
@@ -207,11 +224,44 @@ public class ShowcaseUI : MonoBehaviour
         _detailCategory.text = string.IsNullOrEmpty(entry.category) ? "未分类" : entry.category;
         _detailSummary.text = string.IsNullOrEmpty(entry.summary) ? "（无简介）" : entry.summary;
 
-        var closure = ShowcaseSorter.DependencyClosure(entry.packageId, _entries);
+        var lineage = new List<string>();
+        if (!string.IsNullOrEmpty(entry.extractedFrom))
+        {
+            var src = ShowcaseSorter.ExtractedFromEntry(entry, _entries);
+            string srcName = src != null
+                ? (string.IsNullOrEmpty(src.name) ? src.packageId : src.name)
+                : entry.extractedFrom;
+            lineage.Add(ShowcaseSorter.TierOf(entry) == ShowcaseSorter.TierTool
+                ? "抽离自 " + srcName + "（向上抽离·工具，运行依赖 " + srcName + "）"
+                : "抽离自 " + srcName + "（向下抽离·能力）");
+        }
+        foreach (var kid in ShowcaseSorter.ExtracteesOf(entry, _entries))
+        {
+            lineage.Add("已抽离出 " + (string.IsNullOrEmpty(kid.name) ? kid.packageId : kid.name));
+        }
+        if (ShowcaseSorter.TierOf(entry) == ShowcaseSorter.TierMiddleware)
+        {
+            lineage.Add("谱系层：中间件层 · 所有包的公共依赖");
+        }
+        else if (lineage.Count == 0)
+        {
+            lineage.Add("谱系层：" + TierLabel(ShowcaseSorter.TierOf(entry)) + " · 未登记抽离血缘");
+        }
+        _detailLineage.text = string.Join("\n", lineage);
+
+        var closure = ShowcaseSorter.ExportClosure(entry.packageId, _entries);
         closure.Remove(entry.packageId);
-        _detailDeps.text = _cycleWarning + (closure.Count == 0
-            ? "依赖：无（独立包）"
-            : "依赖闭包：" + string.Join("、", new List<string>(closure)));
+        var names = new List<string>();
+        foreach (var e in _entries)
+        {
+            if (closure.Contains(e.packageId))
+            {
+                names.Add(string.IsNullOrEmpty(e.name) ? e.packageId : e.name);
+            }
+        }
+        _detailDeps.text = _cycleWarning + (names.Count == 0
+            ? "导出携带：无（独立包）"
+            : "导出携带（依赖闭包）：" + string.Join("、", names));
 
         _currentVideoPath = ShowcaseRuntime.ResolveVideoPath(entry);
         if (string.IsNullOrEmpty(_currentVideoPath))
@@ -295,14 +345,18 @@ public class ShowcaseUI : MonoBehaviour
 
     // ── uGUI 小工具 ───────────────────────────────────────────
 
-    private void AddItem(ShowcaseEntry entry, int index)
+    private void AddItem(ShowcaseEntry entry, int index, bool indented = false)
     {
         var rt = CreateRect("Item_" + entry.packageId, _listRoot,
             new Vector2(0f, 1f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero);
         rt.gameObject.AddComponent<LayoutElement>().minHeight = 64f;
         var label = CreateText("Label", rt, 22, TextMain,
-            Vector2.zero, Vector2.one, new Vector2(12f, -6f), new Vector2(-12f, -6f));
-        label.text = (string.IsNullOrEmpty(entry.category) ? "未分类" : entry.category)
+            Vector2.zero, Vector2.one,
+            new Vector2(indented ? 34f : 12f, -6f), new Vector2(-12f, -6f));
+        string tierMark = indented
+            ? "↳ <color=#c9a86a>" + TierLabel(ShowcaseSorter.TierOf(entry)) + "</color> "
+            : "";
+        label.text = tierMark + (string.IsNullOrEmpty(entry.category) ? "未分类" : entry.category)
             + "\n<size=15><color=#8f97a3>" + (string.IsNullOrEmpty(entry.name) ? entry.packageId : entry.name) + "</color></size>";
         label.alignment = TextAnchor.MiddleLeft;
         var btn = MakeButton(rt, null, null);
@@ -352,6 +406,25 @@ public class ShowcaseUI : MonoBehaviour
         return txt;
     }
 
+    /// <summary>放进 VerticalLayoutGroup 的自适应高度文本：宽度换行、高度随内容。</summary>
+    private static Text CreateAutoText(string name, Transform parent, int size, Color color)
+    {
+        var rt = CreateRect(name, parent, Vector2.zero, Vector2.zero, Vector2.zero, Vector2.zero);
+        rt.anchorMin = new Vector2(0f, 1f);
+        rt.anchorMax = new Vector2(1f, 1f);
+        rt.pivot = new Vector2(0.5f, 1f);
+        var txt = rt.gameObject.AddComponent<Text>();
+        txt.font = LegacySkin();
+        txt.fontSize = size;
+        txt.color = color;
+        txt.horizontalOverflow = HorizontalWrapMode.Wrap;
+        txt.verticalOverflow = VerticalWrapMode.Overflow;
+        txt.alignment = TextAnchor.UpperLeft;
+        var fitter = rt.gameObject.AddComponent<ContentSizeFitter>();
+        fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+        return txt;
+    }
+
     private static Font _font;
     private static Font LegacySkin()
     {
@@ -362,12 +435,49 @@ public class ShowcaseUI : MonoBehaviour
         return _font;
     }
 
-    /// <summary>Reload() 末尾由 Select 驱动 AddItem；此钩子在数据刷新后重建按钮列表。</summary>
+    /// <summary>Reload() 末尾由 Select 驱动 AddItem；此钩子按抽离谱系分组重建按钮列表。</summary>
     private void RebuildList()
     {
         for (int i = 0; i < _entries.Count; i++)
         {
             AddItem(_entries[i], i);
+        }
+    }
+
+    /// <summary>谱系分组视图：中间件层一组，其余按抽离血缘聚成产品线；组内母体在前、抽离品缩进跟随。</summary>
+    private void RebuildLineageList()
+    {
+        foreach (var group in ShowcaseSorter.LineageGroups(_entries))
+        {
+            var headRt = CreateRect("Group_" + group.rootId, _listRoot,
+                new Vector2(0f, 1f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero);
+            headRt.gameObject.AddComponent<LayoutElement>().minHeight = 34f;
+            var head = CreateText("Label", headRt, 20, new Color(0.45f, 0.62f, 0.85f),
+                Vector2.zero, Vector2.one, new Vector2(12f, -4f), new Vector2(-12f, -4f));
+            head.text = group.entries.Count > 1
+                ? "▍" + group.title + " <size=14><color=#8f97a3>产品线 · " + group.entries.Count + " 包</color></size>"
+                : "▍" + group.title;
+            head.alignment = TextAnchor.MiddleLeft;
+
+            foreach (var e in group.entries)
+            {
+                int myIndex = _entries.IndexOf(e);
+                if (myIndex < 0) continue;
+                bool indented = !string.IsNullOrEmpty(group.rootId) && e.packageId != group.rootId;
+                AddItem(e, myIndex, indented);
+            }
+        }
+    }
+
+    private static string TierLabel(string tier)
+    {
+        switch (tier)
+        {
+            case ShowcaseSorter.TierMiddleware: return "中间件层";
+            case ShowcaseSorter.TierCapability: return "能力层";
+            case ShowcaseSorter.TierTool: return "工具层";
+            case ShowcaseSorter.TierProduct: return "产品层";
+            default: return "组件";
         }
     }
 }

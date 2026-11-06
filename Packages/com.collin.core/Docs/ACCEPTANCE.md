@@ -67,3 +67,33 @@
 - 本会话自造的 1 条 error 已修复：契约的「重复注册」用例**故意**触发 core 冲突 error，
   原先用 `LogAssert.Expect` 声明预期——实测该方法**只让测试不失败、不回退 `consoleErrors` 计数**，
   仍会破 §1.6b 门禁。正解改为断言期间 `Debug.unityLogger.logEnabled=false` + `finally` 复位。
+
+# v0.2.0 增量（展板抽离谱系，2026-11-06，验证者 qianwen-work-assistant · showcase-lineage-2026-11-06）
+
+> 本增量：`ShowcaseEntry` 增可选字段 `tier`/`extractedFrom`；`ShowcaseSorter` 增谱系纯函数
+> （`TierOf`/`LineageGroups`/`ExportClosure`/`ExtractedFromEntry`/`ExtracteesOf`，DESIGN D-8）；
+> 五包 Showcase.json 补谱系字段；展板 UI 改分组呈现；校验器增 `showcase-lineage` 检查；AGENTS §6 同步。
+
+| # | 验收项（可观测行为） | 验证指令 / 方法 | 日期时间 | 结果与证据 |
+|---|---|---|---|---|
+| 24 | 展板左栏按谱系分组：中间件层独立一组；citymap 组含 stretch（缩进跟随）；stealth 组含 stealthplanner | Play 模式 `eval_file .tmp-inspect/probe_ui.cs` 读 Content 子节点序列 | 2026-11-06 20:36 | `[UIORDER] Group_ \| Item_core \| Group_citymap \| Item_citymap \| Item_stretch \| Group_stealth \| Item_stealth \| Item_stealthplanner`；组内母体在前 |
+| 25 | 详情血缘行方向正确：能力标「向下抽离」、工具标「向上抽离·运行依赖」；母体标「已抽离出」 | 同上，逐条点击读 DetailLineage | 2026-11-06 20:36 | stretch=`抽离自 CityMap（向下抽离·能力）`；stealthplanner=`抽离自 Stealth（向上抽离·工具，运行依赖…）`；citymap/stealth=`已抽离出 …` |
+| 26 | 导出闭包按谱系合成：citymap 携带 stretch；stealthplanner 携带 stealth；stealth 单导出**不**含工具 | 同上读 DetailDeps | 2026-11-06 20:36 | citymap=`Collin Core、Collin Stretch`；stealthplanner=`Collin Core、Collin Stealth`；stealth=`Collin Core`（无工具）；stretch/core 各自只带底座 |
+| 27 | 右栏滚动详情无遮挡：长摘要完整可达、视频区不压文字 | `capture game_view` 截图 + 图像理解核验 | 2026-11-06 20:34 | 核验结论「布局无遮挡、截断或重叠」；截图存 `.tmp-inspect/shot2.png`（不入库） |
+| 28 | 校验器 `showcase-lineage` 项生效且全项目绿灯 | `python Tools/verify_project.py` | 2026-11-06 20:44 | 结论: 绿灯（FAIL 0） |
+
+## 交锁门禁（2026-11-06 20:44 末次实测，三项全绿）
+
+- `console clear` → 重跑本会话全部验证动作（recompile → Play → 逐条点击探针 → 截图 → stop）→
+  `console status` groundTruth = `compilationFailed:false, consoleErrors:0, consoleWarnings:0`；
+  （第一轮复跑曾计 1 条 warning=`Editor is already in play mode`，为验证脚本误重复进 Play 所致，
+  按序重跑后归零，非环境噪声、未申请豁免）
+- `script recompile_status` → `failed:false`；`python Tools/verify_project.py` → **结论: 绿灯**。
+- 全量 EditMode 测试 **386/386 通过（Failed 0）**（`unity command test run --mode EditMode`，
+  2026-11-06 21:0x；本会话改动前基线同为 386，无回归）。
+- 校验器修复顺带登记：`check_console` 原以 `"console status"` 两段式传参，实测该形式在
+  `unity --json command` 下报 Command Not Found（被吞成 WARN"无法读取控制台状态"）——
+  改为分段传参并对空响应抛错；修复后 console 项真实读数 error=0 warning=0。
+- 过程记录（如实）：门禁期间曾两度自造噪声并当场消除——①验证脚本误重复进 Play 产生
+  1 条 `Editor is already in play mode` warning（按序重跑归零）；②测试等待期未续锁心跳，
+  校验器判 5 条 lock-stale FAIL（§2.1.8 教训重演，续期自身锁后转绿）。

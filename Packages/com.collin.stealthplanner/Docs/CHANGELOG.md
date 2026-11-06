@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Changed
+- **展板谱系元数据（2026-11-06）**：`Showcase.json` 增 `tier: "tool"` 与
+  `extractedFrom: "com.collin.stealth"`——本包是**向上抽离**的工具包：诞生自 stealth 的编辑期设计层，
+  但生效前提是可运行的潜行关卡逻辑，导出本包必须携带 stealth。纯元数据变更，无代码改动。
+
 ### Added（M1：时空可见性表 + 烘焙，session planner-m1-2026-11-05）
 **Runtime**（无 UnityEditor 依赖，引擎侧可复用）
 - `VisibilityTable.cs`：表结构本体。按哨兵**分片**、时间索引用 `t mod c_i`（D-02，不物化全局 LCM）；

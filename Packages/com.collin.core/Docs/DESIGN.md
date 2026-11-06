@@ -24,7 +24,7 @@
 |---|---|---|
 | `EventChannel` | Runtime | ScriptableObject 信号通道：`Raise(payload)` / `Subscribe`，广播式跨包事件 |
 | `Services` | Runtime | 静态接口注册表：feature 包注册实现、他包按接口取用；域重载后需重新注册（见 §6 风险） |
-| `ShowcaseEntry` / `ShowcaseSorter` | Runtime | 条目 DTO 与纯函数排序器（Kahn 拓扑 + order + 名称兜底，可单测） |
+| `ShowcaseEntry` / `ShowcaseSorter` | Runtime | 条目 DTO 与纯函数排序器（Kahn 拓扑 + order + 名称兜底，可单测）；含谱系字段 `tier`/`extractedFrom` 与谱系纯函数：`TierOf`（层推断）、`LineageGroups`（按血缘聚成产品线）、`ExportClosure`（方向化导出闭包：产品携带向下抽离的能力、工具携带向上抽离的运行时）、`ExtractedFromEntry`/`ExtracteesOf`（血缘双向查询） |
 | `ShowcaseScanner` | Editor | 经 `PackageInfo.GetAllRegisteredPackages()` 发现 `Packages/com.collin.*` 内嵌包，解析各自 `Showcase.json`，产出排序结果与依赖闭包 |
 | `ShowcaseRuntime` | Runtime | 从项目根 `Packages/` 磁盘枚举 com.collin.* 的 Showcase.json 并复用 Sorter 排序；展板场景（Play 模式）的数据源；含视频绝对路径解析 |
 | `StealthContracts/StealthDtos.cs` | Runtime | 潜行跨包契约的纯数据 DTO（位姿/路点/轨迹采样/单位/视野/时钟/察觉事件 + 层级与档位枚举）；只含值类型与引擎类型 |
@@ -32,8 +32,9 @@
 | `StealthContracts/StealthChannels.cs` | Runtime | 三个 `EventChannel<T>` 具体子类（察觉事件 / 时间索引 / 世界结构变更），兑现「泛型 SO 不可直接实例化」的既有实测约束（见 ACCEPTANCE 第 8 行：泛型通道的 CreateInstance 返回 null） |
 
 数据流：展板场景（Assets/，纯代码构建 UI，场景文件仅一个挂脚本的 GameObject）→
-`ShowcaseRuntime.LoadAndSort()` → 左侧条目列表（名称+分类）/ 右侧详情（摘要+视频+依赖闭包）逐条渲染。
-依赖解析真相源 = 各包 `package.json` 的 `dependencies`（经 PackageInfo 读取），不另建平行登记表（§5）。
+`ShowcaseRuntime.LoadAndSort()` → 左侧**按谱系分组**条目列表（中间件层一组，其余按 `extractedFrom` 聚成产品线，母体在前、抽离品缩进跟随）/ 右侧详情（摘要+视频+抽离血缘行+导出携带闭包）逐条渲染。
+依赖解析真相源 = 各包 `package.json` 的 `dependencies`（经 PackageInfo 读取），不另建平行登记表（§5）；
+抽离血缘真相源 = 各包 `Showcase.json` 的 `extractedFrom`（§6 可选字段）——血缘与包级依赖可以不同向，导出闭包由 `ExportClosure` 按方向规则合成两者。
 
 ## 4. 跨包接口
 - 其他包引用程序集：`com.collin.core`（Runtime）、`com.collin.core.Editor`（仅编辑器工具）；
@@ -50,6 +51,7 @@
 | D-5 | 展板数据源 = `ShowcaseRuntime` 磁盘枚举（编辑器 Play 模式内读 `Packages/`） | 展板复用 Editor 侧 Scanner | 展板是运行中的纯 UI 场景，不能依赖 Editor-only 程序集；独立构建不含 Packages 目录为已知边界——展板仅项目内运行，非交付功能 |
 | D-6 | 展板场景文件只含一个挂 `ShowcaseUI` 的 GameObject，全部 uGUI 由代码构建 | 场景里手工摆全 UI 层级 | `.unity` 文件保持最小且稳定，插件增减永不触碰场景文件（§6 精神贯彻到文件层，消除合并热点） |
 | D-7 | **玩法包与设计辅助台之间的跨包契约层放 core**（`Runtime/StealthContracts/`：接口 + 纯数据 DTO + 通道具体子类） | 修订 §5 允许两个 feature 包互相 asmdef 引用 | 用户 2026-11-03 拍板（stealth DESIGN D-10 / Q-A1「方案 P」）。§5 禁止 feature 互引，而辅助台必须读玩法数据；把契约上提 core 后，消费方只引 core、提供方注册实现，规则不破且消费方可在提供方缺席时优雅降级。**代价**：core 从「纯基础设施」变为「承载领域契约」，故划红线——契约层只允许值类型/接口/通道子类，**禁止任何玩法逻辑与判定实现**，也禁止签名里出现 feature 包类型（否则消费方仍须引包，方案失效） |
+| D-8 | **抽离谱系用 Showcase.json 元数据表达（tier / extractedFrom），不引入 asmdef 硬引用** | 修订 §5 允许 产品→能力 / 工具→产品 的包级强依赖 | 用户 2026-11-06 拍板展板改造走展示层方案（A 档）。包级硬依赖需改 §5 与三处 asmdef，爆炸半径大；元数据 + `ExportClosure` 已能让展板与导出闭包如实呈现「导出 citymap 必带 stretch」「导出 stealthplanner 必带 stealth」。代价：血缘声明与 package.json 存在两套真相源，故校验器 `showcase-lineage` 项强制 `extractedFrom` 指向存在的包，防漂移 |
 
 ## 6. 风险
 - 静态 `Services` 注册表在域重载/退出 Play 后清空 → 缓解：约定 feature 包在自身初始化入口重注册；本版本接受该语义并写入 README 级注释；
